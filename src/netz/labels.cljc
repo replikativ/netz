@@ -125,7 +125,13 @@
   [state]
   (let [{:keys [max-subjects]} (:opts state)]
     (if (> (count (:labels state)) max-subjects)
-      (update state :labels dissoc (first (sort (keys (:labels state)))))
+      ;; NOT `(sort (keys …))`. A subject is deliberately untyped -- a peer id,
+      ;; a content hash, a topic -- so the key set is heterogeneous by design,
+      ;; and `sort` on mixed types throws (ClassCastException on the JVM). That
+      ;; would turn "the cap was reached" into an exception at exactly the
+      ;; moment an attacker chose. Any deterministic victim will do here; the
+      ;; cap is about bounding memory, not about which entry survives.
+      (update state :labels dissoc (key (first (:labels state))))
       state)))
 
 (defn accept

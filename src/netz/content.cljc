@@ -517,7 +517,12 @@
      :actions [[:timer (get-in state [:opts :maintenance-ms]) :content/maintenance]]}
 
     :disconnected
-    {:state (update state :peers disj (:peer event)) :actions []}
+    ;; Kept as a no-op rather than removed: `sync-peers` runs first on the same
+    ;; event (see `netz.overlay/handler`) against a connection set membership
+    ;; has already updated, so the peer is gone before this branch is reached.
+    ;; Deleting it would fall through to `:else`, which is the same thing said
+    ;; less clearly.
+    {:state state :actions []}
 
     :timer
     (let [payload (:payload event)]

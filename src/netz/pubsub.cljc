@@ -58,15 +58,15 @@
   (let [ch (chan 1)] (put! ch v) (close! ch) ch))
 
 (defn- handshake-complete? [peer topic]
-  (let [sub (get-in (or (:pubsub @peer) {}) [:subscriptions topic])]
+  (let [sub (pubsub/subscription peer topic)]
     ;; No subscription at all means this peer is a topic OWNER rather than a
     ;; subscriber -- nothing to wait for.
     (or (nil? sub) (boolean (:handshake-complete? sub)))))
 
 (defn- apply-one!
   [S peer subs topic payload]
-  (let [sub (get-in (or (:pubsub @peer) {}) [:subscriptions topic])
-        topic-cfg (get-in (or (:pubsub @peer) {}) [:topics topic])
+  (let [sub (pubsub/subscription peer topic)
+        topic-cfg (pubsub/get-topic-config peer topic)
         strategy (or (:strategy sub) (:strategy topic-cfg))
         on-publish (get-in @subs [topic :on-publish])]
     (go-try S
@@ -177,7 +177,7 @@
                  ;; disseminating it would flood the network with one peer's
                  ;; catch-up. What the overlay changes is who you may handshake
                  ;; WITH, not how.
-                 (assoc (<? S (#'pubsub/direct-subscribe! peer topics opts))
+                 (assoc (<? S (pubsub/direct-subscribe! peer topics opts))
                         :transport :overlay)))))})
 
 (defn re-handshake!
@@ -203,14 +203,14 @@
   the whole subscription map, so `:on-handshake-complete` would be silently
   dropped and never fire again."
   [S peer subs from]
-  (let [held (get-in (or (:pubsub @peer) {}) [:subscriptions])
+  (let [held (pubsub/subscriptions peer)
         topics (into #{} (filter #(get-in held [% :strategy]) (keys held)))
         out (when from (rt/connection-out peer from))]
     (when (seq topics)
       ;; One call per distinct opts map, so each topic is restored with the
       ;; callbacks it was subscribed with.
       (doseq [[opts ts] (group-by #(get @subs %) topics)]
-        (#'pubsub/direct-subscribe!
+        (pubsub/direct-subscribe!
          peer (set ts)
          (cond-> (or opts
                      {:strategies (into {} (for [t ts]

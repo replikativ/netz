@@ -141,3 +141,18 @@
     (is (lab/carries-labeler? #{tp/everything} :spamwatch))
     (is (not (lab/carries-labeler? #{[:labels :someone-else]} :spamwatch)))
     (is (not (lab/carries-labeler? #{[:db]} :spamwatch)))))
+
+(deftest mixed-type-subjects-do-not-throw-at-the-cap
+  ;; A subject is deliberately untyped, so the key set is heterogeneous by
+  ;; design -- and `sort` over mixed types throws. That made reaching the cap
+  ;; an exception an attacker could schedule.
+  (let [s (reduce (fn [st i]
+                    (first (lab/accept st (lab/make-label
+                                           {:labeler :lab
+                                          ;; deliberately mixed types
+                                            :subject (if (even? i) (str "s" i) (keyword (str "s" i)))
+                                            :value :spam}))))
+                  (lab/make-state {:max-subjects 4})
+                  (range 20))]
+    (is (<= (count (:labels s)) 4) "the cap must hold")
+    (is (pos? (get-in s [:stats :accepted])))))

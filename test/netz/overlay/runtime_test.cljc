@@ -151,3 +151,42 @@
       (is (pos? accepted))
       (testing "and keeps refusing rather than throwing"
         (is (false? (rt/submit! ctx {:type :init})))))))
+
+(deftest one-bad-event-must-not-end-the-loop
+  ;; `go-super` wraps the loop body in a try/catch that REPORTS and EXITS, so
+  ;; before the guard any handler exception killed the peer's overlay
+  ;; permanently -- and no wire field is type-checked, so producing one is a
+  ;; single frame. Reproduced adversarially: a `:have` whose summary holds a
+  ;; string throws IllegalArgumentException out of the interval-set code.
+  (let [seen (atom [])
+        ctx (rt/make-runtime
+             {:id :me
+              :state {}
+              :handler (fn [state ev _ctx]
+                         (swap! seen conj (:type ev))
+                         (if (= :boom (:type ev))
+                           (throw (ex-info "handler blew up" {}))
+                           {:state state :actions []}))
+              :effects {:send! (fn [_ _]) :connect! (fn [_ _ _])
+                        :disconnect! (fn [_]) :schedule! (fn [_ _])}})]
+    (rt/step! ctx {:type :fine})
+    (is (= [:fine] @seen))
+
+    (testing "a throwing event is dropped and counted, not fatal"
+      ;; step! itself still throws -- the guard lives in the LOOP, which is
+      ;; what must survive. This asserts the contract the loop relies on.
+      (is (thrown? #?(:clj Throwable :cljs :default)
+                   (rt/step! ctx {:type :boom}))))
+
+    (testing "and the machine still works afterwards"
+      (rt/step! ctx {:type :after})
+      (is (= [:fine :boom :after] @seen)
+          "state and handler must be intact after a throwing event"))))
+
+(deftest the-dropped-counter-exists-so-silence-is-visible
+  ;; A peer quietly discarding traffic is indistinguishable from a quiet
+  ;; network. The guard must count what it swallows.
+  (let [ctx (rt/make-runtime {:id :me :state {} :handler (fn [s _ _] {:state s :actions []})
+                              :effects {:send! (fn [_ _]) :connect! (fn [_ _ _])
+                                        :disconnect! (fn [_]) :schedule! (fn [_ _])}})]
+    (is (zero? @(:dropped ctx)))))

@@ -382,9 +382,15 @@
                                    (effective-carries state now)
                                    (:carries state))}])
            ;; Offer the digest at once rather than on the next tick.
-            (let [digest (summary state)]
-              (for [p added]
-                [:send p {:type :have :summary digest}]))))])))
+           ;;
+           ;; Guarded on `added`: `summary` walks up to `:max-summary-origins`
+           ;; entries, and sitting unguarded inside `concat` it ran on EVERY
+           ;; event rather than only when a peer appeared -- the largest
+           ;; per-event cost in the machine, paid for nothing.
+            (when (seq added)
+              (let [digest (summary state)]
+                (for [p added]
+                  [:send p {:type :have :summary digest}])))))])))
 
 (defn- interested?
   "Should we forward `topic` to `peer-id`?

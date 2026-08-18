@@ -37,8 +37,19 @@
        :or {seeds [] topics #{} relay? true}}]
   {:id id
    :rng (rng/make-rng 0)
+   ;; `:carries` and `:topics` have to reach membership too, or topic-aware
+   ;; peer selection is inert: `candidates`' relevance scoring compares a
+   ;; peer's advertised `:carries` against what WE want, and with `:topics`
+   ;; empty it scored every peer identically while every record we gossiped
+   ;; advertised `:carries []`. The whole "find your slice of the network
+   ;; without a discovery protocol" story did nothing.
    :membership (m/make-state id seeds (assoc (or membership {})
-                                             :addresses (vec addresses)))
+                                             :addresses (vec addresses)
+                                             :topics topics
+                                             :carries (cond
+                                                        carries (netz.topics/normalise carries)
+                                                        relay? #{netz.topics/everything}
+                                                        :else #{})))
    :dissemination (assoc (d/make-state id topics (or dissemination {}))
                          :carries (cond
                                     carries (netz.topics/normalise carries)

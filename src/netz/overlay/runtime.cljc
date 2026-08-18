@@ -46,7 +46,8 @@
   so the action interpreter and event loop are testable without opening a
   socket. `kabel-effects` supplies the real ones."
   (:refer-clojure :exclude [run!])
-  (:require [netz.dissemination :as d]
+  (:require [replikativ.logging :as log]
+            [netz.dissemination :as d]
             [netz.identity :as id]
             [netz.ratelimit :as rl]
             [netz.overlay :as overlay]
@@ -125,6 +126,10 @@
    ;; Per-connection metering. Written as a pure state machine, kept in an atom
    ;; here because the middleware meters concurrently across connections.
    :limiter (atom (rl/make-state (or ratelimit {})))
+   ;; Events dropped because a handler threw. A counter rather than silence:
+   ;; a peer quietly discarding traffic is indistinguishable from a quiet
+   ;; network, and that is the failure mode this guard could otherwise hide.
+   :dropped (atom 0)
    :events (chan 1024)})
 
 (defn submit!
@@ -202,7 +207,31 @@
   (submit! ctx {:type :init})
   (go-loop-super S [ev (<? S (:events ctx))]
                  (when ev
-                   (step! ctx ev)
+                   ;; One event must never end the loop.
+                   ;;
+                   ;; `go-super` wraps the whole body in a try/catch that
+                   ;; REPORTS and EXITS, so before this guard any exception
+                   ;; from any handler killed the peer's overlay permanently --
+                   ;; gossip, membership, repair, timers and content, all of it,
+                   ;; from one malformed frame. And no wire field is
+                   ;; type-checked, so producing one is easy.
+                   ;;
+                   ;; A schema gate at the ingress is still wanted, and is the
+                   ;; better fix; this is the backstop that makes a missed case
+                   ;; a dropped event instead of a dead node. `Throwable`
+                   ;; deliberately: StackOverflowError from a deeply nested
+                   ;; payload is an Error, and would otherwise not even be
+                   ;; reported.
+                   (try
+                     (step! ctx ev)
+                     (catch #?(:clj Throwable :cljs :default) e
+                       (swap! (:dropped ctx) inc)
+                       (log/warn :overlay/event-dropped
+                                 {:type (:type ev)
+                                  :payload-type (:type (:payload ev))
+                                  :from (:from ev)
+                                  :error #?(:clj (.getMessage ^Throwable e)
+                                            :cljs (str e))})))
                    (recur (<? S (:events ctx))))))
 
 ;; =============================================================================
@@ -270,11 +299,19 @@
 ;; Connection registry
 ;; =============================================================================
 
-(defn- registry [peer]
+(defn- registry
+  "The connection registry for `peer`, created once.
+
+  `swap!`-created rather than check-then-act: two connections arriving
+  concurrently would each see no registry, each `assoc` their own, and the
+  second would clobber the first -- orphaning any registration already made
+  against it, so that connection stays unreachable for the life of the peer.
+  A small window with a permanent failure is the worst combination."
+  [peer]
   (or (:netz.overlay/connections @peer)
-      (let [a (atom {:by-id {} :outbox {}})]
-        (swap! peer assoc :netz.overlay/connections a)
-        (:netz.overlay/connections @peer))))
+      (-> (swap! peer update :netz.overlay/connections
+                 (fn [existing] (or existing (atom {:by-id {} :outbox {}}))))
+          :netz.overlay/connections)))
 
 (defn connections
   "Peer ids we currently hold a connection to."
@@ -376,7 +413,11 @@
     :or {require-signed? true}}]
   (fn [[S peer [in out]]]
     (let [pass-in (chan)
-          pass-out (chan)]
+          pass-out (chan)
+          ;; Set once this connection's hello verifies; nil until then, which
+          ;; is exactly the "only frames on an identified connection become
+          ;; events" rule.
+          conn-peer-id (atom nil)]
 
       ;; Announce ourselves immediately. Both ends do this unconditionally, so
       ;; the handshake needs no notion of who dialled whom.
@@ -389,49 +430,76 @@
       (go-loop-super S [m (<? S in)]
                      (if m
                        (do
-                         (cond
-                           (= hello-type (:type m))
-                           (let [record (id/wire->record (:record m))]
-                             (if (and record (<? S (id/verify-record record)))
-                               (register! S peer (:netz/peer-id record) out)
+                         ;; The same guard as `run!`, and needed independently:
+                         ;; this loop decodes and verifies the hello BEFORE any
+                         ;; event reaches the machine, so a malformed
+                         ;; `:record` kills the connection here regardless of
+                         ;; what protects the event loop. `id/wire->record`
+                         ;; and `verify-gossip` both run on wholly unvalidated
+                         ;; wire data.
+                         (try
+                           (cond
+                             (= hello-type (:type m))
+                             (let [record (id/wire->record (:record m))]
+                               (if (and record (<? S (id/verify-record record)))
+                                 (reset! conn-peer-id
+                                         (register! S peer (:netz/peer-id record) out))
                                ;; An unverifiable hello is dropped rather than
                                ;; registered. Registering it would let anyone
                                ;; claim any peer id simply by asserting it.
-                               nil))
+                                 nil))
 
-                           (= frame-type (:type m))
-                           (when-let [from (get (into {} (map (fn [[k v]] [v k])
-                                                              (:by-id @(registry peer))))
-                                                out)]
-                             ;; Only frames on an identified connection become
-                             ;; events; an anonymous peer cannot inject into
-                             ;; the state machine.
-                             (let [payload (:payload m)
-                                   [lim verdict] (rl/check @(:limiter ctx) from
-                                                           (now-ms))
-                                   _ (reset! (:limiter ctx) lim)]
+                             (= frame-type (:type m))
+                             ;; The connection's own peer id, remembered when
+                             ;; its hello verified. This used to invert the
+                             ;; ENTIRE registry -- `(into {} (map …))` over
+                             ;; every connection -- on every inbound frame,
+                             ;; which was the largest per-frame allocation in
+                             ;; the hot path and grew with the peer count. The
+                             ;; loop has known the answer since registration.
+                             (when-let [from @conn-peer-id]
+                               (let [payload (:payload m)
+                                     ;; `swap!`, not read-modify-write. The old
+                                     ;; `(rl/check @limiter …)` then `reset!`
+                                     ;; lost every concurrent update, so the
+                                     ;; limit was bypassable by parallelism --
+                                     ;; and the `reset!` also discarded the
+                                     ;; drop counters other paths `swap!` in,
+                                     ;; so the metering under-reported exactly
+                                     ;; when it mattered most.
+                                     verdict (::verdict
+                                              (swap! (:limiter ctx)
+                                                     (fn [st]
+                                                       (let [[st' v] (rl/check st from (now-ms))]
+                                                         (assoc st' ::verdict v)))))]
                                ;; Synapse's shape: slow, then queue, then
                                ;; reject. Sleeping here IS the backpressure —
                                ;; it stops draining `in`, which backs up the
                                ;; socket, so a busy peer is throttled rather
                                ;; than dropped and a hostile one is cut off.
-                               (case verdict
-                                 :slow (<? S (timeout 25))
-                                 :queue (<? S (timeout 250))
-                                 nil)
-                               (if (= :reject verdict)
-                                 (log-rejected ctx from)
-                                 (if (and require-signed? (= :gossip (:type payload)))
+                                 (case verdict
+                                   :slow (<? S (timeout 25))
+                                   :queue (<? S (timeout 250))
+                                   nil)
+                                 (if (= :reject verdict)
+                                   (log-rejected ctx from)
+                                   (if (and require-signed? (= :gossip (:type payload)))
                                  ;; Checked at EVERY hop, not only at the
                                  ;; destination: a single authorised relay
                                  ;; would otherwise be able to inject anything
                                  ;; into the rest of the network.
-                                   (when (<? S (verify-gossip S payload))
-                                     (accept-or-drop! S ctx peer out from payload))
-                                   (accept-or-drop! S ctx peer out from payload)))))
+                                     (when (<? S (verify-gossip S payload))
+                                       (accept-or-drop! S ctx peer out from payload))
+                                     (accept-or-drop! S ctx peer out from payload)))))
 
-                           :else
-                           (>? S pass-in m))
+                             :else
+                             (>? S pass-in m))
+                           (catch #?(:clj Throwable :cljs :default) e
+                             (swap! (:dropped ctx) inc)
+                             (log/warn :overlay/frame-dropped
+                                       {:type (:type m)
+                                        :error #?(:clj (.getMessage ^Throwable e)
+                                                  :cljs (str e))})))
                          (recur (<? S in)))
                        ;; The socket closed. Tell the machine about every peer
                        ;; that was reachable through it, so membership drops
