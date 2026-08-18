@@ -2,10 +2,11 @@
 
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
         ;; kabel supplies the transport (peers, WebSocket, codec middleware)
-        ;; and the pub/sub layer netz plugs a transport into. :local/root while
-        ;; the transport seam is still being settled upstream; this becomes a
-        ;; released coordinate once kabel ships it.
-        org.replikativ/kabel {:local/root "../kabel"}
+        ;; and the pub/sub layer netz plugs a transport into. 0.3.108 is the
+        ;; first release carrying the pluggable pub/sub transport, so it is the
+        ;; floor: everything netz needs from kabel is public API from here on,
+        ;; not a private var reached across a library boundary.
+        org.replikativ/kabel {:mvn/version "0.3.108"}
         ;; Ed25519, SHA-256, constant-time compare, CSPRNG — portable across
         ;; JVM and ClojureScript. Unlike kabel, netz cannot make crypto
         ;; optional: self-certifying identity is the bottom of the design.
@@ -29,7 +30,7 @@
   ;; test lives on its own path and the default suite never loads it.
   ;;   clojure -X:konserve:test :dirs '["test" "test-konserve"]'
   :konserve {:extra-paths ["test-konserve"]
-             :extra-deps {org.replikativ/konserve {:local/root "../konserve"}}}
+             :extra-deps {org.replikativ/konserve {:mvn/version "0.9.375"}}}
 
   :cljs {:extra-deps {thheller/shadow-cljs {:mvn/version "3.4.11"}
                       org.clojure/clojurescript {:mvn/version "1.12.145"}}}

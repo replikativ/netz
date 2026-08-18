@@ -41,8 +41,10 @@ means netz can break its API to fix the problems above without a released
 library breaking with it — and it keeps kabel's dependency graph free of
 crypto, storage and a simulator that only the overlay needs.
 
-kabel exposes exactly one seam for this: a pluggable pub/sub transport.
-Everything else here sits on top of kabel's public API.
+kabel exposes exactly one seam for this: a pluggable pub/sub transport, from
+**0.3.108**. Everything else here sits on top of kabel's public API — nothing
+reaches into a private var, which is a property the split forced rather than
+one discipline maintained.
 
 ## What it does
 
@@ -98,7 +100,10 @@ clojure -X:test :dirs '["test"]'            # 184 tests, 8385 assertions
 npx shadow-cljs compile :node-test && node target/node-tests.js
                                             # 168 tests, 8302 assertions
 clojure -X:konserve:test :dirs '["test" "test-konserve"]'
+                                            # 187 tests, 8398 assertions
 ```
+
+Every dependency is a released coordinate; nothing needs a sibling checkout.
 
 ## License
 
