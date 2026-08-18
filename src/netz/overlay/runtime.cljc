@@ -366,6 +366,58 @@
   (swap! (:limiter ctx) update-in [:stats :dropped-frames] (fnil inc 0))
   nil)
 
+(def ^:private frame-schema
+  "What each overlay message type must look like on the wire.
+
+  A map of message type to `{field predicate}`. A field absent from the map is
+  unconstrained; a field present must satisfy the predicate or the frame is
+  refused. This is a GATE, not a parser -- it exists so a handler can assume
+  the shapes it destructures, not to validate semantics.
+
+  It is here rather than in the pure machines on purpose: the machines are
+  driven by the simulator with well-formed input, and scattering `number?`
+  guards through five namespaces is both larger and easy to leave incomplete.
+  One table is also reviewable in a way that scattered checks are not."
+  (let [iset? (fn [x] (and (sequential? x)
+                           (every? #(and (sequential? %) (= 2 (count %))
+                                         (every? int? %)) x)))
+        summary? (fn [x] (and (map? x)
+                              (every? (fn [[_ epochs]]
+                                        (and (map? epochs)
+                                             (every? (fn [[e rs]] (and (int? e) (iset? rs)))
+                                                     epochs)))
+                                      x)))
+        horizon? (fn [x] (and (map? x)
+                              (every? (fn [[k v]] (and (sequential? k) (int? v))) x)))
+        ranges? (fn [x] (and (sequential? x)
+                             (every? #(and (map? %) (int? (:lo %)) (int? (:hi %))) x)))]
+    {:gossip {:epoch int? :seq int? :hops int?}
+     :have {:summary summary? :horizon horizon?}
+     :want {:ranges ranges?}
+     :interests {:topics coll? :carries coll?}
+     :peers {:peers coll?}
+     :dial {:addresses coll?}
+     :dial-refused {:peers coll?}
+     :content/announce {:keys coll?}
+     :content/found {:providers coll?}
+     :content/want-tree {:have coll?}
+     :content/tree-batch {:nodes coll?}}))
+
+(defn well-formed?
+  "Does `payload` satisfy `frame-schema` for its type?
+
+  Unknown types pass: a peer running a newer version may legitimately send
+  something this one does not know, and the handlers already fall through to
+  `:else`. The gate refuses malformed KNOWN messages, which is the class that
+  reached `interval-set` arithmetic and killed the loop."
+  [payload]
+  (let [fields (get frame-schema (:type payload))]
+    (or (nil? fields)
+        (every? (fn [[k pred]]
+                  (let [v (get payload k ::absent)]
+                    (or (= ::absent v) (pred v))))
+                fields))))
+
 (defn- accept-or-drop!
   "Submit an event, or close the connection if the machine cannot keep up.
 
@@ -374,11 +426,17 @@
   dropped the connection in exactly this case, which is better than the
   alternative we had — queueing until core.async threw."
   [S ctx peer out from payload]
-  (or (submit! ctx {:type :message :from from :payload payload})
-      (do
-        (swap! (:limiter ctx) update-in [:stats :overload-drops] (fnil inc 0))
-        (close! out)
-        false)))
+  (if-not (well-formed? payload)
+    ;; Refused, not fatal, and counted: a malformed frame is a fact about the
+    ;; sender, not a reason to stop serving everyone else.
+    (do (swap! (:limiter ctx) update-in [:stats :malformed] (fnil inc 0))
+        (log/warn :overlay/malformed-frame {:from from :type (:type payload)})
+        false)
+    (or (submit! ctx {:type :message :from from :payload payload})
+        (do
+          (swap! (:limiter ctx) update-in [:stats :overload-drops] (fnil inc 0))
+          (close! out)
+          false))))
 
 (defn- send-frame!
   "Send to `peer-id`, queueing if the connection is not yet identified."

@@ -3,7 +3,7 @@
 
   Effects are injected, so these run without opening a socket. The real-wire
   behaviour is covered by `netz.overlay.integration-test`."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.test :refer [deftest testing is are]]
             [netz.overlay.runtime :as rt]
             #?@(:clj [[netz.dissemination :as d]
                       [netz.identity :as id]
@@ -190,3 +190,49 @@
                               :effects {:send! (fn [_ _]) :connect! (fn [_ _ _])
                                         :disconnect! (fn [_]) :schedule! (fn [_ _])}})]
     (is (zero? @(:dropped ctx)))))
+
+(deftest the-schema-gate-refuses-the-frames-that-killed-the-loop
+  ;; Each of these was reproduced adversarially as a one-frame remote kill:
+  ;; no wire field was type-checked, and an exception out of any handler ends
+  ;; the event loop permanently. The gate refuses them at ingress; the loop
+  ;; guard is the backstop for whatever the gate misses.
+  (testing "malformed known messages are refused"
+    (are [payload] (false? (rt/well-formed? payload))
+      {:type :have :summary {:o {0 "abc"}}}
+      {:type :have :summary "xxx"}
+      {:type :have :summary {:o [1 2 3]}}
+      {:type :have :summary {} :horizon {[:o 0] "hi"}}
+      {:type :want :ranges [{:lo "x" :hi 5}]}
+      {:type :want :ranges 42}
+      ;; :hops is deliberately OUTSIDE the signature so relays can increment
+      ;; it -- which means any relay could corrupt a validly signed message and
+      ;; kill everything downstream. This is the one that needed no key.
+      {:type :gossip :origin :o :epoch 0 :seq 1 :hops "x"}
+      {:type :gossip :origin :o :epoch "x" :seq 1 :hops 0}
+      {:type :gossip :origin :o :epoch 0 :seq nil :hops 0}
+      {:type :interests :topics 5}
+      {:type :content/found :providers 5}
+      {:type :content/want-tree :have 5}
+      {:type :dial :addresses 42}
+      {:type :dial-refused :peers 42}
+      {:type :peers :peers 42}))
+
+  (testing "well-formed messages pass"
+    (are [payload] (true? (rt/well-formed? payload))
+      {:type :have :summary {:o {0 [[0 5]]}} :horizon {[:o 0] 3}}
+      {:type :want :ranges [{:lo 0 :hi 5}]}
+      {:type :gossip :origin :o :epoch 0 :seq 1 :hops 2}
+      {:type :interests :topics #{:t} :carries #{}}
+      {:type :peers :peers []}))
+
+  (testing "absent optional fields pass"
+    ;; The gate constrains shape, not presence -- a handler that needs a field
+    ;; is the thing that decides it is required.
+    (is (true? (rt/well-formed? {:type :have})))
+    (is (true? (rt/well-formed? {:type :gossip :origin :o}))))
+
+  (testing "unknown types pass"
+    ;; A newer peer may legitimately send something this one does not know, and
+    ;; the handlers already fall through to :else. Refusing would make every
+    ;; protocol addition a flag day.
+    (is (true? (rt/well-formed? {:type :something/new :whatever 42})))))
