@@ -37,9 +37,11 @@
   (`.internal/DHT_DESIGN.md` §2):
 
   - **group diversity** — at most `:max-per-group` peers share a group, so one
-    operator with many addresses cannot fill the book. The group is supplied
-    by the caller (a host, subnet or ASN); the principle is that it must be
-    something an attacker pays for;
+    operator with many addresses cannot fill the book. A caller may supply the
+    group (a subnet or ASN); otherwise it is DERIVED from the address host.
+    Never taken on trust from the peer being gossiped, and never absent -- the
+    principle is that it must be something an attacker pays for, and a field
+    they control is not;
   - **hard ceilings on every collection**, because unbounded state was the one
     bug every reviewed system had.
 
@@ -85,6 +87,27 @@
    ;; at scale; carrying ranges in peer exchange defers it.
    :topics #{}})
 
+(defn host-group
+  "The diversity group implied by an address: its host.
+
+  Derived rather than believed. `:group` used to be taken from whatever a
+  gossiping peer put on the wire, and `dialable?` additionally EXEMPTED a nil
+  group -- so an attacker filled the book by simply omitting the field, and the
+  cap that exists to stop one operator dominating the routing table was
+  optional at the attacker's discretion.
+
+  The host is what an attacker actually has to pay for. It is a coarse proxy
+  for a subnet or an ASN, and a caller that knows better should still pass an
+  explicit `:group`; this is the floor, not the ceiling."
+  [addresses]
+  (or (some (fn [a]
+              (when (string? a)
+                (some-> (re-find #"^\w+://([^/:]+)" a) second)))
+            addresses)
+      ;; No parseable address: one bucket for all of them, which is the
+      ;; conservative direction. "Unknown" must be capped, not waved through.
+      ::unknown))
+
 (defn make-state
   "Initial membership state.
 
@@ -112,7 +135,11 @@
     :opts (merge default-opts (dissoc opts :addresses))
     :book (into {} (for [{:keys [peer-id addresses group]} seeds]
                      [peer-id {:addresses (vec addresses)
-                               :group group :attempts 0 :proven? false
+                               ;; Seeds get a derived group too, or a
+                               ;; configured seed list could itself bypass the
+                               ;; cap by omitting the field.
+                               :group (or group (host-group addresses))
+                               :attempts 0 :proven? false
                                :last-success nil :backoff-until 0}]))
     :connections {}
     :dialing {}
@@ -173,10 +200,10 @@
          (not (contains? (:dialing state) peer-id))
          (>= now (:backoff-until entry 0))
          ;; Group diversity: refuse a candidate that would over-represent its
-         ;; group. A nil group is exempt, since "unknown" must not collapse
-         ;; every unlabelled peer into one bucket.
-         (or (nil? (:group entry))
-             (< (get (group-counts state) (:group entry) 0) max-per-group)))))
+         ;; group. There is no exemption: an entry without a supplied group is
+         ;; given one derived from its address (`host-group`), so "unknown"
+         ;; cannot be used to opt out of the cap.
+         (< (get (group-counts state) (:group entry) 0) max-per-group))))
 
 (defn candidates
   "Peers worth dialing now, best first.
@@ -249,7 +276,9 @@
 
 (defn- new-entry [addresses group carries]
   {:addresses (merge-addresses [] addresses)
-   :group group
+   ;; A supplied group wins -- a deployment that knows its topology should say
+   ;; so -- but absence is filled in locally rather than left nil.
+   :group (or group (host-group addresses))
    ;; What this peer advertises it relays. Gossiped onward, so a peer learns
    ;; where a topic lives without ever connecting there.
    :carries (topics/normalise (or carries #{}))

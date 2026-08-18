@@ -50,9 +50,9 @@
   (:require [kabel.pubsub :as pubsub]
             [kabel.pubsub.protocol :as proto]
             [netz.overlay.runtime :as rt]
-            #?(:clj [superv.async :refer [<? go-try]])
-            [clojure.core.async :refer [chan put! close!]])
-  #?(:cljs (:require-macros [superv.async :refer [<? go-try]])))
+            #?(:clj [superv.async :refer [<? go-try go-loop-try]])
+            [clojure.core.async :as async :refer [chan put! close!]])
+  #?(:cljs (:require-macros [superv.async :refer [<? go-try go-loop-try]])))
 
 (defn- ok [v]
   (let [ch (chan 1)] (put! ch v) (close! ch) ch))
@@ -228,10 +228,35 @@
         ;; `:on-publish`, and a re-handshake needs all of them.
         subs (atom {})
         ;; Publishes that arrived before their topic's handshake finished.
-        pending (atom {})]
-    (rt/set-deliver! running (fn [topic payload]
-                               (deliver-to-strategy! S peer subs pending
-                                                     topic payload)))
+        pending (atom {})
+        ;; ONE consumer, so applications happen in the order they arrived.
+        ;;
+        ;; `deliver-to-strategy!` returns a go block and the runtime's
+        ;; `:deliver` action discards it, so two publishes on a topic started
+        ;; two concurrent blocks that raced inside `-apply-publish`. For a
+        ;; strategy whose apply is a DELTA -- datahike's tx-broadcast,
+        ;; spindel's `-apply-delta`, konserve-sync's key writes -- that is a
+        ;; lost update, silently. Ordering the buffer drain was not enough:
+        ;; that fixed the join, not the steady state.
+        ;;
+        ;; Submission is already serial (the runtime is a single event loop),
+        ;; so one consumer that AWAITS each application is all that is needed
+        ;; to keep it that way.
+        deliveries (chan 1024)]
+    (go-loop-try S [d (<? S deliveries)]
+                 (when d
+                   (let [[topic payload] d]
+                     (<? S (deliver-to-strategy! S peer subs pending
+                                                 topic payload)))
+                   (recur (<? S deliveries))))
+    (rt/set-deliver! running
+                     (fn [topic payload]
+                       ;; `offer!`, not a parking put: the delivery function is
+                       ;; called from the runtime's own loop, and blocking it
+                       ;; to deliver to ourselves would deadlock. A full queue
+                       ;; means the application cannot keep up, which is the
+                       ;; application's problem to notice.
+                       (async/offer! deliveries [topic payload])))
     (rt/set-state-sync! running (fn [from _stranded]
                                   (re-handshake! S peer subs from)))
     (pubsub/set-transport! peer (transport S peer running subs pending))

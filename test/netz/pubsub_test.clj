@@ -17,8 +17,8 @@
             [kabel.pubsub.protocol :as proto]
             [netz.overlay.runtime :as rt]
             [netz.dissemination :as d]
-            [superv.async :refer [S <??]]
-            [clojure.core.async :refer [timeout chan put! close!]]))
+            [superv.async :refer [S <?? <? go-loop-try]]
+            [clojure.core.async :as async :refer [timeout chan put! close!]]))
 
 (def ^:private port-counter (atom 49200))
 (defn- unique-port [] (swap! port-counter inc))
@@ -316,3 +316,43 @@
     (pso/deliver-to-strategy! S peer (atom {}) (atom {}) :t {:n 1})
     (<?? S (timeout 200))
     (is (= [{:n 1}] @applied))))
+
+(deftest deliveries-are-applied-in-order-even-when-the-strategy-is-slow
+  ;; `deliver-to-strategy!` returns a go block and the runtime's `:deliver`
+  ;; action discarded it, so two publishes on one topic started two concurrent
+  ;; blocks that raced inside `-apply-publish`. Ordering the pre-handshake
+  ;; buffer fixed the JOIN and not the steady state.
+  ;;
+  ;; The strategy here takes a varying amount of time on purpose: with
+  ;; concurrent blocks the later, faster publish overtakes the earlier one, and
+  ;; the assertion below is exactly what a delta-applying consumer needs.
+  (let [applied (atom [])
+        slow-strategy
+        (reify proto/PSyncStrategy
+          (-init-client-state [_] (done {:since 0}))
+          (-handshake-items [_ _] (done []))
+          (-apply-handshake-item [_ _] (done {:ok true}))
+          (-apply-publish [_ p]
+            (let [c (chan 1)]
+              (async/go
+                ;; earlier messages are slower, so any concurrency reorders
+                (async/<! (timeout (max 0 (- 40 (* 4 (:n p))))))
+                (swap! applied conj (:n p))
+                (put! c {:ok true})
+                (close! c))
+              c)))
+        peer (atom {:pubsub {:subscriptions {:t {:strategy slow-strategy
+                                                 :handshake-complete? true}}}})
+        subs (atom {:t {}})
+        pending (atom {})
+        deliveries (chan 64)]
+    ;; The same single-consumer arrangement `install!` builds.
+    (go-loop-try S [d (<? S deliveries)]
+                 (when d
+                   (let [[topic payload] d]
+                     (<? S (pso/deliver-to-strategy! S peer subs pending topic payload)))
+                   (recur (<? S deliveries))))
+    (dotimes [i 8] (async/offer! deliveries [:t {:n i}]))
+    (is (wait-for 8000 #(= 8 (count @applied))) "not everything was applied")
+    (is (= (range 8) (seq @applied))
+        "applications must follow arrival order, not completion order")))

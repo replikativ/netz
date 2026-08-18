@@ -21,15 +21,15 @@ the browser.
 >
 > **Still open**, and the reason this warning stands:
 >
-> - the group in a gossiped address-book entry is taken from the wire, and a
->   `nil` group is exempt from the diversity cap — so sybils bypass it by
->   omitting the field;
-> - `netz.pubsub` starts two concurrent `-apply-publish` go-blocks per topic
->   (the runtime discards the channel `:deliver` returns), so deltas can be
->   applied out of order;
-> - the direct and overlay pub/sub paths can partition: `pubsub-middleware` is
->   still installed and still handles inbound publishes, and nothing bridges
->   the two.
+> - the direct and overlay pub/sub paths can partition. `pubsub-middleware` is
+>   still installed on every connection and still handles inbound publishes, so
+>   a directly-connected client's publish never enters the mesh and a mesh
+>   publish never reaches direct subscribers. Nothing bridges them and nothing
+>   detects the split.
+>
+> Beyond that it is unaudited rather than known-broken: the reviews covered
+> dissemination, membership, content and the runtime, and every finding from
+> them is either fixed or listed above.
 >
 > Run it between peers you control. Do not put it on a public network yet.
 > Hardening these is the current work; see `.internal/` for the review record.
@@ -94,9 +94,9 @@ legitimate answer.
 ## Tests
 
 ```
-clojure -X:test :dirs '["test"]'            # 182 tests, 8377 assertions
+clojure -X:test :dirs '["test"]'            # 184 tests, 8385 assertions
 npx shadow-cljs compile :node-test && node target/node-tests.js
-                                            # 167 tests, 8296 assertions
+                                            # 168 tests, 8302 assertions
 clojure -X:konserve:test :dirs '["test" "test-konserve"]'
 ```
 

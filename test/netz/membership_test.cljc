@@ -663,3 +663,39 @@
     (is (= before (set (keys (:book after))))
         "an unproven stranger must not evict a proven anchor")
     (is (not (contains? (:book after) :stranger)))))
+
+(deftest omitting-the-group-cannot-bypass-diversity
+  ;; The group used to be taken from whatever the gossiping peer put on the
+  ;; wire, and `dialable?` EXEMPTED a nil group -- so an attacker filled the
+  ;; book by simply omitting the field. A cap the attacker can opt out of is
+  ;; not a cap.
+  (testing "a derived group is used when none is supplied"
+    (is (= "evil.example" (:group (get-in (m/learn (m/make-state :me [] {})
+                                                   [{:peer-id :a
+                                                     :addresses ["ws://evil.example:8080"]}])
+                                          [:book :a]))))
+    (is (= "evil.example" (m/host-group ["ws://evil.example:8080/path"])))
+    (testing "and an unparseable address is one bucket, not an exemption"
+      (is (some? (m/host-group ["nonsense"])))
+      (is (= (m/host-group ["nonsense"]) (m/host-group [])))))
+
+  (testing "sybils on one host are capped even with no :group on the wire"
+    (let [st (m/learn (m/make-state :me [] {:max-per-group 2})
+                      (for [i (range 20)]
+                        {:peer-id (keyword (str "sybil" i))
+                         :addresses [(str "ws://evil.example:" (+ 9000 i))]}))
+          ;; Connect as many as the policy allows, then ask for more.
+          ;; Two of them are already connected, which is the cap.
+          connected (reduce (fn [s pid]
+                              (assoc-in s [:connections pid] {:since 0 :initiator? true}))
+                            st
+                            (take 2 (map #(keyword (str "sybil" %)) (range 20))))
+          dialable (filter #(m/dialable? connected 0 %) (keys (:book connected)))]
+      (is (empty? dialable)
+          "the cap must hold for peers that supplied no group at all")))
+
+  (testing "an explicitly supplied group still wins"
+    (is (= "eu-west" (:group (get-in (m/learn (m/make-state :me [] {})
+                                              [{:peer-id :a :addresses ["ws://h:1"]
+                                                :group "eu-west"}])
+                                     [:book :a]))))))
