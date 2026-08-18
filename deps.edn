@@ -1,0 +1,36 @@
+{:paths ["src"]
+
+ :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+        ;; kabel supplies the transport (peers, WebSocket, codec middleware)
+        ;; and the pub/sub layer netz plugs a transport into. :local/root while
+        ;; the transport seam is still being settled upstream; this becomes a
+        ;; released coordinate once kabel ships it.
+        org.replikativ/kabel {:local/root "../kabel"}
+        ;; Ed25519, SHA-256, constant-time compare, CSPRNG — portable across
+        ;; JVM and ClojureScript. Unlike kabel, netz cannot make crypto
+        ;; optional: self-certifying identity is the bottom of the design.
+        org.replikativ/geheimnis {:mvn/version "0.2.38"}
+        org.replikativ/superv.async {:mvn/version "0.3.50"}
+        org.replikativ/hasch {:mvn/version "0.4.100"}
+        org.replikativ/logging {:mvn/version "0.1.3"}}
+
+ :aliases
+ {:test {:extra-paths ["test"]
+         :extra-deps {io.github.cognitect-labs/test-runner
+                      {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+         :exec-fn cognitect.test-runner.api/test}
+
+  ;; The konserve-backed PPeerStore (netz.store.konserve). konserve is the
+  ;; consumer's to provide, exactly as kabel keeps storage optional, so the
+  ;; test lives on its own path and the default suite never loads it.
+  ;;   clojure -X:konserve:test :dirs '["test" "test-konserve"]'
+  :konserve {:extra-paths ["test-konserve"]
+             :extra-deps {org.replikativ/konserve {:local/root "../konserve"}}}
+
+  :cljs {:extra-deps {thheller/shadow-cljs {:mvn/version "3.4.11"}
+                      org.clojure/clojurescript {:mvn/version "1.12.145"}}}
+
+  :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.2"}}
+           :main-opts ["-m" "cljfmt.main" "check"]}
+  :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.2"}}
+         :main-opts ["-m" "cljfmt.main" "fix"]}}}

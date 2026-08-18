@@ -1,0 +1,7 @@
+/target
+/.cpcache
+/.shadow-cljs
+/node_modules
+/.internal
+/classes
+*.log
