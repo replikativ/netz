@@ -11,21 +11,25 @@ the browser.
 > ## ⚠️ Alpha. Not safe to expose to untrusted peers.
 >
 > This is not a caveat about API churn — it is a statement about the current
-> code. An adversarial review reproduced, empirically, several ways for **one
-> frame from any connected peer** to permanently kill a node's overlay:
+> code. An adversarial review reproduced, empirically, several ways for one
+> frame from any connected peer to permanently kill a node.
 >
-> Several have since been fixed — a schema gate at the ingress plus a guard on
-> both event loops closed the one-frame remote kills, and the identity
-> handshake now carries a challenge so a captured hello cannot be replayed.
-> What is left:
+> **Fixed since:** a schema gate at the ingress and a guard on both event loops
+> closed the one-frame remote kills, and the identity handshake now carries a
+> challenge, so a captured hello can no longer be replayed to impersonate a
+> peer.
 >
-> - repair (`:want`) is a measured ~3000× amplifier: `:max-want` is applied
->   per range rather than per frame;
-> - `:seen`, `:store-floor` and `:escalated` are bounded per key but not in
->   the NUMBER of keys, and identities cost one keygen;
-> - the address book evicts proven anchors for unproven strangers, and a
->   gossiped entry with no `:group` bypasses diversity entirely;
-> - three ring buffers use `subvec`, which retains every element ever held.
+> **Still open**, and the reason this warning stands:
+>
+> - the group in a gossiped address-book entry is taken from the wire, and a
+>   `nil` group is exempt from the diversity cap — so sybils bypass it by
+>   omitting the field;
+> - `netz.pubsub` starts two concurrent `-apply-publish` go-blocks per topic
+>   (the runtime discards the channel `:deliver` returns), so deltas can be
+>   applied out of order;
+> - the direct and overlay pub/sub paths can partition: `pubsub-middleware` is
+>   still installed and still handles inbound publishes, and nothing bridges
+>   the two.
 >
 > Run it between peers you control. Do not put it on a public network yet.
 > Hardening these is the current work; see `.internal/` for the review record.
@@ -50,7 +54,7 @@ Everything else here sits on top of kabel's public API.
 | `netz.content` | content routing, subtree transfer, chunking, sealed blocks |
 | `netz.pubsub` | `kabel.pubsub` over the overlay: publishes disseminate, the handshake stays point-to-point |
 | `netz.overlay.runtime` | the only impure namespace — channels, timers, credentials, the connection registry |
-| `netz.sim` | deterministic discrete-event simulator: virtual clock, seeded RNG, total event ordering |
+| `netz.sim` | deterministic discrete-event simulator — virtual clock, seeded RNG, total event ordering. On the **test** path, not in `src/`: it drives the pure machines and a consumer should not carry it. |
 
 The protocol layers are **pure state machines** of the shape
 `(state, event, ctx) -> {:state _ :actions _}`. The runtime is the only thing
@@ -90,9 +94,9 @@ legitimate answer.
 ## Tests
 
 ```
-clojure -X:test :dirs '["test"]'            # 179 tests, 8351 assertions
+clojure -X:test :dirs '["test"]'            # 182 tests, 8377 assertions
 npx shadow-cljs compile :node-test && node target/node-tests.js
-                                            # 165 tests, 8275 assertions
+                                            # 167 tests, 8296 assertions
 clojure -X:konserve:test :dirs '["test" "test-konserve"]'
 ```
 

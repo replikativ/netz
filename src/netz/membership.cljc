@@ -273,16 +273,28 @@
       (assoc-in [:book peer-id :carries] (topics/normalise carries)))
     (let [{:keys [max-book]} (:opts state)]
       (if (>= (count (:book state)) max-book)
-        ;; Book is full: drop the worst unconnected entry to make room, and
+        ;; Book is full: drop the worst unconnected entry to make room -- and
         ;; only if the newcomer is not itself the worst thing available.
-        (let [worst (->> (keys (:book state))
+        ;;
+        ;; That last clause was in this comment and NOT in the code, so a book
+        ;; of proven, well-behaved anchors was displaced one entry per gossiped
+        ;; record by unproven strangers. Since the book is now persisted across
+        ;; restarts, a poisoned one survives them: the sticky/anchor-peer
+        ;; mitigation became a sticky-ATTACKER mitigation, which is the eclipse
+        ;; it exists to prevent.
+        (let [newcomer (new-entry addresses group carries)
+              worst (->> (keys (:book state))
                          (remove (:connections state))
                          (sort-by #(- (priority (get-in state [:book %]))))
                          first)]
-          (if worst
+          (if (and worst
+                   ;; Lower is better, so the newcomer must rank strictly
+                   ;; better than the entry it would evict. An unproven
+                   ;; stranger never outranks a proven anchor.
+                   (< (priority newcomer) (priority (get-in state [:book worst]))))
             (-> state
                 (update :book dissoc worst)
-                (assoc-in [:book peer-id] (new-entry addresses group carries)))
+                (assoc-in [:book peer-id] newcomer))
             state))
         (assoc-in state [:book peer-id] (new-entry addresses group carries))))))
 

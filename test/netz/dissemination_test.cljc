@@ -634,3 +634,32 @@
                                                {:now 0})]
         (is (= #{:t} (:topics state)))
         (is (empty? actions))))))
+
+(deftest attacker-controlled-collections-are-bounded-in-KEYS
+  ;; Bounding ranges per key is not bounding the number of keys. Both halves of
+  ;; an (origin, epoch) key are attacker-chosen -- an identity costs one keygen
+  ;; and the epoch is whatever the publisher says -- so these grew without
+  ;; limit, and `:store-floor` was republished in every digest we sent.
+  (let [s (reduce (fn [st i] (d/mark-seen st (keyword (str "o" i)) 0 1))
+                  (d/make-state :me #{:t} {:max-origins 32})
+                  (range 500))]
+    (is (<= (count (:seen s)) 32)
+        "the number of origins must be bounded, not just ranges per origin")))
+
+(deftest a-want-frame-cannot-multiply-its-own-budget
+  ;; `:max-want` was applied per RANGE while `:max-want-ranges` capped the
+  ;; ranges, so one frame bought max-want x max-want-ranges messages -- a
+  ;; measured ~3000x amplifier from a peer that need only keep asking.
+  (let [pub (reduce (fn [st i] (first (d/publish st :t {:n i})))
+                    (d/make-state :pub #{:t} {:store-size 4096})
+                    (range 600))
+        ;; A peer holding that stream, asked for it in many small ranges.
+        ranges (vec (for [i (range 16)] {:origin :pub :epoch 0
+                                         :lo (* i 32) :hi (+ (* i 32) 31)}))
+        {acts :actions} (d/handler pub {:type :message :from :attacker
+                                        :payload {:type :want :ranges ranges}}
+                                   {:now 0})
+        sent (count (filter #(= :send (first %)) acts))]
+    (is (<= sent (:max-want (:opts pub)))
+        (str "one :want frame served " sent " messages against a budget of "
+             (:max-want (:opts pub))))))

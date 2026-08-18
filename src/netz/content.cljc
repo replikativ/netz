@@ -185,7 +185,7 @@
            (-> state
                (update :blocks dissoc evict)
                (update :block-meta dissoc evict)
-               (update :block-order subvec 1)))
+               (update :block-order #(vec (subvec % 1)))))
          state)))))
 
 (defn verified?
@@ -460,7 +460,7 @@
             k (first (:pending state))]
         (if (or (<= free 0) (nil? k))
           [state acts]
-          (let [state (update state :pending subvec 1)
+          (let [state (update state :pending #(vec (subvec % 1)))
                 [state a] (start-fetch state k now)]
             (recur state (into acts a))))))))
 

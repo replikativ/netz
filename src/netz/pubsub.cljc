@@ -123,7 +123,7 @@
   (if-not (handshake-complete? peer topic)
     (swap! pending update topic
            (fn [q] (let [q (conj (vec q) payload)]
-                     (if (> (count q) max-pending) (subvec q 1) q))))
+                     (if (> (count q) max-pending) (vec (subvec q 1)) q))))
     ;; Drain first, and AWAIT it, so a payload arriving just after the
     ;; handshake completed cannot overtake the buffer it was queued behind.
     (go-try S

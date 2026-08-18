@@ -118,6 +118,10 @@
    ;; evicted range is that very old messages may be accepted twice, which is
    ;; harmless for idempotent payloads.
    :max-seen-ranges 64
+   ;; Distinct (origin, epoch) pairs retained in `:seen` and `:store-floor`.
+   ;; Bounding ranges per key is not bounding the number of keys, and both
+   ;; parts of a key are attacker-chosen.
+   :max-origins 256
    ;; Cap on origins described in one :have digest.
    :max-summary-origins 64
    ;; Bound on the retained delivery log. Real integrations hand off to the
@@ -228,16 +232,39 @@
   [state origin epoch seq-no]
   (is*/contains? (get-in state [:seen origin epoch] is*/empty) seq-no))
 
+(defn- evict-origins
+  "Bound `path` to `cap` KEYS.
+
+  `:max-seen-ranges` bounds ranges within one (origin, epoch); nothing bounded
+  how many such pairs exist. Both are attacker-chosen -- an identity costs one
+  keygen and the epoch is whatever the publisher says -- so the map grew
+  without limit, and `:store-floor` was additionally republished in every
+  digest we sent.
+
+  Evicting a seen entry can cost one duplicate delivery later, which
+  dissemination already tolerates. Unbounded growth it does not."
+  [state path cap]
+  (let [m (get-in state path)]
+    (if (and cap (> (count m) cap))
+      ;; `(first (keys …))` rather than `sort`: origins are peer ids and epochs
+      ;; are ints today, but the map is wire-shaped and a heterogeneous key set
+      ;; would make `sort` throw at exactly the moment the cap is reached.
+      (assoc-in state path (dissoc m (key (first m))))
+      state)))
+
 (defn mark-seen
   [state origin epoch seq-no]
-  (let [{:keys [max-seen-ranges]} (:opts state)
+  (let [{:keys [max-seen-ranges max-origins]} (:opts state)
         updated (is*/add (get-in state [:seen origin epoch] is*/empty) seq-no)
         ;; A sparse publisher fragments the set one range per message. Evict
         ;; the lowest, which keeps the recent end contiguous.
         trimmed (if (and max-seen-ranges (> (is*/count-ranges updated) max-seen-ranges))
                   (vec (drop (- (is*/count-ranges updated) max-seen-ranges) updated))
                   updated)]
-    (assoc-in state [:seen origin epoch] trimmed)))
+    (-> state
+        (assoc-in [:seen origin epoch] trimmed)
+        (evict-origins [:seen] max-origins)
+        (evict-origins [:seen origin] max-origins))))
 
 (defn summary
   "A digest of what we hold: `{origin {epoch interval-set}}`, capped.
@@ -297,13 +324,15 @@
                   (assoc-in [:store k] msg)
                   (update :store-order conj k))
         ;; A first message for an (origin, epoch) sets the floor there.
-        state (update-in state [:store-floor [origin epoch]]
-                         (fn [f] (if f (min f seq) seq)))]
+        state (-> state
+                  (update-in [:store-floor [origin epoch]]
+                             (fn [f] (if f (min f seq) seq)))
+                  (evict-origins [:store-floor] (:max-origins (:opts state))))]
     (if (> (count (:store-order state)) store-size)
       (let [[eo ee es :as evict] (first (:store-order state))]
         (-> state
             (update :store dissoc evict)
-            (update :store-order subvec 1)
+            (update :store-order #(vec (subvec % 1)))
             ;; The floor rises as history falls out. Below it we cannot help,
             ;; and saying so is what stops the asking.
             (update-in [:store-floor [eo ee]] (fn [f] (max (or f 0) (inc es))))))
@@ -423,7 +452,7 @@
           delivered (conj (:delivered state) payload)]
       (-> state
           (assoc :delivered (if (> (count delivered) max-delivered)
-                              (subvec delivered 1)
+                              (vec (subvec delivered 1))
                               delivered))
           (update-in [:stats :delivered] inc)))
     state))
@@ -631,9 +660,15 @@
                             [[:state-sync from (vec fresh)]])))})
 
         :want
-        (let [{:keys [max-want-ranges]} (:opts state)
-              msgs (mapcat #(stored state %)
-                           (take max-want-ranges (:ranges payload)))]
+        ;; `:max-want` bounds the FRAME, not each range. Applied per range it
+        ;; multiplied by `:max-want-ranges`, so one 683-byte request bought
+        ;; ~2 MB of response -- a measured ~3000x amplifier, from a peer that
+        ;; need only keep asking. The per-range cap inside `stored` survives as
+        ;; a harmless inner bound.
+        (let [{:keys [max-want-ranges max-want]} (:opts state)
+              msgs (take max-want
+                         (mapcat #(stored state %)
+                                 (take max-want-ranges (:ranges payload))))]
           {:state (update-in state [:stats :want-served] + (count msgs))
            :actions (vec (for [m msgs]
                            [:send from (assoc m :hops 0 :repair? true)]))})

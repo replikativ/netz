@@ -641,3 +641,25 @@
           [_ ordered] (m/candidates s 0)]
       (is (= :fresh-relevant (first ordered))
           "relevance is the primary key, by design"))))
+
+(deftest a-stranger-cannot-displace-a-proven-anchor
+  ;; The eviction comment promised "only if the newcomer is not itself the
+  ;; worst thing available" and the code did not check it, so a book of proven
+  ;; anchors was displaced one entry per gossiped record. Since the book is
+  ;; persisted, a poisoned one survives restarts -- the sticky/anchor-peer
+  ;; mitigation becomes a sticky-attacker one, which is the eclipse it exists
+  ;; to prevent.
+  (let [full (reduce (fn [st i]
+                       (let [pid (keyword (str "anchor" i))]
+                         (-> st
+                             (m/learn [{:peer-id pid :addresses ["ws://a"] :group "g"}])
+                             ;; proven: it connected and worked
+                             (assoc-in [:book pid :proven?] true)
+                             (assoc-in [:book pid :attempts] 0))))
+                     (m/make-state :me [] {:max-book 8 :max-per-group 100})
+                     (range 8))
+        before (set (keys (:book full)))
+        after (m/learn full [{:peer-id :stranger :addresses ["ws://x"] :group "g"}])]
+    (is (= before (set (keys (:book after))))
+        "an unproven stranger must not evict a proven anchor")
+    (is (not (contains? (:book after) :stranger)))))
