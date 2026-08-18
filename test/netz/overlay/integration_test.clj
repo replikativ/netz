@@ -225,17 +225,27 @@
           out (chan 16)
           _ ((rt/middleware {:ctx ctx :identity honest-kp :addresses [] :seq-no 0})
              [S peer [in out]])
-          ;; Drain what the middleware sends, or its hello blocks the loop.
+          ;; The middleware announces itself on construction; its hello carries
+          ;; the challenge we must answer to be registered.
+          our-hello (<?? S out)
+          ;; Then drain, or the rest of what it sends blocks the loop.
           _ (go-loop [] (when (<! out) (recur)))
 
           gossip (fn [origin] {:type :gossip :origin origin :epoch 0 :seq 1
                                :topic :db/roots :hops 0 :payload {:root "x"}})]
 
+      (is (string? (:nonce our-hello))
+          "the hello must carry a challenge, or a record is replayable")
+
       ;; The attacker completes a perfectly valid identity handshake — it is a
-      ;; real peer, not an outsider.
+      ;; real peer, not an outsider, and it holds its own key. That is the
+      ;; point: the defence being tested is not "keep strangers out".
       (>!! in {:type rt/hello-type
                :record (id/record->wire
-                        (<?? S (id/sign-record attacker-kp [] 0)))})
+                        (<?? S (id/sign-record attacker-kp [] 0)))
+               :nonce (id/new-nonce)})
+      (>!! in {:type rt/proof-type
+               :sig (<?? S (id/sign-challenge attacker-kp (:nonce our-hello)))})
       (is (wait-for 3000 #(contains? (rt/connections peer) attacker-id))
           "the attacker never connected, so the test proves nothing")
 
@@ -284,3 +294,55 @@
       (is (< (:epoch a) (:epoch b)))
       (is (= peer-id (:peer-id a) (:peer-id b))
           "identity must survive a restart; the epoch must not"))))
+
+(deftest a-captured-hello-cannot-be-replayed
+  ;; Before the challenge, an identity record was signed only over constants of
+  ;; the identity — genesis, key, seq-no, addresses — so it was replayable by
+  ;; anyone who had ever seen one. Capture a peer's hello, send it verbatim to
+  ;; somebody else, and be registered as that peer: their membership, content
+  ;; and repair frames all become attributable to you. Gossip signatures still
+  ;; stopped you forging their publishes, which is why this was easy to miss.
+  (let [victim-kp (<?? S (id/generate-identity))
+        victim-id (id/peer-id (:genesis victim-kp))
+        victim-record (id/record->wire (<?? S (id/sign-record victim-kp [] 0)))
+        our-kp (<?? S (id/generate-identity))
+        peer (atom {})
+        ctx (rt/make-runtime {:id :me :state (overlay/make-state :me {})
+                              :effects {:send! (fn [_ _]) :connect! (fn [_ _ _])
+                                        :disconnect! (fn [_]) :schedule! (fn [_ _])}})
+        in (chan 16)
+        out (chan 16)
+        _ ((rt/middleware {:ctx ctx :identity our-kp :addresses [] :seq-no 0})
+           [S peer [in out]])
+        our-hello (<?? S out)]
+    (go-loop [] (when (<! out) (recur)))
+
+    (testing "the victim's record alone does not register it"
+      ;; This is the whole attack: the attacker HAS the record and nothing else.
+      (>!! in {:type rt/hello-type :record victim-record :nonce (id/new-nonce)})
+      (<?? S (timeout 400))
+      (is (not (contains? (rt/connections peer) victim-id))
+          "a replayed record must not bind the connection to that peer"))
+
+    (testing "and a proof signed by the wrong key does not either"
+      ;; The attacker answers our challenge with the only key it actually has.
+      (>!! in {:type rt/proof-type
+               :sig (<?? S (id/sign-challenge our-kp (:nonce our-hello)))})
+      (<?? S (timeout 400))
+      (is (not (contains? (rt/connections peer) victim-id))
+          "the proof must be checked against the record's key, not any key"))
+
+    (testing "a proof over a DIFFERENT nonce does not either"
+      ;; Even the real victim's proof, captured from another connection, is
+      ;; worthless here — which is what makes the nonce load-bearing.
+      (>!! in {:type rt/proof-type
+               :sig (<?? S (id/sign-challenge victim-kp (id/new-nonce)))})
+      (<?? S (timeout 400))
+      (is (not (contains? (rt/connections peer) victim-id))
+          "a proof is only valid for the challenge WE chose"))
+
+    (testing "but the real holder of the key registers"
+      (>!! in {:type rt/proof-type
+               :sig (<?? S (id/sign-challenge victim-kp (:nonce our-hello)))})
+      (is (wait-for 3000 #(contains? (rt/connections peer) victim-id))
+          "possession of the key on THIS connection is what registration means"))))

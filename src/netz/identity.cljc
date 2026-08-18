@@ -369,6 +369,60 @@
         (close! ch)))
     ch))
 
+(defn challenge-bytes
+  "Canonical bytes proving possession of an operational key for ONE connection.
+
+  An identity record is signed over the genesis, key, seq-no and addresses —
+  all of which are constants of the identity, none of which is specific to a
+  connection. So a record is perfectly replayable: capture a peer's hello, send
+  it verbatim to somebody else, and be registered as that peer. Signatures on
+  gossip still stop you forging its publishes, but membership, content and
+  repair frames all become attributable to it.
+
+  A nonce the VERIFIER chose is what closes that. Signing it proves the peer
+  holds the key now, on this connection, rather than that it once published a
+  record. Canonicalised with `edn-hash` for the same reason `record-bytes` is."
+  [nonce]
+  (seq->bytes (edn-hash ["netz/identity/challenge/v1" nonce])))
+
+(defn new-nonce
+  "A fresh 32-byte challenge, hex-encoded so it survives every codec.
+
+  Unpredictable, not merely unique: a nonce a peer can guess is a nonce it can
+  pre-sign."
+  []
+  (bytes->hex (random-bytes 32)))
+
+(defn sign-challenge
+  "Sign `nonce` with the identity's operational key. Channel of a hex signature."
+  [{:keys [operational]} nonce]
+  (let [ch (chan 1)]
+    (async/go
+      (let [sig (async/<! (sign (:private operational) (challenge-bytes nonce)))]
+        (async/put! ch (bytes->hex sig))
+        (close! ch)))
+    ch))
+
+(defn verify-challenge
+  "Does `sig-hex` prove the holder of `record`'s key signed `nonce`?
+
+  Channel of true/false. Garbage yields false rather than throwing, like
+  `verify` — a peer must not be able to make us throw by sending nonsense."
+  [record nonce sig-hex]
+  (let [ch (chan 1)]
+    (async/go
+      (async/put!
+       ch
+       (boolean
+        (try
+          (and (string? sig-hex) (string? nonce)
+               (async/<! (verify (:netz/public-key record)
+                                 (challenge-bytes nonce)
+                                 (hex->bytes sig-hex))))
+          (catch #?(:clj Exception :cljs js/Error) _ false))))
+      (close! ch))
+    ch))
+
 (defn record->wire
   "Identity record with its byte fields hex-encoded.
 

@@ -78,12 +78,21 @@
 ;; untouched.
 
 (def frame-type :netz.overlay/frame)
+(def proof-type
+  "Second leg of the handshake: proof that the peer holds its key NOW.
+
+  A record alone is replayable -- see `netz.identity/challenge-bytes`. This
+  carries a signature over the nonce WE chose, so registration means \"this
+  connection is held by that identity\" rather than \"somebody showed me a
+  record that identity once published\"."
+  :netz.overlay/hello-proof)
+
 (def hello-type :netz.overlay/hello)
 
 (defn frame [payload] {:type frame-type :payload payload})
 
 (defn overlay-message? [m]
-  (and (map? m) (#{frame-type hello-type} (:type m))))
+  (and (map? m) (#{frame-type hello-type proof-type} (:type m))))
 
 ;; =============================================================================
 ;; Runtime
@@ -472,10 +481,15 @@
   (fn [[S peer [in out]]]
     (let [pass-in (chan)
           pass-out (chan)
-          ;; Set once this connection's hello verifies; nil until then, which
+          ;; Set once this connection's PROOF verifies; nil until then, which
           ;; is exactly the "only frames on an identified connection become
           ;; events" rule.
-          conn-peer-id (atom nil)]
+          conn-peer-id (atom nil)
+          ;; The challenge we chose for this connection. A peer's proof is
+          ;; worth nothing unless it answers a nonce we picked ourselves.
+          our-nonce (id/new-nonce)
+          ;; Their record, verified but not yet proven live.
+          pending-record (atom nil)]
 
       ;; Announce ourselves immediately. Both ends do this unconditionally, so
       ;; the handshake needs no notion of who dialled whom.
@@ -483,7 +497,9 @@
               (let [record (<? S (id/sign-record identity addresses (or seq-no 0)))]
                 ;; Hex-encoded: the default codec is pr-str/edn, which cannot
                 ;; round-trip a byte array. See `netz.identity/record->wire`.
-                (>? S out {:type hello-type :record (id/record->wire record)})))
+                (>? S out {:type hello-type
+                           :record (id/record->wire record)
+                           :nonce our-nonce})))
 
       (go-loop-super S [m (<? S in)]
                      (if m
@@ -499,13 +515,24 @@
                            (cond
                              (= hello-type (:type m))
                              (let [record (id/wire->record (:record m))]
-                               (if (and record (<? S (id/verify-record record)))
+                               ;; A verified record says who they CLAIM to be.
+                               ;; It does not say they are here: it is signed
+                               ;; over constants of the identity, so anyone who
+                               ;; has seen it can replay it. Hold it, and
+                               ;; answer their challenge; registration waits
+                               ;; for them to answer ours.
+                               (when (and record (<? S (id/verify-record record))
+                                          (string? (:nonce m)))
+                                 (reset! pending-record record)
+                                 (>? S out {:type proof-type
+                                            :sig (<? S (id/sign-challenge identity
+                                                                          (:nonce m)))})))
+
+                             (= proof-type (:type m))
+                             (when-let [record @pending-record]
+                               (when (<? S (id/verify-challenge record our-nonce (:sig m)))
                                  (reset! conn-peer-id
-                                         (register! S peer (:netz/peer-id record) out))
-                               ;; An unverifiable hello is dropped rather than
-                               ;; registered. Registering it would let anyone
-                               ;; claim any peer id simply by asserting it.
-                                 nil))
+                                         (register! S peer (:netz/peer-id record) out))))
 
                              (= frame-type (:type m))
                              ;; The connection's own peer id, remembered when

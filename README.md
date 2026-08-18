@@ -14,17 +14,18 @@ the browser.
 > code. An adversarial review reproduced, empirically, several ways for **one
 > frame from any connected peer** to permanently kill a node's overlay:
 >
-> - no wire field is type-checked, and the event loop terminates on any
->   handler exception, so a malformed `:have`, `:want`, `:interests` or
->   `:gossip` stops a peer for good;
-> - `:hops` is deliberately outside the signature so relays can increment it,
->   which means **any relay can corrupt a validly signed message** and take
->   down everything downstream of it;
-> - a message signed with `:seq nil` is forwarded to every peer before it
->   poisons the sender's seen-set, so two frames take down a neighbourhood;
-> - the identity handshake has no nonce or channel binding, so a captured
->   hello can be **replayed to impersonate a peer**;
-> - repair (`:want`) is a measured ~3000× amplifier.
+> Several have since been fixed — a schema gate at the ingress plus a guard on
+> both event loops closed the one-frame remote kills, and the identity
+> handshake now carries a challenge so a captured hello cannot be replayed.
+> What is left:
+>
+> - repair (`:want`) is a measured ~3000× amplifier: `:max-want` is applied
+>   per range rather than per frame;
+> - `:seen`, `:store-floor` and `:escalated` are bounded per key but not in
+>   the NUMBER of keys, and identities cost one keygen;
+> - the address book evicts proven anchors for unproven strangers, and a
+>   gossiped entry with no `:group` bypasses diversity entirely;
+> - three ring buffers use `subvec`, which retains every element ever held.
 >
 > Run it between peers you control. Do not put it on a public network yet.
 > Hardening these is the current work; see `.internal/` for the review record.
