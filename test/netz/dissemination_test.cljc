@@ -69,7 +69,7 @@
 
 (deftest authorization-is-checked-at-every-hop
   (testing "a refused message is neither delivered nor forwarded"
-    (let [s (-> (d/make-state :me #{:secret} {:authorize-fn (fn [topic _] (not= :secret topic))})
+    (let [s (-> (d/make-state :me #{:secret} {:authorize (fn [{:keys [topic]}] (not= :secret topic))})
                 (assoc :peers {:p1 {:interests nil :relay? true}}))
           {s' :state actions :actions}
           (d/handler s {:type :message :from :p0
@@ -345,18 +345,6 @@
       (testing "and the principal is the verified origin"
         (is (= :alice (:principal (first @seen))))
         (is (= :publish (:op (first @seen))))))))
-
-(deftest legacy-authorize-fn-still-works
-  (testing "the historical (fn [topic origin]) shape is unchanged"
-    (let [s (-> (d/make-state :me #{:t}
-                              {:authorize-fn (fn [topic _origin] (not= :secret topic))})
-                (assoc :peers {:p1 {:interests nil :relay? true}}))
-          {denied :state} (d/handler s {:type :message :from :p0
-                                        :payload {:type :gossip :topic :secret
-                                                  :origin :o :epoch 0 :seq 1
-                                                  :hops 0 :payload "x"}}
-                                     {:now 0})]
-      (is (= 1 (get-in denied [:stats :unauthorized]))))))
 
 (deftest a-new-subscriber-catches-up-without-waiting-for-a-timer
   (testing "the backlog arrives on connect, not on the next digest tick"

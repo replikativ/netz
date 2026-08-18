@@ -50,7 +50,7 @@
   decision that should be forced by an actual threat, not by symmetry with
   another system."
   (:require [hasch.core :refer [edn-hash]]
-            [netz.authorize :as authz]
+            [kabel.authorize :as authz]
             [netz.topics :as topics]
             [netz.identity :as id]
             [netz.interval-set :as is*]
@@ -130,15 +130,17 @@
    :max-delivered 1024
    ;; Authorization at EVERY hop.
    ;;
-   ;; `:authorize` is `(fn [{:keys [op principal topic payload]}] -> truthy)` —
-   ;; see `netz.authorize`. `:principal` is the VERIFIED origin peer id, which
-   ;; is the principal a self-certifying network actually has, and `:payload`
-   ;; is present so a policy can answer "may this key set the root of *that*
-   ;; database" rather than only "may it publish on this topic".
+   ;; `:authorize` — `(fn [{:keys [op principal topic payload]}] -> truthy)`,
+   ;; the shape defined by `kabel.authorize`.
    ;;
-   ;; `:authorize-fn` is the legacy `(fn [topic origin])` and still works.
-   :authorize nil
-   :authorize-fn nil
+   ;; `:principal` is the VERIFIED origin peer id, which is the principal a
+   ;; self-certifying network actually has. `:payload` is present so a policy
+   ;; can answer "may this key set the root of *that* database" rather than
+   ;; only "may it publish on this topic".
+   ;;
+   ;; One option, one shape. There is deliberately no positional variant: netz
+   ;; has never been released, so there is no compatibility to keep, and a
+   ;; second spelling would be a divergence invented rather than inherited.
 
    ;; --- Dormant operator ------------------------------------------------
    ;; A relay carries other people's traffic on its operator's behalf. When
@@ -459,10 +461,7 @@
 
 (defn- authorized?
   [state topic origin payload]
-  ((authz/gate (:opts state)
-               {:op :publish
-                :legacy-keys [:authorize-fn]
-                :legacy-adapter authz/dissemination-legacy})
+  ((authz/gate (:opts state) {:op :publish})
    {:principal origin :topic topic :payload payload}))
 
 (defn- accept-and-forward
