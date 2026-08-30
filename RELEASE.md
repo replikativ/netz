@@ -19,8 +19,10 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       profile commit, and exercised with fenced-root and join-semilattice
       reference profiles.
 - [x] A pure per-profile apply owner separates admission from successful
-      application, serializes snapshot/live effects, bounds item/byte backlog,
-      and advances only application-committed frontiers.
+      application, serializes snapshot/live effects, bounds item/byte and
+      duplicate-receipt backlog, fences apply and sync completions by
+      generation/owner attempt, enforces portable integer and frontier bounds,
+      and advances only locally bound, application-committed frontiers.
 - [x] An optional sibling-workspace gate composes a real Urd/Raft fence with a
       Datahike commit root and heals durable Yggdrasil G-Sets through Spindel's
       delta hook, without leaking local roots into the artifact.

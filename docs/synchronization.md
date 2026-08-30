@@ -36,11 +36,30 @@ and the overlay runtime.
 `netz.apply-owner` models the other half of the boundary: one generation of
 one topic/profile. It distinguishes network admission from profile application,
 allows one mutation in flight, admits only the selected live transport, and
-advances `(origin, epoch, topic)` frontiers only after literal application
-success. Snapshot capture waits for an in-flight mutation; commit subsumes the
-covered prefix, drains the contiguous suffix, and only then publishes ready.
-Capacity or application failure moves the owner to `desynchronized` and emits
-one state-sync request instead of dropping an item and continuing.
+advances `(origin, epoch, topic)` frontiers only after exact application success
+(`{:ok true}` with no `:error` key). Apply operations are fenced by owner
+generation. Snapshot attempts have distinct session IDs, capture waits for an
+in-flight mutation, receive an owner-minted attempt number, and only the
+matching local profile operation may return a committed snapshot frontier. A
+network frame is never itself a commit event. Sequence and epoch values stay
+inside JavaScript's exact unsigned-integer range so JVM and JS owners cannot
+disagree about adjacency.
+Commit subsumes the covered prefix, drains the contiguous suffix, and only then
+publishes ready. Capacity or application failure moves the owner out of live
+service instead of dropping an item and continuing; abort and terminal failure
+settle every retained receipt. Closed and failed generations cannot be revived.
+
+The profile adapter is the trust boundary for snapshot frontiers: it returns
+only frontiers actually represented by the state it durably committed. The
+apply owner validates their shape and topic and correlates them with its local
+profile-operation ID. It deliberately does not accept the legacy-looking
+`:sync/commit` event, because accepting remote frontier claims would permit a
+peer to suppress buffered publications without applying their state.
+Publication byte counts and committed-frontier encoded byte counts are
+mandatory; item, byte, stream, and duplicate-receipt limits bound retained
+state. A direct/v0 correctness failure settles and retires that generation. It
+never starts recovery on the connection being retired; a replacement owner
+must begin the next sync attempt.
 
 The current Kabel adapter maps this to `PSyncStrategy`:
 

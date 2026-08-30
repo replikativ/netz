@@ -40,9 +40,10 @@ traffic amplification, and peak in-flight bounds.
 
 The profile apply boundary is also a pure machine. Its schedule tests cover
 snapshot/live cuts, per-stream reordering, slow application, item/byte
-capacity, exact success values, stale generations, transport exclusivity, and
-1,000 independent owners without sockets. Runtime tests then verify the async
-effect runner rather than trying to simulate threads.
+capacity, bounded duplicate waiters, exact success values, stale generations,
+reordered and aborted sync attempts, foreign-topic inputs, transport
+exclusivity, and 1,000 independent owners without sockets. Runtime tests then
+verify the async effect runner rather than trying to simulate threads.
 
 ## Deliberate limits
 
