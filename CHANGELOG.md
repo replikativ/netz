@@ -21,6 +21,9 @@ may make incompatible protocol changes.
 - Added shrinkable fault schedules, true crash/durable-restart semantics,
   duplication, in-flight and bandwidth accounting, a 1,000-peer scale gate,
   and a pinned JVM/JavaScript simulation fingerprint.
+- Added a pure bounded `sync/open`/`chunk`/`ack`/`done`/`abort` session machine,
+  atomic transport-frontier commits, and executable fenced-root and
+  join-semilattice reference profiles.
 - Added a strict RFC 8949 deterministic-CBOR draft profile, shared JVM/JS
   fixture, and dependency-free Python conformance codec.
 - Replaced ignored internal-design references with public release and

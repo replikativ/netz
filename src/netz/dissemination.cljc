@@ -370,6 +370,21 @@
   [state]
   (:store-floor state))
 
+(defn frontiers
+  "Highest received sequence per ordered stream, optionally restricted to one
+  topic. A state-sync responder snapshots these alongside application state so
+  the receiver knows which buffered live prefix the checkpoint subsumes."
+  ([state] (frontiers state nil))
+  ([state only-topic]
+   (into {}
+         (for [[origin epochs] (:seen state)
+               [epoch streams] epochs
+               [topic iset] streams
+               :when (or (nil? only-topic) (= only-topic topic))
+               :let [through (is*/maximum iset)]
+               :when (some? through)]
+           [[origin epoch topic] through]))))
+
 (defn stored
   "Messages held for `range`, capped at `:max-want` served and
   `:max-want-span` examined.

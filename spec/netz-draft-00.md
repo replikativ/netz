@@ -226,7 +226,8 @@ Either peer may open a session:
 sync/open  {session: bytes16, topic: text, profile: text, summary: bytes}
 sync/chunk {session: bytes16, index: uint64, data: bytes}
 sync/ack   {session: bytes16, through: uint64}
-sync/done  {session: bytes16, checkpoint: bytes}
+sync/done  {session: bytes16, count: uint64, topic: text,
+            checkpoint: bytes, frontiers: StreamFrontier}
 sync/abort {session: bytes16, code: text}
 ~~~
 
@@ -235,7 +236,8 @@ the named profile. A receiver MUST apply chunks in index order and acknowledge
 bounded batches. `done` becomes visible atomically through `SyncProfile.commit`;
 failure before commit leaves the previous checkpoint visible.
 
-Two initial profiles are planned:
+The reference implementation includes executable models of two initial
+profiles:
 
 - `netz/root-log/1`: a single fenced writer publishes signed monotonically
   increasing roots over a content DAG. A summary carries writer id, Raft term

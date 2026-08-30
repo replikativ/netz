@@ -506,7 +506,14 @@
      :content/want-tree {:required {:root some? :have (bounded-coll? 4096)}}
      :content/tree-batch {:required {:root some? :nodes nodes?}}
      :content/tree-done {:required {:root some? :count int?
-                                    :frontier (bounded-coll? 4096)}}}))
+                                    :frontier (bounded-coll? 4096)}}
+     :sync/open {:required {:session some? :topic some? :profile string?
+                            :summary (constantly true)}}
+     :sync/chunk {:required {:session some? :index int? :data (constantly true)}}
+     :sync/ack {:required {:session some? :through int?}}
+     :sync/done {:required {:session some? :count int? :topic some?
+                            :checkpoint (constantly true) :frontiers horizon?}}
+     :sync/abort {:required {:session some? :code some?}}}))
 
 (defn well-formed?
   "Does `payload` satisfy the bounded schema for its known wire type?"
@@ -1029,6 +1036,16 @@
   (submit! ctx {:type :message
                 :from :app
                 :payload {:type :publish :topic topic :payload payload}}))
+
+(defn start-sync!
+  "Open a transport-independent synchronization session. Returns the same
+  immediate bounded-queue acceptance boolean as `publish!`."
+  [{:keys [ctx]} peer topic profile & [session]]
+  (submit! ctx {:type :message
+                :from :app
+                :payload (cond-> {:type :sync/start :peer peer :topic topic
+                                  :profile profile}
+                           session (assoc :session session))}))
 
 (defn provide!
   "Make an immutable content-addressed `value` servable under `key`.

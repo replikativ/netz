@@ -445,6 +445,12 @@
     ;; exactly once per unrepairable gap, rather than every tick.
     (update-in sim [:stats :state-syncs] (fnil inc 0))
 
+    :sync-committed
+    ;; The synchronization machine already committed its staged application
+    ;; value atomically. Overlay composition consumes the attached transport
+    ;; frontiers; a sync-only simulation records the boundary.
+    (update-in sim [:stats :sync-committed] (fnil inc 0))
+
     :persist
     (let [[k v] args
           generation (get-in sim [:nodes from :generation])]

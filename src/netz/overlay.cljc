@@ -17,7 +17,8 @@
             [netz.topics]
             [netz.dissemination :as d]
             [netz.membership :as m]
-            [netz.sim.rng :as rng]))
+            [netz.sim.rng :as rng]
+            [netz.sync :as sync]))
 
 (defn make-state
   "State for an overlay node.
@@ -30,9 +31,10 @@
   - `:dissemination` — options passed to `netz.dissemination/make-state`
   - `:content`       — options passed to `netz.content/make-state`
   - `:blocks`        — content we hold and can serve, `{key value}`
+  - `:sync`          — profiles, application values, and sync session limits
   - `:carries`       — topic RANGES we relay, `#{[]}` (everything) by default
   - `:relay?`        — legacy boolean; false means carry nothing but our own"
-  [id {:keys [addresses seeds topics membership dissemination content blocks
+  [id {:keys [addresses seeds topics membership dissemination content blocks sync
               relay? carries]
        :or {seeds [] topics #{} relay? true}}]
   {:id id
@@ -55,7 +57,8 @@
                                     carries (netz.topics/normalise carries)
                                     relay? #{netz.topics/everything}
                                     :else #{}))
-   :content (c/make-state id (or blocks {}) (or content {}))})
+   :content (c/make-state id (or blocks {}) (or content {}))
+   :sync (netz.sync/make-state id (or sync {}))})
 
 (defn handler
   [state event ctx]
@@ -71,13 +74,31 @@
 
         cs (assoc (:content state) :rng (:rng ds') :id (:id state))
         [cs c-sync] (c/sync-peers cs peers)
-        {cs' :state ca :actions} (c/handler cs event ctx)]
+        {cs' :state ca :actions} (c/handler cs event ctx)
+
+        ss (:sync state)
+        topic (get-in event [:payload :topic])
+        {ss' :state sa :actions}
+        (sync/handler ss event (assoc ctx :frontiers (d/frontiers ds' topic)))
+
+        ;; A sync profile commits application state first. Its transport
+        ;; frontiers then advance dissemination's ordered application cursor,
+        ;; releasing only the newer contiguous live suffix.
+        [ds'' committed sa']
+        (reduce (fn [[ds actions external] action]
+                  (if (= :sync-committed (first action))
+                    (let [[ds released] (d/sync-committed ds (second action))]
+                      [ds (into actions released) external])
+                    [ds actions (conj external action)]))
+                [ds' [] []]
+                sa)]
     {:state (assoc state
                    :membership (dissoc ms' :rng)
-                   :dissemination (dissoc ds' :rng)
+                   :dissemination (dissoc ds'' :rng)
                    :content (dissoc cs' :rng)
+                   :sync ss'
                    :rng (:rng cs'))
-     :actions (vec (concat ma d-sync da c-sync ca))}))
+     :actions (vec (concat ma d-sync da c-sync ca sa' committed))}))
 
 ;; =============================================================================
 ;; Inspection
@@ -98,3 +119,9 @@
   (c/have? (:content state) k))
 
 (defn blocks [state] (get-in state [:content :blocks]))
+
+(defn synced-value [state topic]
+  (sync/application (:sync state) topic))
+
+(defn sync-status [state topic]
+  (sync/status (:sync state) topic))

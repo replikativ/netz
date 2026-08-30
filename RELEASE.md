@@ -15,6 +15,9 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 - [x] Subtree sessions have deadlines and retry alternate providers.
 - [x] JVM, browser/Node, optional store, Python fixture and jar build are CI gates.
 - [x] A language-neutral draft and deterministic-CBOR fixture exist.
+- [x] Point-to-point sync sessions are pure, bounded, acknowledged, atomic at
+      profile commit, and exercised with fenced-root and join-semilattice
+      reference profiles.
 
 ## Required before exposing to untrusted peers
 

@@ -24,7 +24,7 @@ Clojure ecosystem.
 | Membership | Bounded peer exchange, dialing, backoff, and topology diversity |
 | Dissemination | Signed topic messages, deduplication, and bounded repair |
 | Content | Content-addressed block discovery and subtree transfer |
-| Synchronization | Point-to-point handoff to an application sync strategy |
+| Synchronization | Pure acknowledged sessions with application-defined profiles |
 | Runtime | Kabel/WebSocket integration, limits, lifecycle, and persistence hooks |
 
 Discovery is not authority. Netz may find a peer or content provider, but

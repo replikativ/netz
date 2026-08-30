@@ -28,6 +28,11 @@ not an unbounded replay. Netz opens a point-to-point, acknowledged,
 backpressured synchronization session and delegates opaque summaries, chunks,
 application, and commit to a named profile.
 
+`netz.sync` is the pure session machine for `open`, ordered `chunk`, cumulative
+`ack`, atomic `done`, timeout, and `abort`. It limits concurrent sessions,
+chunks, and the unacknowledged window. The same handler runs under the simulator
+and the overlay runtime.
+
 The current Kabel adapter maps this to `PSyncStrategy`:
 
 | Portable profile operation | Kabel operation |
@@ -44,7 +49,7 @@ subsumed; the newer contiguous suffix is then released. Overflow marks the topic
 desynchronized and reruns the handshake; message repair cannot recover a value
 that dissemination already marked seen.
 
-## Initial profiles
+## Reference profiles
 
 ### `netz/root-log/1`
 
@@ -54,14 +59,18 @@ accepts only a root with a valid publisher binding and a monotonically newer
 fence/index. Missing immutable blocks are then fetched by content id.
 
 This is single-writer application state even though transport and storage are
-peer-to-peer.
+peer-to-peer. `netz.sync.root-log` implements fence/index ordering and accepts
+an application-supplied publisher/signature verifier. The stack adapter still
+has to bind this record to Urd and the independently signed root format.
 
 ### `netz/join-semilattice/1`
 
 For Spindel/Yggdrasil state. A summary carries a causal frontier; chunks carry
 missing deltas or a snapshot. Application is commutative, associative, and
 idempotent, so multiple authorized writers can converge without leader
-selection.
+selection. `netz.sync.join-semilattice` provides an executable set-based
+reference model; Spindel/Yggdrasil should replace its full-set summary with
+their causal frontier and delta/snapshot representation.
 
 ## Encryption
 

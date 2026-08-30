@@ -261,6 +261,8 @@
       {:type :interests :topics 5}
       {:type :content/found :providers 5}
       {:type :content/want-tree :have 5}
+      {:type :sync/open :session :s :topic :t :summary {}}
+      {:type :sync/chunk :session :s :index "0" :data {}}
       {:type :dial :addresses 42}
       {:type :dial-refused :peers 42}
       {:type :peers :peers []}
@@ -272,6 +274,13 @@
       {:type :have :summary {:o {0 {:t [[0 5]]}}} :horizon {[:o 0 :t] 3}}
       {:type :want :ranges [{:topic :t :lo 0 :hi 5}]}
       {:type :gossip :origin :o :epoch 0 :seq 1 :hops 2 :topic :t :payload "x"}
+      {:type :sync/open :session :s :topic :t
+       :profile "netz/join-semilattice/1" :summary {}}
+      {:type :sync/chunk :session :s :index 0 :data {}}
+      {:type :sync/ack :session :s :through 0}
+      {:type :sync/done :session :s :count 1 :topic :t
+       :checkpoint {} :frontiers {[:o 0 :t] 3}}
+      {:type :sync/abort :session :s :code :timeout}
       {:type :interests :topics #{:t} :carries #{}}
       {:type :peers :entries []}))
 
