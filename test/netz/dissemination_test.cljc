@@ -643,6 +643,14 @@
                                        {:now 0})]
         (is (= #{:t} (:topics state)))))
 
+    (testing "a remote peer cannot cancel our subscriptions"
+      (let [{:keys [state]} (d/handler me {:type :message
+                                           :from :attacker
+                                           :payload {:type :unsubscribe
+                                                     :topics #{:t}}}
+                                       {:now 0})]
+        (is (= #{:t} (:topics state)))))
+
     (testing "but our own application can"
       (let [{:keys [state]} (d/handler me {:type :message
                                            :from :app
@@ -679,6 +687,20 @@
                                                {:now 0})]
         (is (= #{:t} (:topics state)))
         (is (empty? actions))))))
+
+(deftest unsubscribe-withdraws-interest-and-announces-the-new-set
+  (let [s (-> (d/make-state :me #{:t :keep})
+              (assoc :peers {:a {:interests #{} :carries #{}}
+                             :b {:interests #{} :carries #{}}}))
+        {:keys [state actions]}
+        (d/handler s {:type :message
+                      :from :app
+                      :payload {:type :unsubscribe :topics #{:t}}}
+                   {:now 0})
+        interests (filter #(= :interests (:type (nth % 2))) actions)]
+    (is (= #{:keep} (:topics state)))
+    (is (= #{:a :b} (set (map second interests))))
+    (is (every? #(= #{:keep} (:topics (nth % 2))) interests))))
 
 (deftest attacker-controlled-collections-are-bounded-in-KEYS
   ;; Bounding ranges per key is not bounding the number of keys. Both halves of

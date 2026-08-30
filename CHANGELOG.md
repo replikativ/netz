@@ -18,7 +18,11 @@ may make incompatible protocol changes.
   peer/topic serializer, and rejected identity-less direct live frames while
   the overlay owns a topic.
 - Made horizon recovery drain the old Kabel v0 generation before subscribing
-  again, and stop applying later deltas while a topic is desynchronized.
+  again, serialize/coalesce recovery attempts under one awaited per-topic
+  generation through actual snapshot drain, retain candidate-source ownership,
+  generation-fence buffered live values, expose terminal failure, and stop
+  applying later deltas while desynchronized. Subscribe, unsubscribe, recovery,
+  interest rollback, and shutdown now share one explicit lifecycle contract.
 - Added a portable pure profile-apply owner with transport exclusivity,
   item/byte and duplicate-receipt limits, exact apply receipts, snapshot/live
   serialization, generation- and owner-minted sync-attempt fencing, portable

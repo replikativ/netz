@@ -32,6 +32,14 @@
 
 (defn- done [v] (let [c (chan 1)] (put! c v) (close! c) c))
 
+(defn- activate-recovery-topic! [peer installed-subs topic opts]
+  (swap! @installed-subs assoc topic opts)
+  (swap! (get-in @peer [:pubsub :netz/recovery-control])
+         assoc-in [:topics topic]
+         {:active? true :intent-generation 1 :dirty-generation 0
+          :pending-sources #{} :gated? false
+          :status {:status :joining}}))
+
 (defn- recording-strategy
   "Records what it was handed. Deliberately the SAME implementation under both
   transports — the point is that it cannot tell them apart."
@@ -71,6 +79,83 @@
     (is (some? (:error result)))
     (is (= :netz/direct-live-disabled
            (:type (ex-data (:error result)))))))
+
+(deftest concurrent-subscribes-have-one-lifecycle-winner
+  (let [lock (doto (chan 1) (async/offer! :available))
+        control (atom {:topics {} :lifecycle-lock lock :stopped? false})
+        subs (atom {})
+        first-result (chan 1)
+        direct-calls (atom 0)
+        transport (pso/transport S (atom {}) :running subs (atom {})
+                                 (fn [& _]) control)]
+    (with-redefs [rt/subscribe-topics! (fn [_ _] true)
+                  pubsub/direct-subscribe!
+                  (fn [_ _ _]
+                    (swap! direct-calls inc)
+                    first-result)]
+      (let [winner ((:subscribe! transport) (atom {}) #{:t} {:owner :first})
+            _ (is (wait-for 1000 #(= 1 @direct-calls)))
+            loser ((:subscribe! transport) (atom {}) #{:t} {:owner :second})]
+        (<?? S (timeout 100))
+        (is (= 1 @direct-calls)
+            "the second call must wait outside Kabel's reservation")
+        (put! first-result {:ok true})
+        (is (= true (:ok (<?? S winner))))
+        (is (= :netz/already-subscribed (:error (<?? S loser))))
+        (is (= 1 @direct-calls))
+        (is (= :first (get-in @subs [:t :owner])))
+        (is (true? (get-in @control [:topics :t :active?])))))))
+
+(deftest a-failed-subscribe-rolls-back-overlay-interest
+  (let [lock (doto (chan 1) (async/offer! :available))
+        control (atom {:topics {} :lifecycle-lock lock :stopped? false})
+        subs (atom {})
+        withdrawn (atom [])
+        transport (pso/transport S (atom {}) :running subs (atom {})
+                                 (fn [& _]) control)]
+    (with-redefs [rt/subscribe-topics! (fn [_ _] true)
+                  rt/unsubscribe-topics-ordered! (fn [_ topics]
+                                                   (swap! withdrawn conj topics)
+                                                   (done true))
+                  pubsub/direct-subscribe! (fn [_ _ _]
+                                             (done {:error :no-owner}))]
+      (let [result (<?? S ((:subscribe! transport)
+                           (atom {}) #{:t} {:owner :failed}))]
+        (is (= :no-owner (:error result)))
+        (is (true? (:interest-rollback-accepted? result)))
+        (is (= [#{:t}] @withdrawn))
+        (is (empty? @subs))
+        (is (false? (get-in @control [:topics :t :active?])))))))
+
+(deftest stop-wins-over-a-simultaneously-ready-subscribe-result
+  (let [lock (doto (chan 1) (async/offer! :available))
+        stop-signal (chan)
+        out (chan 1)
+        control (atom {:topics {} :lifecycle-lock lock
+                       :stop-signal stop-signal :stopped? false})
+        transport (pso/transport S (atom {}) :running (atom {}) (atom {})
+                                 (fn [& _]) control)]
+    (with-redefs [rt/subscribe-topics! (fn [_ _] true)
+                  rt/unsubscribe-topics-ordered! (fn [_ _] (done false))
+                  pubsub/subscriptions (fn [_] {:t {:out out}})
+                  pubsub/direct-subscribe!
+                  (fn [_ _ _]
+                    ;; Make stop and successful attempt ready before transport's
+                    ;; alts resumes. Either selection must settle as stopped.
+                    (swap! control
+                           (fn [state]
+                             (-> state
+                                 (assoc :stopped? true)
+                                 (assoc-in [:topics :t :active?] false)
+                                 (assoc-in [:topics :t :status]
+                                           {:status :stopped}))))
+                    (close! stop-signal)
+                    (done {:ok true}))]
+      (let [result (<?? S ((:subscribe! transport) (atom {}) #{:t} {}))]
+        (is (= :netz/stopped (:error result)))
+        (is (= :stopped (get-in @control [:topics :t :status :status])))
+        (is (false? (async/>!! out :late-generation))
+            "a Kabel success concurrent with stop must be retired")))))
 
 ;; =============================================================================
 ;; The same scenario, both transports
@@ -306,6 +391,46 @@
       (<?? S (timeout 200))
       (is (= [{:n 1} {:n 2} {:n 3}] @applied)))))
 
+(deftest a-gated-delivery-obeys-the-asynchronous-result-contract
+  ;; The installed delivery owner always awaits this result. Returning the
+  ;; buffered value directly kills that owner when `<?` treats it as a channel.
+  (let [peer (atom {:pubsub {:subscriptions
+                             {:t {:strategy (recording-strategy (atom []))
+                                  :handshake-complete? false}}}})
+        result (<?? S (pso/deliver-to-strategy!
+                       S peer (atom {:t {}}) (atom {}) :t {:n 1}))]
+    (is (map? result))
+    (is (= [{:n 1}] (get result :t)))))
+
+(deftest pending-values-are-owned-by-intent-and-recovery-generation
+  (let [applied (atom [])
+        peer (atom {:pubsub {:subscriptions
+                             {:t {:strategy (recording-strategy applied)
+                                  :handshake-complete? false}}}})
+        subs (atom {:t {}})
+        pending (atom {})
+        control (atom {:topics
+                       {:t {:active? true :intent-generation 1
+                            :dirty-generation 1 :gated? true}}})]
+    (<?? S (pso/deliver-to-strategy!
+            S peer subs pending :t :old {:desynchronized control}))
+    (swap! control assoc-in [:topics :t]
+           {:active? true :intent-generation 2
+            :dirty-generation 0 :gated? true})
+    (<?? S (pso/deliver-to-strategy!
+            S peer subs pending :t :new {:desynchronized control}))
+
+    (<?? S (pso/drain-pending! S peer subs pending :t
+                               {:intent-generation 2
+                                :dirty-generation 0}))
+    (is (= [:new] @applied)
+        "a new snapshot drains only values admitted by its own intent")
+    (<?? S (pso/drain-pending! S peer subs pending :t
+                               {:intent-generation 1
+                                :dirty-generation 1}))
+    (is (= [:new :old] @applied)
+        "taking one generation preserves, rather than deletes, another")))
+
 (deftest the-pre-handshake-buffer-is-bounded
   ;; The sender controls the rate, so the buffer is attacker-influenced.
   ;; Dissemination has already marked these messages seen, so overflow must
@@ -393,3 +518,307 @@
     (is (wait-for 8000 #(= 8 (count @applied))) "not everything was applied")
     (is (= (range 8) (seq @applied))
         "applications must follow arrival order, not completion order")))
+
+(deftest recovery-signals-are-coalesced-and-never-overlap-generations
+  (let [state-sync! (atom nil)
+        stop! (atom nil)
+        installed-subs (atom nil)
+        gates (atom [])
+        calls (atom [])
+        active (atom 0)
+        maximum-active (atom 0)
+        p (atom {:pubsub {}})
+        running {:peer-id :self}]
+    (with-redefs [rt/set-deliver! (fn [_ _] true)
+                  rt/set-state-sync! (fn [_ f] (reset! state-sync! f) true)
+                  rt/on-stop! (fn [_ f] (reset! stop! f) true)
+                  rt/unsubscribe-topics-ordered! (fn [_ _] (done true))
+                  pubsub/set-transport! (fn [_ _] true)
+                  pso/transport (fn [_ _ _ subs _ _ _]
+                                  (reset! installed-subs subs)
+                                  {})
+                  pso/re-handshake!
+                  (fn [_ _ _ source {:keys [topics]}]
+                    (let [gate (chan 1)
+                          result (chan 1)]
+                      (swap! calls conj {:source source :topics topics})
+                      (swap! active inc)
+                      (swap! maximum-active max @active)
+                      (swap! gates conj gate)
+                      (async/go
+                        (let [value (async/<! gate)]
+                          (swap! active dec)
+                          (async/>! result value)
+                          (close! result)))
+                      result))]
+      (pso/install! S p running)
+      (activate-recovery-topic! p installed-subs :topic-a {})
+
+      ;; Establish the first generation before producing the storm. This makes
+      ;; the test independent of scheduler timing while still exercising the
+      ;; atomic take of pending sources.
+      (@state-sync! :source-a [{:topic :topic-a}])
+      (is (wait-for 3000 #(= 1 (count @calls))))
+      (is (= {:source :source-a :topics #{:topic-a}} (first @calls)))
+      (is (= 1 @active))
+
+      ;; A signal arriving while the first generation is still running must
+      ;; wait. Ten thousand newer signals for the SAME topic occupy one source
+      ;; set and one sliding control slot. The old completion must not clear
+      ;; their newer application gate.
+      (dotimes [_ 10000]
+        (@state-sync! :source-c [{:topic :topic-a}]))
+      (<?? S (timeout 100))
+      (is (= 1 (count @calls)))
+      (put! (first @gates) {:ok true})
+      (is (wait-for 3000 #(= 2 (count @calls))))
+      (is (= {:source :source-c :topics #{:topic-a}} (second @calls)))
+      (is (= 1 @active))
+      (is (= 1 @maximum-active))
+      (is (= :recovering (:status (pso/recovery-status p :topic-a)))
+          "an old successful drain cannot publish readiness for newer work")
+
+      (put! (second @gates) {:ok true})
+      (is (wait-for 3000 #(= :source-c
+                             (:source (pso/recovery-status p :topic-a)))))
+      (is (zero? @active))
+      (is (= {:status :ready :source :source-c}
+             (select-keys (pso/recovery-status p :topic-a)
+                          [:status :source])))
+      (@stop!))))
+
+(deftest recovery-completes-only-after-the-replacement-drain
+  (let [strategy (recording-strategy (atom []))
+        out (chan 1)
+        held {:t {:strategy strategy :out out}}
+        subs (atom {:t {:strategies {:t strategy}}})
+        handshake-callback (atom nil)
+        drain-completion (atom nil)]
+    (with-redefs [pubsub/subscriptions (fn [_] held)
+                  pubsub/unsubscribe! (fn [_ _] (done {:ok true}))
+                  pubsub/direct-subscribe!
+                  (fn [_ _ opts]
+                    (reset! handshake-callback (:on-handshake-complete opts))
+                    (done {:ok true}))
+                  rt/connection-out (fn [_ _] out)]
+      (let [result (pso/re-handshake!
+                    S (atom {}) subs :source
+                    {:topics #{:t}
+                     :timeout-ms 3000
+                     :enqueue-drain!
+                     (fn [_ _ completion _valid? _owner]
+                       (reset! drain-completion completion))})]
+        (is (wait-for 1000 #(some? @handshake-callback)))
+        (is (nil? (async/poll! result))
+            "request enqueue must not complete the recovery generation")
+        (@handshake-callback :t)
+        (is (wait-for 1000 #(some? @drain-completion)))
+        (is (nil? (async/poll! result))
+            "handshake-ready must still wait for buffered application")
+        (@drain-completion {:ok true})
+        (is (= {:ok true} (<?? S result)))))))
+
+(deftest recovery-normalizes-failure-and-retires-the-v0-connection
+  (let [strategy (recording-strategy (atom []))]
+    (doseq [[label operation expected]
+            [[:closed (fn [] (doto (chan) close!)) :netz/recovery-closed]
+             [:exception (fn [] (done (ex-info "boom" {})))
+              :netz/recovery-exception]
+             [:timeout (fn [] (chan)) :netz/recovery-timeout]]]
+      (testing (name label)
+        (let [out (chan 1)
+              held {:t {:strategy strategy :out out}}]
+          (with-redefs [pubsub/subscriptions (fn [_] held)
+                        pubsub/unsubscribe! (fn [_ _] (operation))
+                        rt/connection-out (fn [_ _] nil)]
+            (let [result (<?? S (pso/re-handshake!
+                                 S (atom {}) (atom {}) nil
+                                 {:topics #{:t} :timeout-ms 25}))]
+              (is (= expected (:error result)))
+              (is (false? (async/>!! out :late-frame))
+                  "failure must retire the connection before another generation"))))))))
+
+(deftest a-superseded-recovery-preserves-its-source-for-the-successor
+  (let [strategy (recording-strategy (atom []))
+        out (chan 1)
+        held {:t {:strategy strategy :out out}}]
+    (with-redefs [pubsub/subscriptions (fn [_] held)
+                  pubsub/unsubscribe! (fn [_ _] (done {:ok true}))
+                  pubsub/direct-subscribe!
+                  (fn [_ _ opts]
+                    ((:on-handshake-complete opts) :t)
+                    (done {:ok true}))]
+      (let [result
+            (<?? S (pso/re-handshake!
+                    S (atom {}) (atom {:t {:strategies {:t strategy}}}) nil
+                    {:topics #{:t}
+                     :timeout-ms 1000
+                     :valid? (constantly true)
+                     :drain-valid? (constantly :superseded)
+                     :drain-owner {:intent-generation 1 :dirty-generation 1}
+                     :enqueue-drain!
+                     (fn [_ _ completion _ _]
+                       (completion {:error :netz/recovery-superseded}))}))]
+        (is (= :netz/recovery-superseded (:error result)))
+        (is (true? (async/>!! out :still-usable))
+            "the successor must be able to reuse the same source connection")
+        (close! out)))))
+
+(deftest a-failed-recovery-does-not-kill-the-recovery-owner
+  (let [state-sync! (atom nil)
+        stop! (atom nil)
+        installed-subs (atom nil)
+        failures (atom [])
+        calls (atom [])
+        p (atom {:pubsub {}})]
+    (with-redefs [rt/set-deliver! (fn [_ _] true)
+                  rt/set-state-sync! (fn [_ f] (reset! state-sync! f) true)
+                  rt/on-stop! (fn [_ f] (reset! stop! f) true)
+                  rt/unsubscribe-topics-ordered! (fn [_ _] (done true))
+                  pubsub/set-transport! (fn [_ _] true)
+                  pso/transport (fn [_ _ _ subs _ _ _]
+                                  (reset! installed-subs subs)
+                                  {})
+                  pso/re-handshake!
+                  (fn [_ _ _ source _]
+                    (swap! calls conj source)
+                    (if (= source :bad-source)
+                      (done (ex-info "failed generation" {}))
+                      (done {:ok true})))]
+      (pso/install! S p {:peer-id :self})
+      (activate-recovery-topic!
+       p installed-subs :t
+       {:on-recovery-failed #(swap! failures conj [%1 %2])})
+      (@state-sync! :bad-source [{:topic :t}])
+      (is (wait-for 3000 #(= :failed (:status (pso/recovery-status p :t)))))
+      (is (= :t (ffirst @failures))
+          "terminal failure is explicitly visible to the subscription owner")
+      (@state-sync! :good-source [{:topic :t}])
+      (is (wait-for 3000 #(= {:status :ready :source :good-source}
+                             (select-keys (pso/recovery-status p :t)
+                                          [:status :source]))))
+      (is (= [:bad-source :good-source] @calls))
+      (@stop!))))
+
+(deftest a-vanished-candidate-never-falls-back-to-an-unrelated-connection
+  (let [strategy (recording-strategy (atom []))
+        attempted? (atom false)]
+    (with-redefs [pubsub/subscriptions (fn [_] {:t {:strategy strategy}})
+                  pubsub/unsubscribe! (fn [_ _]
+                                        (reset! attempted? true)
+                                        (done {:ok true}))
+                  rt/connection-out (fn [_ _] nil)]
+      (let [result (<?? S (pso/re-handshake!
+                           S (atom {}) (atom {}) :gone
+                           {:topics #{:t} :timeout-ms 100}))]
+        (is (= :netz/recovery-source-unavailable (:error result)))
+        (is (false? @attempted?)
+            "Kabel's peer-wide fallback must not be used for a named source")))))
+
+(deftest explicit-unsubscribe-cancels-intent-after-inflight-recovery
+  (let [state-sync! (atom nil)
+        stop! (atom nil)
+        installed-subs (atom nil)
+        deliver! (atom nil)
+        recovery-gate (chan 1)
+        recoveries (atom 0)
+        drains (atom 0)
+        applications (atom 0)
+        p (atom {:pubsub {}})]
+    (with-redefs [rt/set-deliver! (fn [_ f] (reset! deliver! f) true)
+                  rt/set-state-sync! (fn [_ f] (reset! state-sync! f) true)
+                  rt/on-stop! (fn [_ f] (reset! stop! f) true)
+                  rt/unsubscribe-topics-ordered! (fn [_ _] (done true))
+                  pubsub/set-transport! (fn [_ _] true)
+                  pubsub/unsubscribe! (fn [_ _]
+                                        (swap! drains inc)
+                                        (done {:ok true}))
+                  pso/transport (fn [_ _ _ subs _ _ _]
+                                  (reset! installed-subs subs)
+                                  {})
+                  pso/re-handshake! (fn [_ _ _ _ _]
+                                      (swap! recoveries inc)
+                                      recovery-gate)
+                  pso/deliver-to-strategy! (fn [& _]
+                                             (swap! applications inc)
+                                             (done {:ok true}))]
+      (pso/install! S p {:peer-id :self})
+      (activate-recovery-topic! p installed-subs :t {})
+      (@state-sync! nil [{:topic :t}])
+      (is (wait-for 3000 #(= 1 @recoveries)))
+
+      (let [unsubscribed (pso/unsubscribe! p #{:t})]
+        (<?? S (timeout 100))
+        (is (zero? @drains)
+            "unsubscribe waits behind the recovery lifecycle owner")
+        (put! recovery-gate {:ok true})
+        (is (= {:ok true} (<?? S unsubscribed))))
+
+      (is (= 1 @drains))
+      (is (= :closed (:status (pso/recovery-status p :t))))
+      (is (not (contains? @@installed-subs :t)))
+      (@deliver! :late-source :t {:late true})
+      (<?? S (timeout 100))
+      (is (zero? @applications)
+          "late overlay frames cannot cross an explicit cancellation fence")
+      (@state-sync! nil [{:topic :t}])
+      (<?? S (timeout 100))
+      (is (= 1 @recoveries)
+          "a stale horizon signal cannot recreate cancelled intent")
+      (@stop!))))
+
+(deftest explicit-unsubscribe-is-bounded-and-retires-an-unacked-generation
+  (let [installed-subs (atom nil)
+        out (chan 1)
+        p (atom {:pubsub {}})]
+    (with-redefs [rt/set-deliver! (fn [_ _] true)
+                  rt/set-state-sync! (fn [_ _] true)
+                  rt/on-stop! (fn [_ _] true)
+                  rt/unsubscribe-topics-ordered! (fn [_ _] (done true))
+                  pubsub/set-transport! (fn [_ _] true)
+                  pubsub/subscriptions (fn [_] {:t {:out out}})
+                  pubsub/unsubscribe! (fn [_ _] (chan))
+                  pso/transport (fn [_ _ _ subs _ _ _]
+                                  (reset! installed-subs subs)
+                                  {})]
+      (pso/install! S p {:peer-id :self})
+      (activate-recovery-topic!
+       p installed-subs :t {:recovery-timeout-ms 25})
+      (let [result (<?? S (pso/unsubscribe! p #{:t}))]
+        (is (= :netz/unsubscribe-timeout (:error result)))
+        (is (false? (async/>!! out :late-ack))
+            "a late v0 ack must not contaminate a later topic generation")
+        (is (= :closed (:status (pso/recovery-status p :t))))))))
+
+(deftest shutdown-rejects-every-lifecycle-waiter-without-opening-the-semaphore
+  (let [stop! (atom nil)
+        installed-subs (atom nil)
+        raw-unsubscribes (atom 0)
+        p (atom {:pubsub {}})]
+    (with-redefs [rt/set-deliver! (fn [_ _] true)
+                  rt/set-state-sync! (fn [_ _] true)
+                  rt/on-stop! (fn [_ f] (reset! stop! f) true)
+                  rt/unsubscribe-topics-ordered! (fn [_ _] (done true))
+                  pubsub/set-transport! (fn [_ _] true)
+                  pubsub/unsubscribe! (fn [_ _]
+                                        (swap! raw-unsubscribes inc)
+                                        (done {:ok true}))
+                  pso/transport (fn [_ _ _ subs _ _ _]
+                                  (reset! installed-subs subs)
+                                  {})]
+      (pso/install! S p {:peer-id :self})
+      (activate-recovery-topic! p installed-subs :t {})
+      (let [control (get-in @p [:pubsub :netz/recovery-control])
+            lock (:lifecycle-lock @control)]
+        (is (= :available (<?? S lock)) "simulate a stalled lifecycle owner")
+        (let [a (pso/unsubscribe! p #{:t})
+              b (pso/unsubscribe! p #{:t})]
+          (<?? S (timeout 50))
+          (is (zero? @raw-unsubscribes)
+              "both callers began before stop and are parked behind the owner")
+          (@stop!)
+          (is (= :netz/stopped (:error (<?? S a))))
+          (is (= :netz/stopped (:error (<?? S b))))
+          (is (zero? @raw-unsubscribes))
+          (is (= :stopped (:status (pso/recovery-status p :t))))
+          (async/offer! lock :available))))))

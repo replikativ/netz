@@ -36,6 +36,12 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 - [x] Kabel routes external and direct application through one peer/topic
       serializer and lets Netz reject identity-less direct live frames while
       the overlay owns delivery.
+- [x] Horizon and overflow recovery signals are coalesced behind the ordered
+      delivery backlog on a one-slot control lane; one worker awaits actual
+      snapshot drain for each topic/generation before another attempt can
+      start, buffered values are intent/generation-owned, subscription interest
+      is rolled back reliably, shutdown cannot open the lifecycle semaphore,
+      and terminal failure is observable by status/callback.
 - [ ] Wire apply-owner receipts into overlay delivery and synchronization so
       checkpoints advertise application-committed frontiers, not merely
       transport-received frontiers. A slow or failed profile apply must never

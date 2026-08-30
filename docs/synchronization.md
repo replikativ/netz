@@ -79,6 +79,35 @@ message repair cannot recover a value that dissemination already marked seen.
 The pure owner enforces this distinction; wiring its receipts into the overlay
 runtime is an explicit alpha release gate.
 
+The current Kabel-v0 adapter serializes recovery on a separate one-slot control
+lane. Dirty work retains `topic -> candidate sources`, so a horizon report for
+one topic never authorizes another topic's snapshot source. Recovery ownership
+continues past subscribe-request admission through handshake-ready and the
+successful buffered application drain. Per-topic generations prevent an older
+drain from clearing a newer gap. Buffered live values carry both intent and
+recovery generation; a stale drain can neither apply nor delete a successor's
+suffix. Gap transitions themselves run on the ordered application lane, so a
+new gap cannot race an old drain already applying. A named source that has
+disconnected is never replaced by Kabel's peer-wide fallback connection.
+
+Recovery has a bounded deadline. Error, closed, exception, or timeout retires
+every v0 connection that could complete the failed generation late and leaves
+the topic gated. Applications can inspect `(netz.pubsub/recovery-status peer
+topic)` and may provide `:on-recovery-failed (fn [topic status] ...)` in their
+subscription options to terminally settle or replace the affected profile
+owner. Netz does not silently retry an exhausted source forever.
+
+Applications using the overlay call `netz.core/unsubscribe!` (or
+`netz.pubsub/unsubscribe!`), not Kabel's lower-level function. Netz serializes
+subscribe, explicit unsubscribe, and recovery under one lifecycle owner. It
+cancels the topic intent, queues a guaranteed overlay-interest withdrawal, and
+then performs Kabel's acknowledged drain with a bounded deadline (30 seconds by
+default, or `:recovery-timeout-ms` in subscription options). A recovery can
+therefore neither recreate an explicitly removed subscription, apply its old
+buffer after a later subscribe, nor publish readiness afterward. Shutdown marks
+the owner stopped without closing its semaphore, and new lifecycle calls fail
+with `:netz/stopped` without waiting behind an in-flight operation.
+
 ## Reference profiles
 
 ### `netz/root-log/1`

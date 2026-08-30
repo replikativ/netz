@@ -714,6 +714,21 @@
                                        :topics (:topics state)
                                        :carries (effective-carries state now)}]))}))
 
+        :unsubscribe
+        (if-not (= :app from)
+          {:state (update-in state [:stats :refused-injection] (fnil inc 0))
+           :actions []}
+          (let [topics' (set (:topics payload))
+                state (update state :topics
+                              (fn [subscribed]
+                                (into #{} (remove topics') subscribed)))
+                targets (sort (keys (:peers state)))]
+            {:state state
+             :actions (vec (for [t targets]
+                             [:send t {:type :interests
+                                       :topics (:topics state)
+                                       :carries (effective-carries state now)}]))}))
+
         ;; State synchronization commits an application snapshot atomically,
         ;; then tells dissemination which ordered stream prefix that snapshot
         ;; subsumes. Only the local sync runtime may advance this frontier.

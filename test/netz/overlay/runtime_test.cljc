@@ -199,6 +199,21 @@
       (testing "and keeps refusing rather than throwing"
         (is (false? (rt/submit! ctx {:type :init})))))))
 
+#?(:clj
+   (deftest ordered-interest-removal-waits-for-one-runtime-slot
+     (let [ctx (rt/make-runtime
+                {:id :me :state {}
+                 :handler (fn [s _ _] {:state s :actions []})
+                 :effects {:send! (fn [_ _]) :connect! (fn [_ _ _])
+                           :disconnect! (fn [_]) :schedule! (fn [_ _])}})]
+       (while (rt/submit! ctx {:type :init}))
+       (let [settled (rt/unsubscribe-topics-ordered! {:ctx ctx} #{:secret})]
+         (is (nil? (clojure.core.async/poll! settled))
+             "cleanup must not claim success while the queue is full")
+         (<!! (:events ctx))
+         (is (true? (<?? S settled))
+             "cleanup settles only after it owns a queue position")))))
+
 (deftest one-bad-event-must-not-end-the-loop
   ;; `go-super` wraps the loop body in a try/catch that REPORTS and EXITS, so
   ;; before the guard any handler exception killed the peer's overlay

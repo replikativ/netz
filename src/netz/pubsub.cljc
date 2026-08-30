@@ -50,20 +50,57 @@
   (:require [kabel.pubsub :as pubsub]
             [netz.overlay.runtime :as rt]
             #?(:clj [superv.async :refer [<? go-try go-loop-try]])
-            [clojure.core.async :as async :refer [chan put! close!]])
+            [clojure.core.async :as async :refer [chan put! close! timeout]])
   #?(:cljs (:require-macros [superv.async :refer [<? go-try go-loop-try]])))
 
 (defn- ok [v]
   (let [ch (chan 1)] (put! ch v) (close! ch) ch))
 
-(defn- handshake-complete? [peer subs desynchronized topic]
+(defn- exact-success? [result]
+  (and (map? result)
+       (= true (:ok result))
+       (not (contains? result :error))))
+
+(defn- subscribe-success? [result topics]
+  (and (map? result)
+       (not (contains? result :error))
+       (or (= true (:ok result))
+           (= (set topics) (set (:ok result))))))
+
+(defn- throwable? [value]
+  (instance? #?(:clj Throwable :cljs js/Error) value))
+
+(defn recovery-status
+  "Return the last observable recovery state for `topic`."
+  [peer topic]
+  (if-let [control (get-in @peer [:pubsub :netz/recovery-control])]
+    (get-in @control [:topics topic :status])
+    (get-in @peer [:pubsub :netz/recovery topic])))
+
+(defn unsubscribe!
+  "Cancel Netz subscription intent, then orderly-drain Kabel topics.
+
+  Call this rather than `kabel.pubsub/unsubscribe!` for a peer installed with
+  Netz so an in-flight recovery cannot recreate explicitly removed topics."
+  [peer topics]
+  (if-let [unsubscribe-fn (get-in @peer [:pubsub :netz/unsubscribe!])]
+    (unsubscribe-fn topics)
+    (pubsub/unsubscribe! peer topics)))
+
+(defn- topic-gated? [gate-state topic]
+  (let [state @gate-state]
+    (if (set? state)
+      (contains? state topic)
+      (boolean (get-in state [:topics topic :gated?])))))
+
+(defn- handshake-complete? [peer subs gate-state topic]
   (let [sub (pubsub/subscription peer topic)]
     ;; A topic remembered in `subs` is a remote subscription even during the
     ;; orderly unsubscribe/resubscribe gap used for recovery. Treating its
     ;; temporarily absent Kabel subscription as an owner would let overlay live
     ;; data overtake the replacement snapshot.
     (if (contains? @subs topic)
-      (and (not (contains? @desynchronized topic))
+      (and (not (topic-gated? gate-state topic))
            (boolean (:handshake-complete? sub)))
       true)))
 
@@ -81,28 +118,74 @@
                            {:strategy strategy
                             :on-publish on-publish})))
 
+(defn- pending-entry [gate-state topic payload]
+  (let [state (when (and gate-state (map? @gate-state))
+                (get-in @gate-state [:topics topic]))]
+    (if state
+      {::pending? true
+       ::payload payload
+       ::intent-generation (:intent-generation state)
+       ::dirty-generation (:dirty-generation state)}
+      payload)))
+
+(defn- owned-pending? [entry owner]
+  (if owner
+    (and (::pending? entry)
+         (= (:intent-generation owner) (::intent-generation entry))
+         (= (:dirty-generation owner) (::dirty-generation entry)))
+    true))
+
+(defn- drop-intent-pending! [pending intent-generations]
+  (swap! pending
+         (fn [all]
+           (reduce-kv
+            (fn [all topic intent-generation]
+              (let [remaining
+                    (into []
+                          (remove #(and (::pending? %)
+                                        (= intent-generation
+                                           (::intent-generation %))))
+                          (get all topic))]
+                (if (seq remaining)
+                  (assoc all topic remaining)
+                  (dissoc all topic))))
+            all
+            intent-generations))))
+
 (defn drain-pending!
   "Apply anything buffered for `topic`, in arrival order.
 
   Called when the handshake completes, and again on every delivery, so a
   payload can never overtake the state it was meant to be applied on top of."
-  [S peer subs pending topic]
-  (let [queued (get @pending topic)]
-    (swap! pending dissoc topic)
+  ([S peer subs pending topic]
+   (drain-pending! S peer subs pending topic nil))
+  ([S peer subs pending topic owner]
+   (let [[before _]
+         (swap-vals!
+          pending
+          (fn [all]
+            (let [remaining (into []
+                                  (remove #(owned-pending? % owner))
+                                  (get all topic))]
+              (if (seq remaining)
+                (assoc all topic remaining)
+                (dissoc all topic)))))
+         queued (filter #(owned-pending? % owner) (get before topic))]
     ;; Sequentially, awaiting each: `apply-one!` returns a go-block, so a
     ;; `doseq` that merely STARTS them applies the buffer in whatever order
     ;; the scheduler happens to finish — which is the exact defect this
     ;; buffer exists to prevent. Always returns a channel so callers can
     ;; chain on it.
-    (go-try S
-            (loop [values (seq queued)
-                   applied 0]
-              (if-let [p (first values)]
-                (let [result (<? S (apply-one! S peer subs topic p))]
-                  (if (true? (:ok result))
-                    (recur (next values) (inc applied))
-                    result))
-                {:ok true :applied applied})))))
+     (go-try S
+             (loop [values (seq queued)
+                    applied 0]
+               (if-let [p (first values)]
+                 (let [payload (if (::pending? p) (::payload p) p)
+                       result (<? S (apply-one! S peer subs topic payload))]
+                   (if (true? (:ok result))
+                     (recur (next values) (inc applied))
+                     result))
+                 {:ok true :applied applied}))))))
 
 (defn deliver-to-strategy!
   "Hand a disseminated payload to the topic's strategy, and to `:on-publish`.
@@ -136,15 +219,18 @@
                                          :or {max-pending 1024}}]]
   (let [desynchronized (or desynchronized (atom #{}))]
     (if-not (handshake-complete? peer subs desynchronized topic)
-      (let [overflow? (volatile! false)
-            result (swap! pending update topic
-                          (fn [q]
-                            (let [q (conj (vec q) payload)]
-                              (if (> (count q) max-pending)
-                                (do (vreset! overflow? true) (vec (subvec q 1)))
-                                q))))]
-        (when (and @overflow? on-overflow) (on-overflow topic))
-        result)
+      (let [[before after]
+            (swap-vals! pending update topic
+                        (fn [q]
+                          (let [q (conj (vec q)
+                                        (pending-entry desynchronized
+                                                       topic payload))]
+                            (if (> (count q) max-pending)
+                              (vec (subvec q 1))
+                              q))))
+            overflow? (> (inc (count (get before topic))) max-pending)]
+        (when (and overflow? on-overflow) (on-overflow topic))
+        (ok after))
     ;; Drain first, and AWAIT it, so a payload arriving just after the
     ;; handshake completed cannot overtake the buffer it was queued behind.
       (go-try S
@@ -152,6 +238,10 @@
                 (if (true? (:ok drained))
                   (<? S (apply-one! S peer subs topic payload))
                   drained))))))
+
+(def default-recovery-timeout-ms 30000)
+
+(declare retire-recovery-outs!)
 
 (defn transport
   "A `kabel.pubsub` transport backed by `running` (from
@@ -164,54 +254,199 @@
   `re-handshake!` can reproduce the ORIGINAL subscription rather than a
   stripped-down one. `pending` is the pre-handshake buffer. `enqueue-drain!`
   serializes handshake completion with live delivery."
-  [S peer running subs pending enqueue-drain!]
-  {:receive-publish!
-   (fn [_peer topic _payload _context]
+  ([S peer running subs pending enqueue-drain!]
+   (transport S peer running subs pending enqueue-drain! nil))
+  ([S peer running subs pending enqueue-drain! recovery-control]
+   (let [lifecycle-lock
+         (or (when recovery-control (:lifecycle-lock @recovery-control))
+             (doto (chan 1) (async/offer! :available)))
+         stop-signal (or (when recovery-control
+                           (:stop-signal @recovery-control))
+                         (chan))]
+     {:receive-publish!
+      (fn [_peer topic _payload _context]
      ;; Kabel v0 live frames have no origin/epoch/sequence identity. Once the
      ;; overlay owns live delivery, accepting them as a second path makes
      ;; duplicate detection impossible. Fail explicitly; Kabel retires that v0
      ;; connection while point-to-point handshake frames remain supported.
-     (ok {:error (ex-info "Direct live delivery is disabled by the Netz overlay"
-                          {:type :netz/direct-live-disabled
-                           :topic topic})}))
+        (ok {:error (ex-info "Direct live delivery is disabled by the Netz overlay"
+                             {:type :netz/direct-live-disabled
+                              :topic topic})}))
 
-   :publish!
-   (fn [_peer topic payload]
+      :publish!
+      (fn [_peer topic payload]
      ;; `submit!` returns false when the runtime's event queue is full, and its
      ;; docstring is explicit that refusing is the point. Reporting {:ok true}
      ;; for a publish that was dropped would invert the only backpressure
      ;; signal the runtime has.
-     (if (rt/publish! running topic payload)
-       (ok {:ok true :transport :overlay})
-       (ok {:error :netz/overloaded :transport :overlay})))
+        (if (rt/publish! running topic payload)
+          (ok {:ok true :transport :overlay})
+          (ok {:error :netz/overloaded :transport :overlay})))
 
-   :subscribe!
-   (fn [peer topics opts]
-     (go-try S
-             ;; Interest FIRST. It is what makes dissemination forward these
-             ;; topics to us at all; without it the handshake could complete
-             ;; and no live publish would ever arrive. Anything that lands
-             ;; before the handshake finishes is buffered rather than applied.
-             (if-not (rt/subscribe-topics! running topics)
-               ;; Refused means the interest was never registered, so this peer
-               ;; would be permanently invisible to the mesh for these topics.
-               ;; Reporting success here is the worst of the options.
-               {:error :netz/overloaded :transport :overlay}
-               (let [;; Release the buffer as soon as the handshake says so,
-                     ;; rather than waiting for the next publish to notice.
-                     opts (update opts :on-handshake-complete
-                                  (fn [f]
-                                    (fn [t]
-                                      (enqueue-drain! t f))))]
-                 (doseq [t topics] (swap! subs assoc t opts))
-                 ;; Then the ordinary point-to-point handshake — the SAME code
-                 ;; the direct transport runs. A handshake is a bulk,
-                 ;; acknowledged, backpressured transfer between two peers;
-                 ;; disseminating it would flood the network with one peer's
-                 ;; catch-up. What the overlay changes is who you may handshake
-                 ;; WITH, not how.
-                 (assoc (<? S (pubsub/direct-subscribe! peer topics opts))
-                        :transport :overlay)))))})
+      :subscribe!
+      (fn [peer topics opts]
+        (go-try S
+                (if (and recovery-control (:stopped? @recovery-control))
+                  {:error :netz/stopped :transport :overlay}
+                  (let [[token port]
+                        (async/alts! [lifecycle-lock stop-signal])]
+                    (if (or (= port stop-signal)
+                            (not= :available token))
+                      {:error :netz/stopped :transport :overlay}
+                      (try
+                        (if (and recovery-control (:stopped? @recovery-control))
+                          {:error :netz/stopped :transport :overlay}
+                          (if (some #(contains? @subs %) topics)
+                            {:error :netz/already-subscribed :transport :overlay}
+                            (let [original-opts opts
+                                  intent-generations
+                                  (when recovery-control
+                                    (into {}
+                                          (for [t topics]
+                                            (let [[_ after]
+                                                  (swap-vals!
+                                                   recovery-control update-in
+                                                   [:topics t]
+                                                   (fn [state]
+                                                     {:active? true
+                                                      :intent-generation
+                                                      (inc (or (:intent-generation state)
+                                                               0))
+                                                      :dirty-generation 0
+                                                      :pending-sources #{}
+                                                      :gated? false
+                                                      :status {:status :joining}}))]
+                                              [t (get-in after
+                                                         [:topics t
+                                                          :intent-generation])]))))
+                                  valid-intent?
+                                  (fn [topic]
+                                    (if-let [generation
+                                             (get intent-generations topic)]
+                                      (let [state (get-in @recovery-control
+                                                          [:topics topic])]
+                                        (and (not (:stopped? @recovery-control))
+                                             (:active? state)
+                                             (= generation
+                                                (:intent-generation state))))
+                                      true))
+                                  opts
+                                  (update opts :on-handshake-complete
+                                          (fn [callback]
+                                            (fn [topic]
+                                              (enqueue-drain!
+                                               topic callback nil
+                                               #(valid-intent? topic)
+                                               (when recovery-control
+                                                 {:intent-generation
+                                                  (get intent-generations topic)
+                                                  :dirty-generation 0})))))]
+                        ;; Remember caller options before announcing interest,
+                        ;; so a publish forwarded immediately after that event
+                        ;; is buffered behind the joining generation.
+                              (doseq [t topics]
+                                (swap! subs assoc t original-opts))
+                              (if-not (rt/subscribe-topics! running topics)
+                                (do
+                                  (swap! subs #(apply dissoc % topics))
+                                  (drop-intent-pending! pending intent-generations)
+                                  (when recovery-control
+                                    (swap!
+                                     recovery-control
+                                     (fn [control]
+                                       (if (:stopped? control)
+                                         control
+                                         (update control :topics
+                                                 (fn [states]
+                                                   (reduce
+                                                    #(update %1 %2 assoc
+                                                             :active? false
+                                                             :gated? true
+                                                             :status
+                                                             {:status :failed
+                                                              :result
+                                                              {:error
+                                                               :netz/overloaded}})
+                                                    states topics)))))))
+                                  {:error :netz/overloaded :transport :overlay})
+                                (let [attempt (pubsub/direct-subscribe!
+                                               peer topics opts)
+                                      deadline
+                                      (timeout (max 1
+                                                    (or (:recovery-timeout-ms opts)
+                                                        default-recovery-timeout-ms)))
+                                      [value port]
+                                      (async/alts! [attempt deadline stop-signal])
+                                      result
+                                      (cond
+                                        (= port stop-signal)
+                                        {:error :netz/stopped}
+
+                                        (= port deadline)
+                                        {:error :netz/subscribe-timeout}
+
+                                        (nil? value)
+                                        {:error :netz/subscribe-closed}
+
+                                        (throwable? value)
+                                        {:error :netz/subscribe-exception
+                                         :exception value}
+
+                                        :else value)
+                                      ;; `attempt` and stop may become ready in
+                                      ;; the same scheduler turn. Treat success
+                                      ;; as committed only while this exact
+                                      ;; intent is still live; that check is the
+                                      ;; subscribe operation's linearization
+                                      ;; point with shutdown.
+                                      result
+                                      (if (and (subscribe-success? result topics)
+                                               (not-every? valid-intent? topics))
+                                        {:error :netz/stopped
+                                         :late-result result}
+                                        result)]
+                                  (if (subscribe-success? result topics)
+                                    (assoc result :transport :overlay)
+                                    (do
+                                      (swap! subs #(apply dissoc % topics))
+                                      (drop-intent-pending! pending intent-generations)
+                                      (when recovery-control
+                                        (swap!
+                                         recovery-control
+                                         (fn [control]
+                                           (if (:stopped? control)
+                                             control
+                                             (update control :topics
+                                                     (fn [states]
+                                                       (reduce
+                                                        #(update %1 %2 assoc
+                                                                 :active? false
+                                                                 :gated? true
+                                                                 :status
+                                                                 {:status :failed
+                                                                  :result result})
+                                                        states topics)))))))
+                                      (when (#{:netz/stopped
+                                               :netz/subscribe-timeout}
+                                             (:error result))
+                                        (retire-recovery-outs!
+                                         (pubsub/subscriptions peer) topics nil))
+                                ;; The interest was admitted before Kabel failed,
+                                ;; so unwind it in the same lifecycle section.
+                                      (let [rolled-back?
+                                            (<? S (rt/unsubscribe-topics-ordered!
+                                                   running topics))]
+                                        (assoc result
+                                               :transport :overlay
+                                               :interest-rollback-accepted?
+                                               rolled-back?)))))))))
+                        (finally
+                          (async/offer! lifecycle-lock :available))))))))})))
+
+(defn- retire-recovery-outs! [held topics explicit-out]
+  (doseq [out (into #{} (keep identity)
+                    (cons explicit-out (map #(get-in held [% :out]) topics)))]
+    (close! out)))
 
 (defn re-handshake!
   "Answer a horizon gap by re-running the handshake for everything this peer
@@ -235,35 +470,102 @@
   the same code with a different argument: `init-subscription-state!` replaces
   the whole subscription map, so `:on-handshake-complete` would be silently
   dropped and never fire again."
-  [S peer subs from]
-  (let [held (pubsub/subscriptions peer)
-        topics (into #{} (filter #(get-in held [% :strategy]) (keys held)))
-        out (when from (rt/connection-out peer from))]
-    (when (seq topics)
-      (go-try S
-              ;; Kabel v0 cannot correlate two generations of topic-only
-              ;; handshake frames. Drain the old generation before reserving a
-              ;; replacement; duplicate subscribe is correctly rejected.
-              (let [unsubscribed (<? S (pubsub/unsubscribe! peer topics))]
-                (if-not (true? (:ok unsubscribed))
-                  unsubscribed
-                  (loop [groups (seq (group-by #(get @subs %) topics))]
-                    (if-let [[opts ts] (first groups)]
-                      (let [result
-                            (<? S
-                                (pubsub/direct-subscribe!
-                                 peer (set ts)
-                                 (cond-> (or opts
-                                             {:strategies
-                                              (into {}
-                                                    (for [t ts]
-                                                      [t (get-in held
-                                                                 [t :strategy])]))})
-                                   out (assoc :out out))))]
-                        (if (true? (:ok result))
-                          (recur (next groups))
-                          result))
-                      {:ok true}))))))))
+  ([S peer subs from]
+   (re-handshake! S peer subs from {}))
+  ([S peer subs from {:keys [topics enqueue-drain! timeout-ms valid?
+                             drain-valid? drain-owner]
+                      :or {timeout-ms default-recovery-timeout-ms}}]
+   (let [held (pubsub/subscriptions peer)
+         topics (into #{}
+                      (filter #(get-in held [% :strategy]))
+                      (or topics (keys held)))
+         out (when from (rt/connection-out peer from))]
+     (cond
+       (and from (nil? out))
+       (ok {:error :netz/recovery-source-unavailable :source from})
+
+       (not (seq topics))
+       (ok {:ok true :skipped true})
+
+       :else
+       (let [ready (chan (max 1 (count topics)))
+             attempt
+             (go-try S
+                     ;; Kabel v0 cannot correlate two generations of
+                     ;; topic-only handshake frames. Drain the old generation
+                     ;; before reserving a replacement.
+                     (let [unsubscribed
+                           (<? S (pubsub/unsubscribe! peer topics))]
+                       (if-not (exact-success? unsubscribed)
+                         unsubscribed
+                         (if (and valid? (not (valid?)))
+                           {:error :netz/recovery-cancelled}
+                           (loop [groups (seq (group-by #(get @subs %) topics))]
+                             (if-let [[opts ts] (first groups)]
+                               (let [opts (or opts
+                                              {:strategies
+                                               (into {}
+                                                     (for [t ts]
+                                                       [t (get-in held
+                                                                  [t :strategy])]))})
+                                     opts (if enqueue-drain!
+                                            (update
+                                             opts :on-handshake-complete
+                                             (fn [callback]
+                                               (fn [topic]
+                                                 (enqueue-drain!
+                                                  topic callback
+                                                  (fn [result]
+                                                    (put! ready
+                                                          [topic result]))
+                                                  (or drain-valid? valid?)
+                                                  drain-owner))))
+                                            opts)
+                                     result (if (and valid? (not (valid?)))
+                                              {:error :netz/recovery-cancelled}
+                                              (<? S
+                                                  (pubsub/direct-subscribe!
+                                                   peer (set ts)
+                                                   (cond-> opts
+                                                     out (assoc :out out)))))]
+                                 (if (subscribe-success? result ts)
+                                   (recur (next groups))
+                                   result))
+                               (if-not enqueue-drain!
+                                 {:ok true}
+                                 (loop [remaining (count topics)]
+                                   (if (zero? remaining)
+                                     {:ok true}
+                                     (let [[_ result] (async/<! ready)]
+                                       (if (exact-success? result)
+                                         (recur (dec remaining))
+                                         (or result
+                                             {:error
+                                              :netz/recovery-drain-closed}))))))))))))
+             deadline (timeout timeout-ms)]
+         (go-try S
+                 (let [[value port] (async/alts! [attempt deadline])
+                       result (cond
+                                (= port deadline)
+                                {:error :netz/recovery-timeout}
+
+                                (nil? value)
+                                {:error :netz/recovery-closed}
+
+                                (throwable? value)
+                                {:error :netz/recovery-exception
+                                 :exception value}
+
+                                :else value)]
+                   (when (and (not (exact-success? result))
+                              (not= :netz/recovery-superseded
+                                    (:error result)))
+                     ;; A timed-out or failed v0 operation cannot be safely
+                     ;; followed by another topic-only generation. Retire all
+                     ;; connections that may still complete it late.
+                     (close! ready)
+                     (retire-recovery-outs! held topics out))
+                   result)))))))
 
 (defn install!
   "Wire `peer`'s pub/sub onto `running`, and route disseminated payloads into
@@ -277,15 +579,20 @@
         subs (atom {})
         ;; Publishes that arrived before their topic's handshake finished.
         pending (atom {})
+        ;; Subscribe, explicit unsubscribe, and replacement subscribe share one
+        ;; lifecycle token. It is deliberately never closed: a closed semaphore
+        ;; makes every waiter receive nil and enter the critical section at once.
+        recovery-lock (doto (chan 1) (async/offer! :available))
+        ;; Cancellation broadcast is separate from the semaphore: closing it
+        ;; wakes waiters without granting lifecycle ownership.
+        stop-signal (chan)
         ;; Topics that lost an admitted application value. They remain behind
         ;; the snapshot gate until a replacement handshake completes; continuing
         ;; to apply later deltas on a gapped state would make repair meaningless.
-        desynchronized (atom #{})
-        ;; Sources whose accepted gossip could not be handed to the
-        ;; application. Message repair cannot help after dissemination marked
-        ;; it seen, so the worker schedules a differential state sync once the
-        ;; ordered delivery backlog has drained.
-        dirty-sources (atom #{})
+        recovery-control (atom {:topics {}
+                                :lifecycle-lock recovery-lock
+                                :stop-signal stop-signal
+                                :stopped? false})
         ;; ONE consumer, so applications happen in the order they arrived.
         ;;
         ;; `deliver-to-strategy!` returns a go block and the runtime's
@@ -300,52 +607,386 @@
         ;; so one consumer that AWAITS each application is all that is needed
         ;; to keep it that way.
         deliveries (chan 1024)
+        ;; Recovery control is separate from application delivery because a
+        ;; recovery completes only after a :drain action runs. A sliding slot
+        ;; coalesces any number of wakeups while dirty-topics retains the work.
+        recovery-wake (chan (async/sliding-buffer 1))
+        ;; Gap reports are admitted onto the application lane with at most one
+        ;; pending put. The atom retains every topic/source while that wake is
+        ;; queued, avoiding core.async's bounded pending-put limit under storms.
+        gap-control (atom {:queued? false :by-topic {}})
+        queue-gap! (fn [source topics]
+                     (let [[before _]
+                           (swap-vals!
+                            gap-control
+                            (fn [state]
+                              (-> state
+                                  (assoc :queued? true)
+                                  (update :by-topic
+                                          (fn [by-topic]
+                                            (reduce #(update %1 %2
+                                                             (fnil conj #{})
+                                                             source)
+                                                    by-topic topics))))))]
+                       (when-not (:queued? before)
+                         (put! deliveries [:gap nil nil nil]))))
+        enqueue-drain! (fn
+                         ([topic callback]
+                          (put! deliveries
+                                [:drain nil topic {:callback callback}]))
+                         ([topic callback completion]
+                          (put! deliveries
+                                [:drain nil topic {:callback callback
+                                                   :completion completion}]))
+                         ([topic callback completion valid?]
+                          (put! deliveries
+                                [:drain nil topic {:callback callback
+                                                   :completion completion
+                                                   :valid? valid?}]))
+                         ([topic callback completion valid? owner]
+                          (put! deliveries
+                                [:drain nil topic {:callback callback
+                                                   :completion completion
+                                                   :valid? valid?
+                                                   :owner owner}])))
         mark-dirty! (fn [source topic]
-                      (swap! desynchronized conj topic)
-                      (swap! dirty-sources conj
-                             (when-not (= source (:peer-id running)) source)))]
+                      (let [sources (if (set? source) source #{source})
+                            sources (into #{}
+                                          (map #(when-not (= % (:peer-id running))
+                                                  %))
+                                          sources)
+                            [before after]
+                            (swap-vals!
+                             recovery-control update-in [:topics topic]
+                             (fn [state]
+                               (if-not (:active? state)
+                                 state
+                                 (let [generation
+                                       (inc (or (:dirty-generation state) 0))]
+                                   (assoc state
+                                          :dirty-generation generation
+                                          :pending-sources
+                                          (into (or (:pending-sources state) #{})
+                                                sources)
+                                          :gated? true
+                                          :status {:status :pending
+                                                   :generation generation})))))]
+                        (when (not= before after)
+                          (let [state (get-in after [:topics topic])]
+                            ;; Every value still waiting behind the gate now
+                            ;; belongs to the newest replacement snapshot. This
+                            ;; happens on the ordered delivery owner, so no old
+                            ;; drain can take the buffer between the generation
+                            ;; transition and this retag.
+                            (swap! pending update topic
+                                   (fn [entries]
+                                     (mapv #(if (::pending? %)
+                                              (assoc %
+                                                     ::intent-generation
+                                                     (:intent-generation state)
+                                                     ::dirty-generation
+                                                     (:dirty-generation state))
+                                              %)
+                                           entries))))
+                          (async/offer! recovery-wake :wake))))
+        cancel-and-unsubscribe!
+        (fn [topics]
+          (go-try S
+                  (if (:stopped? @recovery-control)
+                    {:error :netz/stopped}
+                    (let [[token port]
+                          (async/alts! [recovery-lock stop-signal])]
+                      (if (or (= port stop-signal)
+                              (not= :available token))
+                        {:error :netz/stopped}
+                        (try
+                          (if (:stopped? @recovery-control)
+                            {:error :netz/stopped}
+                            (let [held (pubsub/subscriptions peer)
+                                  remembered (select-keys @subs topics)
+                                  intent-generations
+                                  (into {}
+                                        (keep (fn [topic]
+                                                (when-let [generation
+                                                           (get-in @recovery-control
+                                                                   [:topics topic
+                                                                    :intent-generation])]
+                                                  [topic generation])))
+                                        topics)
+                                  timeout-ms
+                                  (max 1
+                                       (reduce min default-recovery-timeout-ms
+                                               (keep :recovery-timeout-ms
+                                                     (vals remembered))))
+                                  _ (swap! recovery-control update :topics
+                                           (fn [states]
+                                             (reduce
+                                              (fn [states topic]
+                                                (update
+                                                 states topic
+                                                 (fn [state]
+                                                   (-> state
+                                                       (assoc :active? false
+                                                              :gated? true
+                                                              :pending-sources #{}
+                                                              :status {:status :closed})
+                                                       (update :intent-generation
+                                                               (fnil inc 0))))))
+                                              states topics)))
+                                  _ (swap! subs #(apply dissoc % topics))
+                                  _ (drop-intent-pending! pending
+                                                          intent-generations)
+                                  interest-accepted?
+                                  (<? S (rt/unsubscribe-topics-ordered!
+                                         running topics))
+                                  attempt (pubsub/unsubscribe! peer topics)
+                                  deadline (timeout timeout-ms)
+                                  [value port] (async/alts! [attempt deadline])
+                                  result (cond
+                                           (= port deadline)
+                                           {:error :netz/unsubscribe-timeout}
+
+                                           (nil? value)
+                                           {:error :netz/unsubscribe-closed}
+
+                                           (throwable? value)
+                                           {:error :netz/unsubscribe-exception
+                                            :exception value}
+
+                                           :else value)
+                                  result (if (and interest-accepted?
+                                                  (exact-success? result))
+                                           result
+                                           (if-not interest-accepted?
+                                             {:error :netz/unsubscribe-interest-overloaded
+                                              :kabel-result result}
+                                             result))]
+                              (when-not (exact-success? result)
+                        ;; A v0 unsubscribe that can still acknowledge late
+                        ;; cannot share its topic-only generation with a future
+                        ;; subscribe. Retire every connection that owned one of
+                        ;; the cancelled subscriptions.
+                                (retire-recovery-outs! held topics nil))
+                              result))
+                          (finally
+                            (async/offer! recovery-lock :available))))))))]
+    (swap! peer assoc-in [:pubsub :netz/recovery-control] recovery-control)
+    (swap! peer assoc-in [:pubsub :netz/unsubscribe!] cancel-and-unsubscribe!)
     (go-loop-try S [d (<? S deliveries)]
                  (when d
                    (let [[op source topic payload] d]
                      (case op
                        :deliver
-                       (let [result
-                             (<? S (deliver-to-strategy!
-                                    S peer subs pending topic payload
-                                    {:desynchronized desynchronized
-                                     :on-overflow
-                                     (fn [overflow-topic]
-                                       (mark-dirty! source overflow-topic))}))]
-                         (when (and (map? result) (:error result))
-                           (mark-dirty! source topic)))
+                       (when-not
+                        ;; Cancellation fences local application immediately.
+                        ;; The interest-withdrawal event can be backpressured,
+                        ;; so a peer may still forward a frame until its retry.
+                        (false? (get-in @recovery-control
+                                        [:topics topic :active?]))
+                         (let [result
+                               (<? S (deliver-to-strategy!
+                                      S peer subs pending topic payload
+                                      {:desynchronized recovery-control
+                                       :on-overflow
+                                       (fn [overflow-topic]
+                                         (mark-dirty! source overflow-topic))}))]
+                           (when (and (map? result) (:error result))
+                             (mark-dirty! source topic))))
 
                        :drain
-                       (let [_ (swap! desynchronized disj topic)
-                             result (<? S (drain-pending! S peer subs pending topic))]
-                         (if (true? (:ok result))
-                           (when payload (payload topic))
-                           (mark-dirty! source topic)))
+                       (let [{:keys [callback completion valid? owner]} payload
+                             validation (if valid? (valid?) true)
+                             valid? (or (= true validation)
+                                        (= :valid validation))
+                             _ (when-not valid?
+                                 (swap! pending
+                                        (fn [all]
+                                          (let [remaining
+                                                (into []
+                                                      (remove
+                                                       #(owned-pending? % owner))
+                                                      (get all topic))]
+                                            (if (seq remaining)
+                                              (assoc all topic remaining)
+                                              (dissoc all topic))))))
+                             drained (if valid?
+                                       (<? S (drain-pending!
+                                              S peer subs pending topic owner))
+                                       {:error (if (= :superseded validation)
+                                                 :netz/recovery-superseded
+                                                 :netz/recovery-cancelled)})
+                             result
+                             (if-not (exact-success? drained)
+                               drained
+                               (try
+                                 (when callback (callback topic))
+                                 {:ok true}
+                                 (catch #?(:clj Throwable :cljs :default) error
+                                   {:error error})))]
+                         (if (exact-success? result)
+                           ;; Recovery drains release their gate only after the
+                           ;; owning recovery worker validates its generation.
+                           (when-not completion
+                             ;; Initial-handshake drain does not own a recovery
+                             ;; generation. It may observe a gate but can never
+                             ;; clear one.
+                             nil)
+                           ;; A recovery completion reports failure to its
+                           ;; owner. An initial-join drain has no owner and must
+                           ;; schedule recovery here.
+                           (when-not completion
+                             (mark-dirty! source topic)))
+                         (when completion (completion result)))
 
-                       :recover
-                       (re-handshake! S peer subs source))
-                   ;; Recover only after the ordered backlog is empty. A
-                   ;; re-subscribe marks the handshake incomplete, so anything
-                   ;; arriving while recovery runs is buffered behind it.
-                     (if-let [next-delivery (async/poll! deliveries)]
-                       (recur next-delivery)
-                       (do
-                       ;; Atomically take the set. A concurrent failed offer
-                       ;; belongs to the next drain and cannot be erased
-                       ;; between a deref and reset.
-                         (let [sources (first (swap-vals! dirty-sources
-                                                          (constantly #{})))]
-                         ;; One state source is enough. Starting concurrent v0
-                         ;; generations is invalid and Kabel rejects it.
-                           (when (seq sources)
-                             (re-handshake! S peer subs
-                                            (first (sort-by str
-                                                            (remove nil? sources))))))
-                         (recur (<? S deliveries)))))))
+                       :gap
+                       (let [[batch _]
+                             (swap-vals! gap-control
+                                         (constantly {:queued? false
+                                                      :by-topic {}}))]
+                         (doseq [[gap-topic sources] (:by-topic batch)]
+                           (mark-dirty! sources gap-topic))))
+
+                     (recur (<? S deliveries)))))
+    ;; One recovery owner, independent of the delivery worker it waits on.
+    (go-loop-try S [wake (<? S recovery-wake)]
+                 (when wake
+                   (let [[before _]
+                         (swap-vals!
+                          recovery-control update :topics
+                          (fn [topics]
+                            (reduce-kv
+                             (fn [next-topics topic state]
+                               (assoc next-topics topic
+                                      (if (and (:active? state)
+                                               (seq (:pending-sources state)))
+                                        (assoc state
+                                               :pending-sources #{}
+                                               :status
+                                               {:status :recovering
+                                                :generation
+                                                (:dirty-generation state)})
+                                        state)))
+                             {}
+                             topics)))
+                         tasks
+                         (->> (:topics before)
+                              (keep (fn [[topic state]]
+                                      (when (and (:active? state)
+                                                 (seq (:pending-sources state)))
+                                        {:topic topic
+                                         :intent-generation
+                                         (:intent-generation state)
+                                         :generation
+                                         (:dirty-generation state)
+                                         :sources (:pending-sources state)})))
+                              (sort-by (comp str :topic))
+                              seq)]
+                     (loop [tasks tasks]
+                       (when-let [{:keys [topic intent-generation generation
+                                          sources]}
+                                  (first tasks)]
+                         (let [source (first (sort-by str sources))
+                               valid-intent?
+                               #(let [state (get-in @recovery-control
+                                                    [:topics topic])]
+                                  (and (not (:stopped? @recovery-control))
+                                       (:active? state)
+                                       (= intent-generation
+                                          (:intent-generation state))))
+                               drain-valid?
+                               #(let [state (get-in @recovery-control
+                                                    [:topics topic])]
+                                  (cond
+                                    (not (valid-intent?)) false
+                                    (not= generation
+                                          (:dirty-generation state))
+                                    :superseded
+                                    :else true))
+                               [token port]
+                               (async/alts! [recovery-lock stop-signal])
+                               value (if (or (= port stop-signal)
+                                             (not= :available token))
+                                       {:error :netz/stopped}
+                                       (try
+                                         (if (:stopped? @recovery-control)
+                                           {:error :netz/stopped}
+                                           (async/<! (re-handshake!
+                                                      S peer subs source
+                                                      {:topics #{topic}
+                                                       :enqueue-drain! enqueue-drain!
+                                                       :valid? valid-intent?
+                                                       :drain-valid? drain-valid?
+                                                       :drain-owner
+                                                       {:intent-generation
+                                                        intent-generation
+                                                        :dirty-generation
+                                                        generation}})))
+                                         (finally
+                                           (async/offer! recovery-lock
+                                                         :available))))
+                               result (cond
+                                        (nil? value)
+                                        {:error :netz/recovery-closed}
+
+                                        (throwable? value)
+                                        {:error :netz/recovery-exception
+                                         :exception value}
+
+                                        :else value)
+                               failure (when-not (exact-success? result)
+                                         {:status :failed
+                                          :generation generation
+                                          :source source
+                                          :remaining-sources
+                                          (disj sources source)
+                                          :result result})
+                               desired-status
+                               (or failure
+                                   {:status :ready
+                                    :generation generation
+                                    :source source})
+                               [before after]
+                               (swap-vals!
+                                recovery-control update-in [:topics topic]
+                                (fn [state]
+                                  (if (and (:active? state)
+                                           (= intent-generation
+                                              (:intent-generation state))
+                                           (= generation
+                                              (:dirty-generation state)))
+                                    (assoc state
+                                           :gated? (boolean failure)
+                                           :status desired-status)
+                                    state)))
+                               old-topic (get-in before [:topics topic])
+                               committed?
+                               (and (:active? old-topic)
+                                    (= intent-generation
+                                       (:intent-generation old-topic))
+                                    (= generation
+                                       (:dirty-generation old-topic))
+                                    (= desired-status
+                                       (get-in after
+                                               [:topics topic :status])))]
+                           ;; Validation, gate release, and status publication
+                           ;; are one atomic per-topic transition. A newer dirty
+                           ;; signal or explicit unsubscribe makes this a no-op.
+                           (when (and committed? failure)
+                             (when-let [callback
+                                        (get-in @subs
+                                                [topic :on-recovery-failed])]
+                               (try
+                                 (callback topic failure)
+                                 (catch #?(:clj Throwable
+                                           :cljs :default) _)))))
+                         (recur (next tasks))))
+                     ;; A signal received after the atomic batch take remains
+                     ;; pending in the same controller. Its one-slot wake
+                     ;; normally remains too; this covers a consumed wake.
+                     (when (some (comp seq :pending-sources)
+                                 (vals (:topics @recovery-control)))
+                       (async/offer! recovery-wake :wake))
+                     (recur (<? S recovery-wake)))))
     (rt/set-deliver! running
                      (fn [source topic payload]
                        ;; `offer!`, not a parking put: the delivery function is
@@ -356,22 +997,50 @@
                        ;; silently dropping here is never correct because the
                        ;; dissemination layer has already recorded the message.
                        (or (async/offer! deliveries [:deliver source topic payload])
-                           (do (mark-dirty! source topic) false))))
+                           (do
+                             ;; Queue the gap behind every application already
+                             ;; admitted to the owner. This makes the gap itself
+                             ;; the linearization point and prevents a stale
+                             ;; recovery drain from applying after it.
+                             (queue-gap! source #{topic})
+                             false))))
     (rt/set-state-sync!
      running
-     (fn [from _stranded]
+     (fn [from stranded]
        ;; Close the application gate before queueing the recovery control item.
        ;; Live actions accepted afterwards are buffered until the replacement
        ;; snapshot's ordered drain callback clears the topic.
-       (swap! desynchronized into (keys @subs))
-       (put! deliveries [:recover from nil nil])))
-    (rt/on-stop! running #(close! deliveries))
+       (let [reported (into #{} (keep :topic) stranded)
+             topics (if (seq reported)
+                      (into #{} (filter #(contains? @subs %)) reported)
+                      (set (keys @subs)))]
+         (queue-gap! from topics))
+       true))
+    (rt/on-stop!
+     running
+     #(do
+        (swap! recovery-control
+               (fn [control]
+                 (-> control
+                     (assoc :stopped? true)
+                     (update :topics
+                             (fn [topics]
+                               (reduce-kv
+                                (fn [next-topics topic state]
+                                  (assoc next-topics topic
+                                         (-> state
+                                             (assoc :active? false
+                                                    :gated? true
+                                                    :pending-sources #{}
+                                                    :status {:status :stopped})
+                                             (update :intent-generation
+                                                     (fnil inc 0)))))
+                                {}
+                                topics))))))
+        (close! deliveries)
+        (close! recovery-wake)
+        (close! stop-signal)))
     (pubsub/set-transport!
      peer
-     (transport S peer running subs pending
-                (fn [topic callback]
-                  ;; A control item must not be lost behind a full data queue.
-                  ;; `put!` is safe here: at most one is pending per active
-                  ;; handshake, and the worker is independent of the runtime.
-                  (put! deliveries [:drain nil topic callback]))))
+     (transport S peer running subs pending enqueue-drain! recovery-control))
     peer))

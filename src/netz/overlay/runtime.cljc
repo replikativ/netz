@@ -1030,6 +1030,32 @@
                 :from :app
                 :payload {:type :subscribe :topics (set topics)}}))
 
+(defn unsubscribe-topics!
+  "Remove local topic interests and announce the reduced set to peers."
+  [{:keys [ctx]} topics]
+  (submit! ctx {:type :message
+                :from :app
+                :payload {:type :unsubscribe :topics (set topics)}}))
+
+(defn unsubscribe-topics-ordered!
+  "Queue local interest removal without best-effort overload loss.
+
+  Returns a channel yielding true once the event owns a place in the runtime
+  queue, or false if shutdown closes the queue first. Lifecycle callers await
+  this result, so at most one such pending put exists behind their serializer."
+  [{:keys [ctx]} topics]
+  (let [result (chan 1)
+        event {:type :message
+               :from :app
+               :payload {:type :unsubscribe :topics (set topics)}}
+        finish! (fn [accepted?]
+                  (put! result (boolean accepted?))
+                  (close! result))]
+    (if @(:stopped? ctx)
+      (finish! false)
+      (async/put! (:events ctx) event finish!))
+    result))
+
 (defn publish!
   "Publish on a topic through a running overlay."
   [{:keys [ctx] :as _running} topic payload]

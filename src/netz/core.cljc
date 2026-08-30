@@ -34,5 +34,6 @@
   (kabel-pubsub/publish! peer topic payload))
 
 (defn unsubscribe!
+  "Cancel Netz intent and orderly-drain the selected Kabel generation."
   [peer topics]
-  (kabel-pubsub/unsubscribe! peer topics))
+  (overlay-pubsub/unsubscribe! peer topics))
