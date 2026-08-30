@@ -5,6 +5,11 @@ deterministic CBOR subset in `spec/netz-draft-00.md`. `netz_sync.py` adds the
 transport-independent receiving half of an acknowledged synchronization
 session plus the reference join-set and fenced-root profiles.
 
+The receiver treats `sync/done.frontiers` as an untrusted sender claim. A
+profile commit returns a bounded local `CommitReceipt`; the reference profiles
+claim no frontier until their checkpoint formats bind one causally or
+cryptographically.
+
 Run the shared fixture tests from this directory:
 
 ```sh

@@ -170,9 +170,9 @@
     :timer (let [[delay payload] args] ((:schedule! effects) delay payload))
     :persist (let [[k v] args]
                (when-let [f (:persist! effects)] (f k v)))
-    :deliver (let [[from topic payload] args]
+    :deliver (let [[from topic payload publication] args]
                (when-let [f @(:deliver-fn ctx)]
-                 (f from topic payload)))
+                 (f from topic payload publication)))
 
     :state-sync (let [[from stranded] args]
                   (when-let [f @(:state-sync-fn ctx)]
@@ -537,14 +537,15 @@
   sending faster than we can process no matter how politely we ask. replikativ
   dropped the connection in exactly this case, which is better than the
   alternative we had — queueing until core.async threw."
-  [S ctx peer out from payload]
+  [S ctx peer out from payload encoded-bytes]
   (if-not (well-formed? payload)
     ;; Refused, not fatal, and counted: a malformed frame is a fact about the
     ;; sender, not a reason to stop serving everyone else.
     (do (swap! (:limiter ctx) update-in [:stats :malformed] (fnil inc 0))
         (log/warn :overlay/malformed-frame {:from from :type (:type payload)})
         false)
-    (or (submit! ctx {:type :message :from from :payload payload})
+    (or (submit! ctx (cond-> {:type :message :from from :payload payload}
+                       encoded-bytes (assoc :encoded-bytes encoded-bytes)))
         (do
           (swap! (:limiter ctx) update-in [:stats :overload-drops] (fnil inc 0))
           (close! out)
@@ -724,8 +725,12 @@
                                  ;; would otherwise be able to inject anything
                                  ;; into the rest of the network.
                                      (when (<? S (verify-gossip S payload))
-                                       (accept-or-drop! S ctx peer out from payload))
-                                     (accept-or-drop! S ctx peer out from payload)))))
+                                       (accept-or-drop!
+                                        S ctx peer out from payload
+                                        (:kabel/encoded-bytes (meta m))))
+                                     (accept-or-drop!
+                                      S ctx peer out from payload
+                                      (:kabel/encoded-bytes (meta m)))))))
 
                              :else
                              (if (= :complete @handshake-state)
@@ -1006,12 +1011,28 @@
 
 (defn set-deliver!
   "Install the application delivery function — what
-  `[:deliver source topic payload]` means. `netz.pubsub` sets this to an
+  `[:deliver source topic payload publication]` means. `netz.pubsub` sets this to an
   ordered, bounded `-apply-publish` worker. The source exists so overload can
-  recover through application state sync rather than becoming silent loss."
+  recover through application state sync rather than becoming silent loss;
+  the authenticated publication envelope lets the application receipt name
+  the exact `(origin, epoch, topic, sequence)` it committed."
   [{:keys [ctx]} f]
   (reset! (:deliver-fn ctx) f)
   nil)
+
+(defn application-committed!
+  "Record an exact successful application receipt in the overlay event order.
+
+  This is deliberately separate from transport delivery. A callback calls it
+  only after the local profile has returned `{:ok true}`; slow, failed, or
+  merely admitted publications therefore cannot enter a sync checkpoint."
+  [{:keys [ctx]} publication]
+  (submit! ctx {:type :message
+                :from :app
+                :payload {:type :application-committed
+                          :publication (select-keys publication
+                                                    [:origin :epoch :seq
+                                                     :topic])}}))
 
 (defn set-state-sync!
   "Install what a horizon gap means. `netz.pubsub` sets this to

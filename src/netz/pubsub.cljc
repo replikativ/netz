@@ -61,6 +61,10 @@
        (= true (:ok result))
        (not (contains? result :error))))
 
+(defn- commit-publications!
+  [running publications]
+  (every? true? (map #(rt/application-committed! running %) publications)))
+
 (defn- subscribe-success? [result topics]
   (and (map? result)
        (not (contains? result :error))
@@ -118,12 +122,13 @@
                            {:strategy strategy
                             :on-publish on-publish})))
 
-(defn- pending-entry [gate-state topic payload]
+(defn- pending-entry [gate-state topic payload publication]
   (let [state (when (and gate-state (map? @gate-state))
                 (get-in @gate-state [:topics topic]))]
-    (if state
+    (if (or state publication)
       {::pending? true
        ::payload payload
+       ::publication publication
        ::intent-generation (:intent-generation state)
        ::dirty-generation (:dirty-generation state)}
       payload)))
@@ -178,20 +183,26 @@
     ;; chain on it.
      (go-try S
              (loop [values (seq queued)
-                    applied 0]
+                    applied 0
+                    committed-publications []]
                (if-let [p (first values)]
                  (let [payload (if (::pending? p) (::payload p) p)
                        result (<? S (apply-one! S peer subs topic payload))]
                    (if (true? (:ok result))
-                     (recur (next values) (inc applied))
+                     (recur (next values) (inc applied)
+                            (cond-> committed-publications
+                              (::publication p) (conj (::publication p))))
                      result))
-                 {:ok true :applied applied}))))))
+                 {:ok true
+                  :applied applied
+                  :committed-publications committed-publications}))))))
 
 (defn deliver-to-strategy!
   "Hand a disseminated payload to the topic's strategy, and to `:on-publish`.
 
   Installed by `install!` as the runtime's delivery function: dissemination
-  emits a `[:deliver topic payload]` action rather than calling anything, so
+  emits a `[:deliver source topic payload publication]` action rather than
+  calling anything, so
   the state machine stays pure and the runtime decides what delivery means.
   Here it means what a one-hop publish has always meant — `-apply-publish`
   followed by `:on-publish`, in that order, exactly as
@@ -215,7 +226,7 @@
   signal with a state sync: dissemination has already marked the publication
   seen, so message anti-entropy alone cannot repair an application-level drop."
   [S peer subs pending topic payload & [{:keys [max-pending on-overflow
-                                                desynchronized]
+                                                desynchronized publication]
                                          :or {max-pending 1024}}]]
   (let [desynchronized (or desynchronized (atom #{}))]
     (if-not (handshake-complete? peer subs desynchronized topic)
@@ -224,7 +235,7 @@
                         (fn [q]
                           (let [q (conj (vec q)
                                         (pending-entry desynchronized
-                                                       topic payload))]
+                                                       topic payload publication))]
                             (if (> (count q) max-pending)
                               (vec (subvec q 1))
                               q))))
@@ -236,7 +247,13 @@
       (go-try S
               (let [drained (<? S (drain-pending! S peer subs pending topic))]
                 (if (true? (:ok drained))
-                  (<? S (apply-one! S peer subs topic payload))
+                  (let [result (<? S (apply-one! S peer subs topic payload))]
+                    (if (exact-success? result)
+                      (update result :committed-publications
+                              (fnil into [])
+                              (cond-> (:committed-publications drained)
+                                publication (conj publication)))
+                      result))
                   drained))))))
 
 (def default-recovery-timeout-ms 30000)
@@ -775,7 +792,7 @@
     (swap! peer assoc-in [:pubsub :netz/unsubscribe!] cancel-and-unsubscribe!)
     (go-loop-try S [d (<? S deliveries)]
                  (when d
-                   (let [[op source topic payload] d]
+                   (let [[op source topic payload publication] d]
                      (case op
                        :deliver
                        (when-not
@@ -788,11 +805,24 @@
                                (<? S (deliver-to-strategy!
                                       S peer subs pending topic payload
                                       {:desynchronized recovery-control
+                                       :publication publication
                                        :on-overflow
                                        (fn [overflow-topic]
                                          (mark-dirty! source overflow-topic))}))]
                            (when (and (map? result) (:error result))
-                             (mark-dirty! source topic))))
+                             (mark-dirty! source topic))
+                           (when (exact-success? result)
+                             (let [publications
+                                   (or (seq (:committed-publications result))
+                                       (when publication [publication]))]
+                               (when (and (seq publications)
+                                          (not (commit-publications!
+                                                running publications)))
+                               ;; The application committed but its receipt
+                               ;; could not enter the bounded overlay lane. A
+                               ;; later snapshot must not claim it; gate and
+                               ;; recover instead of continuing silently.
+                                 (mark-dirty! source topic))))))
 
                        :drain
                        (let [{:keys [callback completion valid? owner]} payload
@@ -816,9 +846,20 @@
                                        {:error (if (= :superseded validation)
                                                  :netz/recovery-superseded
                                                  :netz/recovery-cancelled)})
+                             receipts-ok?
+                             (or (not (exact-success? drained))
+                                 (commit-publications!
+                                  running
+                                  (:committed-publications drained)))
                              result
-                             (if-not (exact-success? drained)
+                             (cond
+                               (not (exact-success? drained))
                                drained
+
+                               (not receipts-ok?)
+                               {:error :netz/application-receipt-overloaded}
+
+                               :else
                                (try
                                  (when callback (callback topic))
                                  {:ok true}
@@ -989,7 +1030,7 @@
                        (async/offer! recovery-wake :wake))
                      (recur (<? S recovery-wake)))))
     (rt/set-deliver! running
-                     (fn [source topic payload]
+                     (fn [source topic payload publication]
                        ;; `offer!`, not a parking put: the delivery function is
                        ;; called from the runtime's own loop, and blocking it
                        ;; to deliver to ourselves would deadlock. A full queue
@@ -997,7 +1038,8 @@
                        ;; overload into state synchronization;
                        ;; silently dropping here is never correct because the
                        ;; dissemination layer has already recorded the message.
-                       (or (async/offer! deliveries [:deliver source topic payload])
+                       (or (async/offer! deliveries
+                                         [:deliver source topic payload publication])
                            (do
                              ;; Queue the gap behind every application already
                              ;; admitted to the owner. This makes the gap itself

@@ -39,6 +39,26 @@ class CodecTest(unittest.TestCase):
         self.assertEqual(fixture["canonical_cbor_hex"], dumps(frame).hex())
         self.assertEqual(frame, loads(dumps(frame)))
 
+    def test_shared_sync_done_known_answer(self):
+        fixture = json.loads((ROOT / "spec/fixtures/sync-done-1.json").read_text())
+        diagnostic = fixture["diagnostic"]
+        frame = {
+            "v": diagnostic["v"],
+            "type": diagnostic["type"],
+            "session": bytes.fromhex(diagnostic["session_hex"]),
+            "count": diagnostic["count"],
+            "topic": diagnostic["topic"],
+            "checkpoint": bytes.fromhex(diagnostic["checkpoint_hex"]),
+            "frontiers": [
+                {"origin": bytes.fromhex(item["origin_hex"]),
+                 "epoch": item["epoch"], "topic": item["topic"],
+                 "through": item["through"]}
+                for item in diagnostic["frontiers"]
+            ],
+        }
+        self.assertEqual(fixture["canonical_cbor_hex"], dumps(frame).hex())
+        self.assertEqual(frame, loads(dumps(frame)))
+
     def test_rejects_non_profile_values(self):
         with self.assertRaises(CBORError):
             dumps({1: "non-text key"})
@@ -64,15 +84,41 @@ class CodecTest(unittest.TestCase):
         self.assertEqual(0, ack["through"])
         self.assertEqual({"local"}, receiver.value, "staging must not leak before done")
         receiver.receive({"v": 1, "type": "sync/done", "session": session,
-                          "count": 1, "topic": "demo/tasks", "frontiers": {},
+                          "count": 1, "topic": "demo/tasks",
+                          "frontiers": [{"origin": bytes(32), "epoch": 0,
+                                         "topic": "demo/tasks", "through": 999}],
                           "checkpoint": dumps(["remote"])})
         self.assertEqual({"local", "remote"}, receiver.value)
+        self.assertEqual({}, receiver.frontiers,
+                         "legacy profile must not echo the sender's frontier")
         self.assertEqual("synchronized", receiver.status)
 
         future = SyncReceiver(session, "demo/tasks", profile, set())
         with self.assertRaises(SyncError):
             future.receive({"v": 1, "type": "sync/chunk", "session": session,
                             "index": 1, "data": dumps(["future"])})
+
+    def test_sync_receiver_rejects_frontiers_before_profile_commit(self):
+        class CountingProfile(JoinSetProfile):
+            def __init__(self):
+                self.commits = 0
+
+            def commit(self, value, staging, checkpoint, claimed_frontiers):
+                self.commits += 1
+                return super().commit(value, staging, checkpoint,
+                                      claimed_frontiers)
+
+        session = bytes(range(16))
+        profile = CountingProfile()
+        receiver = SyncReceiver(session, "demo/tasks", profile, set())
+        duplicate = {"origin": bytes(32), "epoch": 0,
+                     "topic": "demo/tasks", "through": 0}
+        with self.assertRaises(SyncError):
+            receiver.receive({"v": 1, "type": "sync/done", "session": session,
+                              "count": 0, "topic": "demo/tasks",
+                              "frontiers": [duplicate, duplicate],
+                              "checkpoint": dumps([])})
+        self.assertEqual(0, profile.commits)
 
     def test_root_profile_rejects_wrong_writer_and_conflict(self):
         profile = RootLogProfile("urd/a")

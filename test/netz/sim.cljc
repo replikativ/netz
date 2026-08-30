@@ -42,7 +42,7 @@
       [:connect    <to-id> <address> <first-frame>]
       [:disconnect <to-id>]
       [:persist    <key> <value>]
-      [:deliver    <source-id> <topic> <payload>]
+      [:deliver    <source-id> <topic> <payload> <publication>]
 
   `:connect` and `:disconnect` exist because opening a transport is not a
   message — in a deployment they are `kabel.peer/connect` against a URL

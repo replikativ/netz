@@ -125,10 +125,13 @@
                                {:type :message :from :server
                                 :payload {:type :sync/done :session :s :count 1
                                           :checkpoint #{:remote}
-                                          :frontiers {}}}
+                                          :frontiers {[:server 0 :doc] 99}}}
                                {:now 2})]
         (is (= #{:local :remote}
-               (sync/application (:state done) :doc))))))
+               (sync/application (:state done) :doc)))
+        (is (empty? (sync/frontiers (:state done) :doc))
+            "a legacy profile must not echo a remote frontier claim")
+        (is (= [[:sync-committed {}]] (:actions done))))))
 
   (testing "a future chunk aborts instead of applying out of order"
     (let [[receiver _] (sync/start
@@ -141,6 +144,76 @@
                                {:now 1})]
       (is (= :sync/abort (:type (nth (first (:actions result)) 2))))
       (is (= #{} (sync/application (:state result) :doc))))))
+
+(deftest application-receipts-not-network-admission-advance-frontiers
+  (let [state (sync/make-state :reader {})
+        publication {:origin :writer :epoch 0 :seq 0 :topic :doc}
+        remote (sync/handler state
+                             {:type :message :from :writer
+                              :payload {:type :application-committed
+                                        :publication publication}}
+                             {:now 0})
+        local (sync/handler (:state remote)
+                            {:type :message :from :app
+                             :payload {:type :application-committed
+                                       :publication publication}}
+                            {:now 1})]
+    (is (empty? (sync/frontiers (:state remote) :doc))
+        "a peer cannot mint our application receipt")
+    (is (= {[:writer 0 :doc] 0}
+           (sync/frontiers (:state local) :doc)))
+    (let [gap (sync/handler (:state local)
+                            {:type :message :from :app
+                             :payload {:type :application-committed
+                                       :publication (assoc publication :seq 2)}}
+                            {:now 2})]
+      (is (= {[:writer 0 :doc] 0}
+             (sync/frontiers (:state gap) :doc)))
+      (is (= :desynchronized (sync/status (:state gap) :doc))))))
+
+(deftest an-opted-in-profile-mints-only-its-locally-validated-frontier
+  (let [topic "doc"
+        origin (apply str (repeat 64 "0"))
+        frontier {[origin 0 topic] 0}
+        impl
+        (reify
+          profile/SyncProfile
+          (-profile-id [_] "test/validated-frontier/1")
+          (-describe [_ value _] value)
+          (-respond [_ value _ _]
+            {:chunks [value]
+             :checkpoint {:application value :frontiers frontier}})
+          (-begin [_ value _] value)
+          (-apply-chunk [_ _ _ chunk] chunk)
+          (-commit [_ _ _ staging _] staging)
+
+          profile/CommittedFrontierProfile
+          (-commit-with-frontiers [_ _ _ staging checkpoint claimed]
+            (when-not (= claimed (:frontiers checkpoint))
+              (throw (ex-info "frontier was not bound to checkpoint" {})))
+            {:application staging
+             :frontiers claimed}))
+        profile-id (profile/profile-id impl)
+        [receiver _] (sync/start
+                      (sync-node :client profile-id impl topic :old)
+                      :server topic profile-id :verified)
+        chunked (sync/handler receiver
+                              {:type :message :from :server
+                               :payload {:type :sync/chunk :session :verified
+                                         :index 0 :data :new}}
+                              {:now 1})
+        done (sync/handler (:state chunked)
+                           {:type :message :from :server
+                            :payload {:type :sync/done :session :verified
+                                      :count 1
+                                      :topic topic
+                                      :checkpoint {:application :new
+                                                   :frontiers frontier}
+                                      :frontiers frontier}}
+                           {:now 2})]
+    (is (= :new (sync/application (:state done) topic)))
+    (is (= frontier (sync/frontiers (:state done) topic)))
+    (is (= [[:sync-committed frontier]] (:actions done)))))
 
 (deftest a-lost-session-times-out-desynchronized
   (let [s (-> (sim/make-sim {:drop-p 1.0})
@@ -155,7 +228,7 @@
     (is (= :desynchronized (sync/status (sim/node-state s :client) :doc)))
     (is (empty? (:sessions (sim/node-state s :client))))))
 
-(deftest overlay-commit-advances-ordered-live-frontier
+(deftest legacy-overlay-commit-does-not-trust-a-transport-frontier
   (let [old {:writer :writer :term 1 :index 1 :root :old}
         current {:writer :writer :term 2 :index 2 :root :current}
         opts (fn [value]
@@ -184,6 +257,10 @@
               (sim/run-until 2000))
         reader (sim/node-state s :reader)]
     (is (= current (overlay/synced-value reader :db)))
-    (is (= [:live-after-snapshot] (overlay/delivered reader)))
-    (is (= 2 (get-in reader [:dissemination :delivery-next
-                             [:writer 0 :db]])))))
+    (is (empty? (overlay/delivered reader))
+        "a legacy profile cannot suppress the missing live prefix")
+    (is (= 0 (get-in reader [:dissemination :delivery-next
+                             [:writer 0 :db]] 0)))
+    (is (= #{1}
+           (set (keys (get-in reader [:dissemination :delivery-pending
+                                      [:writer 0 :db]])))))))

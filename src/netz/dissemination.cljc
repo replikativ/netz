@@ -506,7 +506,8 @@
   (loop [state state
          actions []]
     (let [next-seq (get-in state [:delivery-next stream] 0)]
-      (if-let [{:keys [msg from]} (get-in state [:delivery-pending stream next-seq])]
+      (if-let [{:keys [msg from bytes]}
+               (get-in state [:delivery-pending stream next-seq])]
         (let [pending (dissoc (get-in state [:delivery-pending stream]) next-seq)
               state (-> state
                         (assoc-in [:delivery-next stream] (inc next-seq))
@@ -517,7 +518,8 @@
                           (assoc-in [:delivery-pending stream] pending)))]
           (recur state
                  (conj actions [:deliver (or from (:origin msg))
-                                (:topic msg) (:payload msg)])))
+                                (:topic msg) (:payload msg)
+                                (cond-> msg bytes (assoc :bytes bytes))])))
         [state actions]))))
 
 (defn- order-for-delivery
@@ -527,14 +529,14 @@
   A bounded overflow is an application-state gap, not a message-repair gap:
   the message has already been accepted and may disappear from the buffer. It
   therefore escalates the stream to state synchronization exactly once."
-  [state msg from]
+  [state msg from bytes]
   (let [stream (stream-key msg)
         seq-no (:seq msg)
         next-seq (get-in state [:delivery-next stream] 0)]
     (if (< seq-no next-seq)
       [state []]
       (let [pending (assoc (get-in state [:delivery-pending stream] (sorted-map))
-                           seq-no {:msg msg :from from})
+                           seq-no {:msg msg :from from :bytes bytes})
             cap (get-in state [:opts :max-order-buffer])
             overflow? (> (count pending) cap)
             pending (if overflow?
@@ -589,7 +591,7 @@
 
 (defn- accept-and-forward
   "Common path for a message we have not seen: record, deliver, relay."
-  [state msg from]
+  [state msg from bytes]
   (let [{:keys [origin epoch seq topic hops payload]} msg
         {:keys [max-hops]} (:opts state)
         subscribed? (contains? (:topics state) topic)
@@ -606,7 +608,7 @@
         ;; local publication the origin is ourselves and the adapter may fall
         ;; back to any subscribed peer.
         [state deliver] (if subscribed?
-                          (order-for-delivery state msg from)
+                          (order-for-delivery state msg from bytes)
                           [state []])]
     (if (>= hops max-hops)
       [(update-in state [:stats :hop-expired] inc) (vec deliver)]
@@ -635,7 +637,7 @@
         state (-> state
                   (assoc-in [:next-seq topic] (inc seq-no))
                   (update-in [:stats :published] inc))
-        [state actions] (accept-and-forward state msg nil)]
+        [state actions] (accept-and-forward state msg nil nil)]
     [state actions]))
 
 (defn handler
@@ -763,7 +765,8 @@
             {:state (update-in state [:stats :duplicates] inc) :actions []}
 
             :else
-            (let [[state actions] (accept-and-forward state payload from)]
+            (let [[state actions] (accept-and-forward state payload from
+                                                      (:encoded-bytes event))]
               {:state state :actions actions})))
 
         :have

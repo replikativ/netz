@@ -30,6 +30,12 @@ may make incompatible protocol changes.
   serialization, generation- and owner-minted sync-attempt fencing, portable
   exact-integer/frontier bounds, absorbing terminal states, and locally bound
   application-committed frontiers.
+- Preserved authenticated publication identity through application delivery
+  and advanced synchronization frontiers only after exact local apply success.
+  Legacy sync profiles now claim no live-stream frontier; an opted-in profile
+  must validate and mint its own commit receipt.
+- Consumed Kabel's exact decoded CBOR frame size as receiver-local accounting
+  metadata without relaying that unsigned value.
 - Scoped publication sequences and anti-entropy to topic streams, with bounded
   FIFO delivery and synchronization frontiers for recovery.
 - Made the deterministic simulator preserve Kabel's per-link FIFO guarantee by
@@ -38,10 +44,11 @@ may make incompatible protocol changes.
   duplication, in-flight and bandwidth accounting, a 1,000-peer scale gate,
   and a pinned JVM/JavaScript simulation fingerprint.
 - Added a pure bounded `sync/open`/`chunk`/`ack`/`done`/`abort` session machine,
-  atomic transport-frontier commits, and executable fenced-root and
+  atomic locally validated frontier commits, and executable fenced-root and
   join-semilattice reference profiles.
-- Added a strict RFC 8949 deterministic-CBOR draft profile, shared JVM/JS
-  fixture, and dependency-free Python conformance codec.
+- Added a strict RFC 8949 deterministic-CBOR draft profile, shared JVM/JS/Python
+  `hello`, `sync/open`, and frontier-bearing `sync/done` fixtures, and a
+  dependency-free Python conformance codec.
 - Added a canonical synchronization fixture and a dependency-free Python
   ordered/atomic sync receiver with join-set and fenced-root profiles.
 - Added an optional stack gate composing Urd/Raft, Datahike, Netz,

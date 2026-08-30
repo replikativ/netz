@@ -13,7 +13,7 @@ outside the Clojure ecosystem.
 > **Release status: `0.1.0-alpha.1`.** Netz is suitable for controlled peers,
 > but not yet for an untrusted public network. Mixed direct/overlay live
 > delivery is now rejected explicitly; bounded asynchronous WebSocket writes
-> and applied-frontier accounting remain release gates. See
+> and full generation-fenced apply-owner integration remain release gates. See
 > [release readiness](RELEASE.md) for the complete gate.
 
 ## What Netz owns

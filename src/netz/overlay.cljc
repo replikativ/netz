@@ -79,7 +79,7 @@
         ss (:sync state)
         topic (get-in event [:payload :topic])
         {ss' :state sa :actions}
-        (sync/handler ss event (assoc ctx :frontiers (d/frontiers ds' topic)))
+        (sync/handler ss event ctx)
 
         ;; A sync profile commits application state first. Its transport
         ;; frontiers then advance dissemination's ordered application cursor,

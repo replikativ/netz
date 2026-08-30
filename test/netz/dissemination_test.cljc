@@ -72,14 +72,34 @@
     (is (empty? (:delivered (:state later)))
         "a later publication must wait for its missing prefix")
     (is (= [:first :second] (:delivered (:state earlier))))
-    (is (= [[:deliver :sender :t :first]
-            [:deliver :sender :t :second]]
+    (is (= [[:deliver :sender :t :first
+             {:type :gossip :topic :t :origin :publisher :epoch 0
+              :seq 0 :hops 0 :payload :first}]
+            [:deliver :sender :t :second
+             {:type :gossip :topic :t :origin :publisher :epoch 0
+              :seq 1 :hops 0 :payload :second}]]
            (filter #(= :deliver (first %)) (:actions earlier))))
 
     (testing "unrelated topics have independent counters"
       (let [a (receive base :t 0 :t0)
             b (receive (:state a) :other 0 :other0)]
         (is (= [:t0 :other0] (:delivered (:state b))))))))
+
+(deftest delivery-carries-local-byte-accounting-without-relaying-it
+  (let [state (-> (d/make-state :receiver #{:t})
+                  (assoc :peers {:relay {:interests #{:t} :carries #{}}}))
+        result (d/handler
+                state
+                {:type :message :from :sender :encoded-bytes 321
+                 :payload {:type :gossip :topic :t :origin :publisher
+                           :epoch 0 :seq 0 :hops 0 :payload :value}}
+                {:now 0})
+        delivery (first (filter #(= :deliver (first %)) (:actions result)))
+        relayed (get-in (first (filter #(= :send (first %)) (:actions result)))
+                        [2])]
+    (is (= 321 (get-in delivery [4 :bytes])))
+    (is (not (contains? relayed :bytes))
+        "a receiver-local frame size must not become unsigned wire data")))
 
 (deftest ordered-delivery-overflow-and-sync-frontier
   (let [receive (fn [state seq-no]
@@ -103,7 +123,9 @@
       (let [[state actions] (d/sync-committed (:state overflow)
                                               {[:publisher 0 :t] 1})]
         (is (= [2] (:delivered state)))
-        (is (= [[:deliver :sender :t 2]] actions))
+        (is (= [[:deliver :sender :t 2
+                 {:type :gossip :topic :t :origin :publisher :epoch 0
+                  :seq 2 :hops 0 :payload 2}]] actions))
         (is (not (contains? (:delivery-desynchronized state)
                             [:publisher 0 :t])))))))
 
@@ -173,7 +195,10 @@
         (is (= ["x"] (:delivered s')) "hop-expired message was not delivered")
         ;; Delivered AND not relayed — the two halves of the hop limit, and
         ;; now separable because delivery is its own action.
-        (is (= [[:deliver :p1 :t "x"]] (filter #(= :deliver (first %)) actions))
+        (is (= [[:deliver :p1 :t "x"
+                 {:type :gossip :topic :t :origin :o :epoch 0 :seq 0
+                  :hops 3 :payload "x"}]]
+               (filter #(= :deliver (first %)) actions))
             "hop-expired message was not handed to the application")
         (is (empty? (filter #(= :send (first %)) actions))
             "hop-expired message was relayed anyway")

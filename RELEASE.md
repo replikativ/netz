@@ -26,8 +26,14 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 - [x] An optional sibling-workspace gate composes a real Urd/Raft fence with a
       Datahike commit root and heals durable Yggdrasil G-Sets through Spindel's
       delta hook, without leaking local roots into the artifact.
-- [x] JVM, JavaScript and Python pin the same canonical `sync/open` bytes;
-      Python also exercises ordered, atomic profile application.
+- [x] JVM, JavaScript and Python pin the same canonical `sync/open` and
+      frontier-bearing `sync/done` bytes; Python also exercises ordered,
+      atomic profile application and pre-commit claim validation.
+- [x] Overlay delivery preserves authenticated publication identity through the
+      asynchronous application receipt. Only exact local apply success advances
+      synchronization frontiers; remote `sync/done` claims are inert unless an
+      opted-in local profile validates and returns them. Kabel CBOR supplies
+      exact receiver-local frame accounting without relaying it.
 
 ## Required before exposing to untrusted peers
 
@@ -42,10 +48,12 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       start, buffered values are intent/generation-owned, subscription interest
       is rolled back reliably, shutdown cannot open the lifecycle semaphore,
       and terminal failure is observable by status/callback.
-- [ ] Wire apply-owner receipts into overlay delivery and synchronization so
-      checkpoints advertise application-committed frontiers, not merely
-      transport-received frontiers. A slow or failed profile apply must never
-      make a later snapshot claim that value.
+- [ ] Move the now-separated delivery receipts and validated snapshot commits
+      under one `netz.apply-owner` generation per v1 topic/profile. The runtime
+      already prevents slow or failed applies and untrusted `sync/done` claims
+      from advancing checkpoints; the remaining gate is generation-fenced
+      live/snapshot ownership and receipt settlement for every negotiated
+      transport.
 - [ ] Kabel's WebSocket adapters need bounded asynchronous writes or byte
       credits. Netz cannot bound a queue below the transport that owns it.
 - [ ] The actual socket layer must enforce the 5 MiB encoded-frame ceiling and

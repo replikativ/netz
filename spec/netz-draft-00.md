@@ -56,7 +56,7 @@ Node.metrics() -> Metrics
 SyncProfile.describe(topic) -> opaque summary bytes
 SyncProfile.respond(topic, remote_summary) -> async SyncChunk
 SyncProfile.apply(topic, chunk) -> completion
-SyncProfile.commit(topic, checkpoint) -> completion
+SyncProfile.commit(topic, checkpoint, claimed_frontiers) -> CommitReceipt
 ~~~
 
 `publish` completing means the local runtime accepted responsibility for the
@@ -66,6 +66,12 @@ node MUST mark the topic desynchronized and run the state-sync profile.
 
 Callbacks MUST be serialized per subscription unless the profile explicitly
 declares concurrent application safe.
+
+`CommitReceipt` contains the locally committed application result, the bounded
+stream frontiers that result actually represents, and their encoded byte size.
+`claimed_frontiers` came from the peer and is untrusted. A binding MUST return
+no frontier unless its profile can validate that the checkpoint causally or
+cryptographically covers it; copying the claim into the receipt is invalid.
 
 ## 4. Data model and canonical CBOR
 
@@ -222,24 +228,45 @@ flooded through the dissemination mesh.
 
 Either peer may open a session. Every frame below also carries `v: 1`:
 
+`StreamFrontiers` is a bounded array, because profile-1 maps permit only text
+keys:
+
+~~~text
+[{origin: bytes32, epoch: uint64, topic: text, through: uint64}, ...]
+~~~
+
+Entries MUST be unique and sorted by origin bytes, then epoch, then UTF-8 topic
+bytes. A receiver MUST reject a foreign topic, duplicate stream, unsafe integer,
+or more than 1,024 entries. The deterministic-CBOR encoding of the complete
+array is limited to 256 KiB. Although these counters use CBOR unsigned-integer
+encoding, values above 2^53-1 are invalid so every conforming JavaScript binding
+can represent them exactly.
+
 ~~~text
 sync/open  {session: bytes16, topic: text, profile: text, summary: bytes}
 sync/chunk {session: bytes16, index: uint64, data: bytes}
 sync/ack   {session: bytes16, through: uint64}
 sync/done  {session: bytes16, count: uint64, topic: text,
-            checkpoint: bytes, frontiers: StreamFrontier}
+            checkpoint: bytes, frontiers: StreamFrontiers}
 sync/abort {session: bytes16, code: text}
 ~~~
 
 The `summary`, `data` and `checkpoint` fields are opaque to Netz and defined by
 the named profile. A receiver MUST apply chunks in index order and acknowledge
 bounded batches. `done` becomes visible atomically through `SyncProfile.commit`;
-failure before commit leaves the previous checkpoint visible.
+failure before commit leaves the previous checkpoint visible. The `frontiers`
+field is a sender claim, not a receipt. Buffered publications are subsumed only
+by the bounded frontier returned from the receiver's successful local commit.
+Bindings for legacy profiles MUST return an empty frontier.
 
 `fixtures/sync-open-1.json` pins a complete join-semilattice `sync/open` frame.
 The profile summary is itself deterministic CBOR, carried as an opaque byte
 string by the outer frame. JVM, JavaScript and Python MUST emit the fixture's
 exact bytes.
+
+`fixtures/sync-done-1.json` pins the corresponding canonical frontier-array
+shape in a complete `sync/done` frame. It is shared by the JVM, JavaScript and
+Python conformance tests.
 
 The reference implementation includes executable models of two initial
 profiles:

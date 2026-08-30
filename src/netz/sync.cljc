@@ -5,13 +5,35 @@
   acknowledged windows. Application state is staged until `sync/done`, then
   committed atomically. Its handler has the same `(state,event,ctx)` shape as
   the rest of Netz and runs unchanged in the deterministic simulator."
-  (:require [netz.sync.profile :as profile]))
+  (:require [netz.identity :as identity]
+            [netz.sync.profile :as profile]
+            [netz.wire :as wire]))
 
 (def default-opts
   {:window 4
    :timeout-ms 15000
    :max-chunks 4096
-   :max-sessions 64})
+   :max-sessions 64
+   :max-frontier-streams 1024
+   :max-frontier-bytes (* 256 1024)})
+
+(def max-safe-integer 9007199254740991)
+
+(defn- safe-uint? [value]
+  (and (integer? value) (<= 0 value max-safe-integer)))
+
+(defn- validated-receipt
+  [state topic {:keys [frontiers] :as receipt}]
+  (when (and (map? receipt)
+             (contains? receipt :application)
+             (map? frontiers)
+             (<= (count frontiers) (get-in state [:opts :max-frontier-streams])))
+    (try
+      (let [encoded (wire/encode-frontiers topic frontiers)
+            bytes (identity/buf-length encoded)]
+        (when (<= bytes (get-in state [:opts :max-frontier-bytes]))
+          (assoc receipt :frontier-bytes bytes)))
+      (catch #?(:clj Throwable :cljs :default) _ nil))))
 
 (defn make-state
   ([id] (make-state id {}))
@@ -32,6 +54,27 @@
 
 (defn status [state topic]
   (get-in state [:status topic] :idle))
+
+(defn frontiers [state topic]
+  (get-in state [:frontiers topic] {}))
+
+(defn- record-application-commit
+  [state {:keys [origin epoch seq topic]}]
+  (let [stream [origin epoch topic]
+        current (get-in state [:frontiers topic stream] -1)]
+    (cond
+      (not (and (some? origin) (some? topic)
+                (safe-uint? epoch) (safe-uint? seq)))
+      state
+
+      (<= seq current)
+      state
+
+      (= seq (inc current))
+      (assoc-in state [:frontiers topic stream] seq)
+
+      :else
+      (assoc-in state [:status topic] :desynchronized))))
 
 (defn- profile-for [state profile-id]
   (get-in state [:profiles profile-id]))
@@ -88,7 +131,7 @@
        (update-in [:stats :aborted] inc))
    [[:send peer {:type :sync/abort :session session :code code}]]])
 
-(defn- on-open [state from payload ctx]
+(defn- on-open [state from payload _ctx]
   (let [{:keys [session topic summary] profile-id :profile} payload
         impl (profile-for state profile-id)]
     (cond
@@ -105,8 +148,7 @@
             (abort state session from :too-many-chunks)
             (let [sender {:role :sender :peer from :topic topic :profile profile-id
                           :chunks chunks :checkpoint checkpoint
-                          :frontiers (or (:frontiers ctx)
-                                         (get-in state [:frontiers topic]) {})
+                          :frontiers (frontiers state topic)
                           :acked -1 :next-to-send 0}
                   [sender actions] (sender-actions state session sender)
                   done? (some #(= :sync/done (:type (nth % 2 nil))) actions)
@@ -176,13 +218,20 @@
       (try
         (let [impl (profile-for state profile)
               current (application state topic)
-              committed (profile/commit impl current topic staging checkpoint)]
-          [(-> state
-               (assoc-in [:applications topic] committed)
-               (assoc-in [:status topic] :synchronized)
-               (update :sessions dissoc session)
-               (update-in [:stats :completed] inc))
-           [[:sync-committed frontiers]]])
+              receipt (validated-receipt
+                       state topic
+                       (profile/commit-result
+                        impl current topic staging checkpoint frontiers))]
+          (if-not receipt
+            (abort state session from :invalid-committed-frontiers)
+            [(-> state
+                 (assoc-in [:applications topic] (:application receipt))
+                 (update-in [:frontiers topic] #(merge-with max (or % {})
+                                                            (:frontiers receipt)))
+                 (assoc-in [:status topic] :synchronized)
+                 (update :sessions dissoc session)
+                 (update-in [:stats :completed] inc))
+             [[:sync-committed (:frontiers receipt)]]]))
         (catch #?(:clj Throwable :cljs :default) _
           (abort state session from :commit-rejected))))))
 
@@ -203,13 +252,19 @@
     :message
     (let [from (:from event) payload (:payload event)]
       (if (= from :app)
-        (if (= :sync/start (:type payload))
+        (case (:type payload)
+          :sync/start
           (let [[state actions] (if-let [session (:session payload)]
                                   (start state (:peer payload) (:topic payload)
                                          (:profile payload) session)
                                   (start state (:peer payload) (:topic payload)
                                          (:profile payload)))]
             {:state state :actions actions})
+
+          :application-committed
+          {:state (record-application-commit state (:publication payload))
+           :actions []}
+
           {:state state :actions []})
         (let [[state actions]
               (case (:type payload)

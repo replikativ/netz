@@ -391,9 +391,11 @@
                              {:t {:strategy (recording-strategy applied)
                                   :handshake-complete? false}}}})
         subs (atom {:t {}})
-        pending (atom {})]
-    (pso/deliver-to-strategy! S peer subs pending :t {:n 1})
-    (pso/deliver-to-strategy! S peer subs pending :t {:n 2})
+        pending (atom {})
+        p1 {:origin :writer :epoch 0 :seq 0 :topic :t :payload {:n 1}}
+        p2 {:origin :writer :epoch 0 :seq 1 :topic :t :payload {:n 2}}]
+    (pso/deliver-to-strategy! S peer subs pending :t {:n 1} {:publication p1})
+    (pso/deliver-to-strategy! S peer subs pending :t {:n 2} {:publication p2})
     (<?? S (timeout 200))
     (is (empty? @applied)
         "nothing may be applied before the base state exists")
@@ -401,7 +403,9 @@
 
     ;; Handshake completes.
     (swap! peer assoc-in [:pubsub :subscriptions :t :handshake-complete?] true)
-    (<?? S (pso/drain-pending! S peer subs pending :t))
+    (let [drained (<?? S (pso/drain-pending! S peer subs pending :t))]
+      (is (= [p1 p2] (:committed-publications drained))
+          "the snapshot drain retains identities for application receipts"))
     (<?? S (timeout 200))
     (is (= [{:n 1} {:n 2}] @applied)
         "the buffer must drain in ARRIVAL order")
@@ -720,6 +724,87 @@
       (is (= [:bad-source :good-source] @calls))
       (@stop!))))
 
+(deftest only-exact-application-success-emits-a-committed-publication-receipt
+  (let [deliver! (atom nil)
+        stop! (atom nil)
+        installed-subs (atom nil)
+        results (atom [{:ok true} {:error :apply-failed}])
+        committed (atom [])
+        applications (atom 0)
+        p (atom {:pubsub {}})]
+    (with-redefs [rt/set-deliver! (fn [_ f] (reset! deliver! f) true)
+                  rt/set-state-sync! (fn [_ _] true)
+                  rt/on-stop! (fn [_ f] (reset! stop! f) true)
+                  rt/application-committed!
+                  (fn [_ publication]
+                    (swap! committed conj publication)
+                    true)
+                  pubsub/set-transport! (fn [_ _] true)
+                  pso/transport (fn [_ _ _ subs _ _ _]
+                                  (reset! installed-subs subs)
+                                  {})
+                  pso/re-handshake! (fn [& _] (done {:error :test/recovery}))
+                  pso/deliver-to-strategy!
+                  (fn [& _]
+                    (swap! applications inc)
+                    (let [[result & remaining] @results]
+                      (reset! results (vec remaining))
+                      (done result)))]
+      (pso/install! S p {:peer-id :self})
+      (activate-recovery-topic! p installed-subs :t {})
+      (let [first-publication {:type :gossip :origin :writer :epoch 0 :seq 0
+                               :topic :t :payload :first}
+            failed-publication (assoc first-publication :seq 1 :payload :second)]
+        (@deliver! :source :t :first first-publication)
+        (is (wait-for 3000 #(= 1 @applications)))
+        (is (wait-for 3000 #(= [first-publication] @committed)))
+
+        (@deliver! :source :t :second failed-publication)
+        (is (wait-for 3000 #(= 2 @applications)))
+        (<?? S (timeout 50))
+        (is (= [first-publication] @committed)
+            "failed application must not enter a later sync checkpoint"))
+      (@stop!))))
+
+(deftest snapshot-drain-emits-receipts-for-the-buffered-publication-identities
+  (let [deliver! (atom nil)
+        stop! (atom nil)
+        installed-subs (atom nil)
+        committed (atom [])
+        applied (atom [])
+        strategy (recording-strategy applied)
+        p (atom {:pubsub {:subscriptions
+                          {:t {:strategy strategy
+                               :handshake-complete? false}}}})]
+    (with-redefs [rt/set-deliver! (fn [_ f] (reset! deliver! f) true)
+                  rt/set-state-sync! (fn [_ _] true)
+                  rt/on-stop! (fn [_ f] (reset! stop! f) true)
+                  rt/application-committed!
+                  (fn [_ publication]
+                    (swap! committed conj publication)
+                    true)
+                  pubsub/set-transport! (fn [_ _] true)
+                  pso/transport (fn [_ _ _ subs _ _ _]
+                                  (reset! installed-subs subs)
+                                  {})]
+      (pso/install! S p {:peer-id :self})
+      (activate-recovery-topic! p installed-subs :t {})
+      (let [p1 {:type :gossip :origin :writer :epoch 0 :seq 0
+                :topic :t :payload :first}
+            p2 (assoc p1 :seq 1 :payload :second)]
+        (@deliver! :source :t :first p1)
+        (<?? S (timeout 50))
+        (is (empty? @applied))
+        (is (empty? @committed))
+
+        (swap! p assoc-in [:pubsub :subscriptions :t :handshake-complete?] true)
+        (swap! (get-in @p [:pubsub :netz/recovery-control])
+               assoc-in [:topics :t :gated?] false)
+        (@deliver! :source :t :second p2)
+        (is (wait-for 3000 #(= [:first :second] @applied)))
+        (is (wait-for 3000 #(= [p1 p2] @committed))))
+      (@stop!))))
+
 (deftest a-vanished-candidate-never-falls-back-to-an-unrelated-connection
   (let [strategy (recording-strategy (atom []))
         attempted? (atom false)]
@@ -777,7 +862,7 @@
       (is (= 1 @drains))
       (is (= :closed (:status (pso/recovery-status p :t))))
       (is (not (contains? @@installed-subs :t)))
-      (@deliver! :late-source :t {:late true})
+      (@deliver! :late-source :t {:late true} nil)
       (<?? S (timeout 100))
       (is (zero? @applications)
           "late overlay frames cannot cross an explicit cancellation fence")

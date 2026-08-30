@@ -61,6 +61,19 @@ state. A direct/v0 correctness failure settles and retires that generation. It
 never starts recovery on the connection being retired; a replacement owner
 must begin the next sync attempt.
 
+The executable overlay carries the authenticated publication envelope to the
+ordered application worker. Only an exact local `{:ok true}` result emits an
+`application-committed` receipt, and only that local event advances the
+frontier used by a later sender snapshot. A peer cannot inject that event.
+`sync/done.frontiers` remains an untrusted claim: a legacy `SyncProfile` commits
+its application value but returns an empty frontier. A profile implementing
+`CommittedFrontierProfile` receives the claim and must return a locally
+validated `{:application ..., :frontiers ...}` receipt; Netz validates its
+shape and computes its canonical byte size itself. Echoing the wire value
+without binding it to the checkpoint is a bug. Kabel
+0.3.117 carries the exact decoded CBOR frame size in receiver-local metadata,
+which Netz attaches to delivery for bounded accounting and never forwards.
+
 The current Kabel adapter maps this to `PSyncStrategy`:
 
 | Portable profile operation | Kabel operation |
@@ -71,13 +84,14 @@ The current Kabel adapter maps this to `PSyncStrategy`:
 | Apply a live value | `-apply-publish` |
 
 Live values received before the initial handshake completes are bounded and
-ordered. A successful synchronization checkpoint must carry the
-application-committed stream frontiers represented by its snapshot. Buffered
-values at or below those frontiers are subsumed; the newer contiguous suffix is
-then released. Overflow marks the topic desynchronized and reruns the handshake;
-message repair cannot recover a value that dissemination already marked seen.
-The pure owner enforces this distinction; wiring its receipts into the overlay
-runtime is an explicit alpha release gate.
+ordered. A successful synchronization checkpoint may suppress buffered
+publications only with application-committed stream frontiers returned by the
+local profile receipt. Buffered values at or below those frontiers are
+subsumed; the newer contiguous suffix is then released. Overflow marks the
+topic desynchronized and reruns the handshake; message repair cannot recover a
+value that dissemination already marked seen. The receipt/frontier path is now
+wired; placing its live and snapshot operations under one generation-fenced
+pure apply owner remains an explicit alpha release gate.
 
 The current Kabel-v0 adapter serializes recovery on a separate one-slot control
 lane. Dirty work retains `topic -> candidate sources`, so a horizon report for
