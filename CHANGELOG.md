@@ -23,6 +23,8 @@ may make incompatible protocol changes.
   generation-fence buffered live values, expose terminal failure, and stop
   applying later deltas while desynchronized. Subscribe, unsubscribe, recovery,
   interest rollback, and shutdown now share one explicit lifecycle contract.
+- Made ordinary `kabel.pubsub/unsubscribe!` dispatch through Netz's lifecycle
+  owner, while recovery uses Kabel's explicit direct drain primitive.
 - Added a portable pure profile-apply owner with transport exclusivity,
   item/byte and duplicate-receipt limits, exact apply receipts, snapshot/live
   serialization, generation- and owner-minted sync-attempt fencing, portable

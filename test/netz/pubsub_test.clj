@@ -80,6 +80,26 @@
     (is (= :netz/direct-live-disabled
            (:type (ex-data (:error result)))))))
 
+(deftest kabel-unsubscribe-dispatches-through-netz-lifecycle
+  (let [p (atom {:pubsub {}})
+        withdrawn (atom [])
+        drained (atom [])]
+    (with-redefs [rt/set-deliver! (fn [_ _] true)
+                  rt/set-state-sync! (fn [_ _] true)
+                  rt/on-stop! (fn [_ _] true)
+                  rt/unsubscribe-topics-ordered!
+                  (fn [_ topics]
+                    (swap! withdrawn conj topics)
+                    (done true))
+                  pubsub/direct-unsubscribe!
+                  (fn [_ topics _]
+                    (swap! drained conj topics)
+                    (done {:ok true}))]
+      (pso/install! S p {:peer-id :self})
+      (is (= {:ok true} (<?? S (pubsub/unsubscribe! p #{:t}))))
+      (is (= [#{:t}] @withdrawn))
+      (is (= [#{:t}] @drained)))))
+
 (deftest concurrent-subscribes-have-one-lifecycle-winner
   (let [lock (doto (chan 1) (async/offer! :available))
         control (atom {:topics {} :lifecycle-lock lock :stopped? false})
@@ -595,7 +615,7 @@
         handshake-callback (atom nil)
         drain-completion (atom nil)]
     (with-redefs [pubsub/subscriptions (fn [_] held)
-                  pubsub/unsubscribe! (fn [_ _] (done {:ok true}))
+                  pubsub/direct-unsubscribe! (fn [_ _ _] (done {:ok true}))
                   pubsub/direct-subscribe!
                   (fn [_ _ opts]
                     (reset! handshake-callback (:on-handshake-complete opts))
@@ -629,7 +649,7 @@
         (let [out (chan 1)
               held {:t {:strategy strategy :out out}}]
           (with-redefs [pubsub/subscriptions (fn [_] held)
-                        pubsub/unsubscribe! (fn [_ _] (operation))
+                        pubsub/direct-unsubscribe! (fn [_ _ _] (operation))
                         rt/connection-out (fn [_ _] nil)]
             (let [result (<?? S (pso/re-handshake!
                                  S (atom {}) (atom {}) nil
@@ -643,7 +663,7 @@
         out (chan 1)
         held {:t {:strategy strategy :out out}}]
     (with-redefs [pubsub/subscriptions (fn [_] held)
-                  pubsub/unsubscribe! (fn [_ _] (done {:ok true}))
+                  pubsub/direct-unsubscribe! (fn [_ _ _] (done {:ok true}))
                   pubsub/direct-subscribe!
                   (fn [_ _ opts]
                     ((:on-handshake-complete opts) :t)
@@ -704,9 +724,9 @@
   (let [strategy (recording-strategy (atom []))
         attempted? (atom false)]
     (with-redefs [pubsub/subscriptions (fn [_] {:t {:strategy strategy}})
-                  pubsub/unsubscribe! (fn [_ _]
-                                        (reset! attempted? true)
-                                        (done {:ok true}))
+                  pubsub/direct-unsubscribe! (fn [_ _ _]
+                                               (reset! attempted? true)
+                                               (done {:ok true}))
                   rt/connection-out (fn [_ _] nil)]
       (let [result (<?? S (pso/re-handshake!
                            S (atom {}) (atom {}) :gone
@@ -730,9 +750,9 @@
                   rt/on-stop! (fn [_ f] (reset! stop! f) true)
                   rt/unsubscribe-topics-ordered! (fn [_ _] (done true))
                   pubsub/set-transport! (fn [_ _] true)
-                  pubsub/unsubscribe! (fn [_ _]
-                                        (swap! drains inc)
-                                        (done {:ok true}))
+                  pubsub/direct-unsubscribe! (fn [_ _ _]
+                                               (swap! drains inc)
+                                               (done {:ok true}))
                   pso/transport (fn [_ _ _ subs _ _ _]
                                   (reset! installed-subs subs)
                                   {})
@@ -777,7 +797,7 @@
                   rt/unsubscribe-topics-ordered! (fn [_ _] (done true))
                   pubsub/set-transport! (fn [_ _] true)
                   pubsub/subscriptions (fn [_] {:t {:out out}})
-                  pubsub/unsubscribe! (fn [_ _] (chan))
+                  pubsub/direct-unsubscribe! (fn [_ _ _] (chan))
                   pso/transport (fn [_ _ _ subs _ _ _]
                                   (reset! installed-subs subs)
                                   {})]
@@ -800,9 +820,9 @@
                   rt/on-stop! (fn [_ f] (reset! stop! f) true)
                   rt/unsubscribe-topics-ordered! (fn [_ _] (done true))
                   pubsub/set-transport! (fn [_ _] true)
-                  pubsub/unsubscribe! (fn [_ _]
-                                        (swap! raw-unsubscribes inc)
-                                        (done {:ok true}))
+                  pubsub/direct-unsubscribe! (fn [_ _ _]
+                                               (swap! raw-unsubscribes inc)
+                                               (done {:ok true}))
                   pso/transport (fn [_ _ _ subs _ _ _]
                                   (reset! installed-subs subs)
                                   {})]

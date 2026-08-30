@@ -80,8 +80,8 @@
 (defn unsubscribe!
   "Cancel Netz subscription intent, then orderly-drain Kabel topics.
 
-  Call this rather than `kabel.pubsub/unsubscribe!` for a peer installed with
-  Netz so an in-flight recovery cannot recreate explicitly removed topics."
+  Kabel dispatches this through the installed Netz transport, so callers may
+  use either public namespace without bypassing overlay lifecycle ownership."
   [peer topics]
   (if-let [unsubscribe-fn (get-in @peer [:pubsub :netz/unsubscribe!])]
     (unsubscribe-fn topics)
@@ -495,7 +495,7 @@
                      ;; topic-only handshake frames. Drain the old generation
                      ;; before reserving a replacement.
                      (let [unsubscribed
-                           (<? S (pubsub/unsubscribe! peer topics))]
+                           (<? S (pubsub/direct-unsubscribe! peer topics {}))]
                        (if-not (exact-success? unsubscribed)
                          unsubscribed
                          (if (and valid? (not (valid?)))
@@ -739,7 +739,8 @@
                                   interest-accepted?
                                   (<? S (rt/unsubscribe-topics-ordered!
                                          running topics))
-                                  attempt (pubsub/unsubscribe! peer topics)
+                                  attempt (pubsub/direct-unsubscribe!
+                                           peer topics {})
                                   deadline (timeout timeout-ms)
                                   [value port] (async/alts! [attempt deadline])
                                   result (cond
@@ -1042,5 +1043,9 @@
         (close! stop-signal)))
     (pubsub/set-transport!
      peer
-     (transport S peer running subs pending enqueue-drain! recovery-control))
+     (assoc (transport S peer running subs pending enqueue-drain!
+                       recovery-control)
+            :unsubscribe!
+            (fn [_peer topics]
+              (cancel-and-unsubscribe! topics))))
     peer))

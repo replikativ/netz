@@ -97,9 +97,10 @@ topic)` and may provide `:on-recovery-failed (fn [topic status] ...)` in their
 subscription options to terminally settle or replace the affected profile
 owner. Netz does not silently retry an exhausted source forever.
 
-Applications using the overlay call `netz.core/unsubscribe!` (or
-`netz.pubsub/unsubscribe!`), not Kabel's lower-level function. Netz serializes
-subscribe, explicit unsubscribe, and recovery under one lifecycle owner. It
+Applications using the overlay may call `netz.core/unsubscribe!`,
+`netz.pubsub/unsubscribe!`, or `kabel.pubsub/unsubscribe!`: Kabel dispatches
+unsubscribe through the installed Netz transport. Netz serializes subscribe,
+explicit unsubscribe, and recovery under one lifecycle owner. It
 cancels the topic intent, queues a guaranteed overlay-interest withdrawal, and
 then performs Kabel's acknowledged drain with a bounded deadline (30 seconds by
 default, or `:recovery-timeout-ms` in subscription options). A recovery can
