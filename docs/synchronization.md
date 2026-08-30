@@ -5,10 +5,14 @@ one mechanism either floods too much state or silently loses updates.
 
 ## 1. Live dissemination
 
-A publication is signed at its origin, forwarded across interested peers,
-deduplicated by `(origin, epoch, sequence)`, and delivered in order by the
-adapter. `publish!` succeeding means the local bounded runtime accepted the
-item; it does not promise that every peer is online or has applied it.
+A publication is signed at its origin, forwarded across interested peers, and
+deduplicated by `(origin, epoch, sequence)`. The adapter serializes application
+in arrival order, but the mesh does not currently restore source sequence order:
+different paths and repair traffic can reorder publications. Ordered delta
+profiles must not rely on Kabel's per-connection FIFO until Netz defines and
+implements a stream-scoped ordering frontier. `publish!` succeeding means the
+local bounded runtime accepted the item; it does not promise that every peer is
+online or has applied it.
 
 ## 2. Recent-message repair
 

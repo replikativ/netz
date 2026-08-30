@@ -193,6 +193,14 @@ summaries containing bounded interval sets and repair-store horizons. `want`
 requests name bounded missing ranges. If a missing sequence is below a peer's
 horizon, the subscriber enters `desynchronized` and opens a state-sync session.
 
+**Open ordering issue:** `seq` is currently global per origin while forwarding
+is selective by topic. It can identify duplicates and repair gaps, but cannot
+define per-topic FIFO without waiting for sequence numbers belonging to topics
+the subscriber does not receive. Draft-00 therefore does not promise source-order
+delivery for dissemination. A later draft must either introduce stream-scoped
+sequence numbers and synchronization frontiers or require every live profile to
+be order-independent.
+
 The subscriber state machine is:
 
 ~~~text
@@ -201,7 +209,8 @@ joining -> synchronized -> desynchronized -> synchronizing -> synchronized
                  +------------- abort --------------+
 ~~~
 
-Live deltas received while joining or synchronizing MUST be buffered in order.
+Live deltas received while joining or synchronizing MUST be buffered in arrival
+order. This does not resolve the open source-order issue above.
 Overflow MUST restart state synchronization; it MUST NOT be treated as a gap
 that recent-message repair can necessarily observe.
 
