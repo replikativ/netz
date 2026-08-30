@@ -14,6 +14,11 @@ may make incompatible protocol changes.
 - Added subtree transfer deadlines and alternate-provider retry.
 - Added a configurable WebSocket dial policy.
 - Converted application delivery overflow into differential state recovery.
+- Unified Kabel snapshot/direct and Netz overlay application under Kabel's
+  peer/topic serializer, and rejected identity-less direct live frames while
+  the overlay owns a topic.
+- Made horizon recovery drain the old Kabel v0 generation before subscribing
+  again, and stop applying later deltas while a topic is desynchronized.
 - Scoped publication sequences and anti-entropy to topic streams, with bounded
   FIFO delivery and synchronization frontiers for recovery.
 - Made the deterministic simulator preserve Kabel's per-link FIFO guarantee by

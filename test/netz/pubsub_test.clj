@@ -62,6 +62,16 @@
       (is (nil? (get-in (:pubsub @p) [:transport]))
           "removing the transport must restore the direct path"))))
 
+(deftest overlay-transport-rejects-identity-less-direct-live
+  (let [p (peer/client-peer S "test-peer" identity identity)
+        transport (pso/transport S p nil (atom {}) (atom {})
+                                 (fn [_ _]))
+        result (<?? S ((:receive-publish! transport)
+                       p :t {:v 1} {:principal :legacy}))]
+    (is (some? (:error result)))
+    (is (= :netz/direct-live-disabled
+           (:type (ex-data (:error result)))))))
+
 ;; =============================================================================
 ;; The same scenario, both transports
 ;; =============================================================================
@@ -240,6 +250,9 @@
         (<?? S (peer/connect S client url))
         (<?? S (pubsub/subscribe! client #{:t} {:strategies {:t strategy}}))
         (is (wait-for 5000 #(= 1 @inits)) "the initial handshake never ran")
+        (is (wait-for 5000 #(true? (:handshake-complete?
+                                    (pubsub/subscription client :t))))
+            "recovery must not replace an active v0 generation")
         ;; Now the horizon fires. No new message type, no new state: the peer
         ;; simply asks again, and -init-client-state bounds what that costs.
         ;; The opts the subscription was made with, as `install!` remembers
@@ -304,16 +317,33 @@
                              {:t {:strategy (recording-strategy applied)
                                   :handshake-complete? false}}}})
         subs (atom {:t {}})
-        pending (atom {})]
+        pending (atom {})
+        desynchronized (atom #{})
+        opts {:max-pending 4
+              :desynchronized desynchronized
+              :on-overflow #(do (swap! desynchronized conj %)
+                                (swap! overflows conj %))}]
     (dotimes [i 10]
       (pso/deliver-to-strategy! S peer subs pending :t {:n i}
-                                {:max-pending 4
-                                 :on-overflow #(swap! overflows conj %)}))
+                                opts))
     (is (= 4 (count (get @pending :t))))
     (is (= [{:n 6} {:n 7} {:n 8} {:n 9}] (vec (get @pending :t)))
         "the oldest are dropped, so the newest state survives")
     (is (= 6 (count @overflows)) "every application-level loss is signalled")
-    (is (= #{:t} (set @overflows)))))
+    (is (= #{:t} @desynchronized))
+
+    (testing "later deltas stay behind the repair gate"
+      (swap! peer assoc-in [:pubsub :subscriptions :t :handshake-complete?] true)
+      (pso/deliver-to-strategy! S peer subs pending :t {:n 10} opts)
+      (<?? S (timeout 100))
+      (is (empty? @applied))
+      (is (= [{:n 7} {:n 8} {:n 9} {:n 10}]
+             (vec (get @pending :t)))))
+
+    (testing "a replacement snapshot may release its captured suffix"
+      (swap! desynchronized disj :t)
+      (is (:ok (<?? S (pso/drain-pending! S peer subs pending :t))))
+      (is (= [{:n 7} {:n 8} {:n 9} {:n 10}] @applied)))))
 
 (deftest a-topic-owner-is-not-made-to-wait
   ;; A peer that REGISTERED a topic has no subscription and so no handshake to

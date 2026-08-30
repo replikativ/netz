@@ -48,7 +48,6 @@
   application answers with a differential sync, which is an application fact.
   Neither needs to know the other's semantics."
   (:require [kabel.pubsub :as pubsub]
-            [kabel.pubsub.protocol :as proto]
             [netz.overlay.runtime :as rt]
             #?(:clj [superv.async :refer [<? go-try go-loop-try]])
             [clojure.core.async :as async :refer [chan put! close!]])
@@ -57,11 +56,16 @@
 (defn- ok [v]
   (let [ch (chan 1)] (put! ch v) (close! ch) ch))
 
-(defn- handshake-complete? [peer topic]
+(defn- handshake-complete? [peer subs desynchronized topic]
   (let [sub (pubsub/subscription peer topic)]
-    ;; No subscription at all means this peer is a topic OWNER rather than a
-    ;; subscriber -- nothing to wait for.
-    (or (nil? sub) (boolean (:handshake-complete? sub)))))
+    ;; A topic remembered in `subs` is a remote subscription even during the
+    ;; orderly unsubscribe/resubscribe gap used for recovery. Treating its
+    ;; temporarily absent Kabel subscription as an owner would let overlay live
+    ;; data overtake the replacement snapshot.
+    (if (contains? @subs topic)
+      (and (not (contains? @desynchronized topic))
+           (boolean (:handshake-complete? sub)))
+      true)))
 
 (defn- apply-one!
   [S peer subs topic payload]
@@ -69,11 +73,13 @@
         topic-cfg (pubsub/get-topic-config peer topic)
         strategy (or (:strategy sub) (:strategy topic-cfg))
         on-publish (get-in @subs [topic :on-publish])]
-    (go-try S
-            (when strategy
-              (<? S (proto/-apply-publish strategy payload)))
-            (when on-publish
-              (on-publish topic payload)))))
+    ;; Kabel owns the peer/topic application serializer. Going through its
+    ;; public boundary makes overlay live values mutually exclusive with direct
+    ;; live frames and snapshot application instead of maintaining a second
+    ;; Netz-only strategy runner.
+    (pubsub/apply-publish! S peer topic payload
+                           {:strategy strategy
+                            :on-publish on-publish})))
 
 (defn drain-pending!
   "Apply anything buffered for `topic`, in arrival order.
@@ -89,9 +95,14 @@
     ;; buffer exists to prevent. Always returns a channel so callers can
     ;; chain on it.
     (go-try S
-            (doseq [p queued]
-              (<? S (apply-one! S peer subs topic p)))
-            (count queued))))
+            (loop [values (seq queued)
+                   applied 0]
+              (if-let [p (first values)]
+                (let [result (<? S (apply-one! S peer subs topic p))]
+                  (if (true? (:ok result))
+                    (recur (next values) (inc applied))
+                    result))
+                {:ok true :applied applied})))))
 
 (defn deliver-to-strategy!
   "Hand a disseminated payload to the topic's strategy, and to `:on-publish`.
@@ -120,23 +131,27 @@
   item is dropped and `on-overflow` is called. The adapter MUST answer that
   signal with a state sync: dissemination has already marked the publication
   seen, so message anti-entropy alone cannot repair an application-level drop."
-  [S peer subs pending topic payload & [{:keys [max-pending on-overflow]
+  [S peer subs pending topic payload & [{:keys [max-pending on-overflow
+                                                desynchronized]
                                          :or {max-pending 1024}}]]
-  (if-not (handshake-complete? peer topic)
-    (let [overflow? (volatile! false)
-          result (swap! pending update topic
-                        (fn [q]
-                          (let [q (conj (vec q) payload)]
-                            (if (> (count q) max-pending)
-                              (do (vreset! overflow? true) (vec (subvec q 1)))
-                              q))))]
-      (when (and @overflow? on-overflow) (on-overflow topic))
-      result)
+  (let [desynchronized (or desynchronized (atom #{}))]
+    (if-not (handshake-complete? peer subs desynchronized topic)
+      (let [overflow? (volatile! false)
+            result (swap! pending update topic
+                          (fn [q]
+                            (let [q (conj (vec q) payload)]
+                              (if (> (count q) max-pending)
+                                (do (vreset! overflow? true) (vec (subvec q 1)))
+                                q))))]
+        (when (and @overflow? on-overflow) (on-overflow topic))
+        result)
     ;; Drain first, and AWAIT it, so a payload arriving just after the
     ;; handshake completed cannot overtake the buffer it was queued behind.
-    (go-try S
-            (<? S (drain-pending! S peer subs pending topic))
-            (<? S (apply-one! S peer subs topic payload)))))
+      (go-try S
+              (let [drained (<? S (drain-pending! S peer subs pending topic))]
+                (if (true? (:ok drained))
+                  (<? S (apply-one! S peer subs topic payload))
+                  drained))))))
 
 (defn transport
   "A `kabel.pubsub` transport backed by `running` (from
@@ -150,7 +165,17 @@
   stripped-down one. `pending` is the pre-handshake buffer. `enqueue-drain!`
   serializes handshake completion with live delivery."
   [S peer running subs pending enqueue-drain!]
-  {:publish!
+  {:receive-publish!
+   (fn [_peer topic _payload _context]
+     ;; Kabel v0 live frames have no origin/epoch/sequence identity. Once the
+     ;; overlay owns live delivery, accepting them as a second path makes
+     ;; duplicate detection impossible. Fail explicitly; Kabel retires that v0
+     ;; connection while point-to-point handshake frames remain supported.
+     (ok {:error (ex-info "Direct live delivery is disabled by the Netz overlay"
+                          {:type :netz/direct-live-disabled
+                           :topic topic})}))
+
+   :publish!
    (fn [_peer topic payload]
      ;; `submit!` returns false when the runtime's event queue is full, and its
      ;; docstring is explicit that refusing is the point. Reporting {:ok true}
@@ -215,15 +240,30 @@
         topics (into #{} (filter #(get-in held [% :strategy]) (keys held)))
         out (when from (rt/connection-out peer from))]
     (when (seq topics)
-      ;; One call per distinct opts map, so each topic is restored with the
-      ;; callbacks it was subscribed with.
-      (doseq [[opts ts] (group-by #(get @subs %) topics)]
-        (pubsub/direct-subscribe!
-         peer (set ts)
-         (cond-> (or opts
-                     {:strategies (into {} (for [t ts]
-                                             [t (get-in held [t :strategy])]))})
-           out (assoc :out out)))))))
+      (go-try S
+              ;; Kabel v0 cannot correlate two generations of topic-only
+              ;; handshake frames. Drain the old generation before reserving a
+              ;; replacement; duplicate subscribe is correctly rejected.
+              (let [unsubscribed (<? S (pubsub/unsubscribe! peer topics))]
+                (if-not (true? (:ok unsubscribed))
+                  unsubscribed
+                  (loop [groups (seq (group-by #(get @subs %) topics))]
+                    (if-let [[opts ts] (first groups)]
+                      (let [result
+                            (<? S
+                                (pubsub/direct-subscribe!
+                                 peer (set ts)
+                                 (cond-> (or opts
+                                             {:strategies
+                                              (into {}
+                                                    (for [t ts]
+                                                      [t (get-in held
+                                                                 [t :strategy])]))})
+                                   out (assoc :out out))))]
+                        (if (true? (:ok result))
+                          (recur (next groups))
+                          result))
+                      {:ok true}))))))))
 
 (defn install!
   "Wire `peer`'s pub/sub onto `running`, and route disseminated payloads into
@@ -237,6 +277,10 @@
         subs (atom {})
         ;; Publishes that arrived before their topic's handshake finished.
         pending (atom {})
+        ;; Topics that lost an admitted application value. They remain behind
+        ;; the snapshot gate until a replacement handshake completes; continuing
+        ;; to apply later deltas on a gapped state would make repair meaningless.
+        desynchronized (atom #{})
         ;; Sources whose accepted gossip could not be handed to the
         ;; application. Message repair cannot help after dissemination marked
         ;; it seen, so the worker schedules a differential state sync once the
@@ -256,7 +300,8 @@
         ;; so one consumer that AWAITS each application is all that is needed
         ;; to keep it that way.
         deliveries (chan 1024)
-        mark-dirty! (fn [source]
+        mark-dirty! (fn [source topic]
+                      (swap! desynchronized conj topic)
                       (swap! dirty-sources conj
                              (when-not (= source (:peer-id running)) source)))]
     (go-loop-try S [d (<? S deliveries)]
@@ -264,28 +309,43 @@
                    (let [[op source topic payload] d]
                      (case op
                        :deliver
-                       (<? S (deliver-to-strategy!
-                              S peer subs pending topic payload
-                              {:on-overflow (fn [_] (mark-dirty! source))}))
+                       (let [result
+                             (<? S (deliver-to-strategy!
+                                    S peer subs pending topic payload
+                                    {:desynchronized desynchronized
+                                     :on-overflow
+                                     (fn [overflow-topic]
+                                       (mark-dirty! source overflow-topic))}))]
+                         (when (and (map? result) (:error result))
+                           (mark-dirty! source topic)))
 
                        :drain
-                       (do
-                         (<? S (drain-pending! S peer subs pending topic))
-                         (when payload (payload topic)))))
+                       (let [_ (swap! desynchronized disj topic)
+                             result (<? S (drain-pending! S peer subs pending topic))]
+                         (if (true? (:ok result))
+                           (when payload (payload topic))
+                           (mark-dirty! source topic)))
+
+                       :recover
+                       (re-handshake! S peer subs source))
                    ;; Recover only after the ordered backlog is empty. A
                    ;; re-subscribe marks the handshake incomplete, so anything
                    ;; arriving while recovery runs is buffered behind it.
-                   (if-let [next-delivery (async/poll! deliveries)]
-                     (recur next-delivery)
-                     (do
+                     (if-let [next-delivery (async/poll! deliveries)]
+                       (recur next-delivery)
+                       (do
                        ;; Atomically take the set. A concurrent failed offer
                        ;; belongs to the next drain and cannot be erased
                        ;; between a deref and reset.
-                       (let [sources (first (swap-vals! dirty-sources
-                                                        (constantly #{})))]
-                         (doseq [source sources]
-                           (re-handshake! S peer subs source)))
-                       (recur (<? S deliveries))))))
+                         (let [sources (first (swap-vals! dirty-sources
+                                                          (constantly #{})))]
+                         ;; One state source is enough. Starting concurrent v0
+                         ;; generations is invalid and Kabel rejects it.
+                           (when (seq sources)
+                             (re-handshake! S peer subs
+                                            (first (sort-by str
+                                                            (remove nil? sources))))))
+                         (recur (<? S deliveries)))))))
     (rt/set-deliver! running
                      (fn [source topic payload]
                        ;; `offer!`, not a parking put: the delivery function is
@@ -296,9 +356,15 @@
                        ;; silently dropping here is never correct because the
                        ;; dissemination layer has already recorded the message.
                        (or (async/offer! deliveries [:deliver source topic payload])
-                           (do (mark-dirty! source) false))))
-    (rt/set-state-sync! running (fn [from _stranded]
-                                  (re-handshake! S peer subs from)))
+                           (do (mark-dirty! source topic) false))))
+    (rt/set-state-sync!
+     running
+     (fn [from _stranded]
+       ;; Close the application gate before queueing the recovery control item.
+       ;; Live actions accepted afterwards are buffered until the replacement
+       ;; snapshot's ordered drain callback clears the topic.
+       (swap! desynchronized into (keys @subs))
+       (put! deliveries [:recover from nil nil])))
     (rt/on-stop! running #(close! deliveries))
     (pubsub/set-transport!
      peer

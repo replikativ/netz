@@ -27,11 +27,13 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 ## Required before exposing to untrusted peers
 
 - [x] Publication sequence, deduplication, repair, and bounded ordered delivery
-      are scoped per origin/topic stream; synchronization checkpoints advance
-      the corresponding application frontiers.
-- [ ] Kabel must route inbound direct publications through the selected pub/sub
-      transport, or reject mixed direct/overlay operation. Until then the two
-      publication paths can partition.
+      are scoped per origin/topic stream.
+- [x] Kabel routes external and direct application through one peer/topic
+      serializer and lets Netz reject identity-less direct live frames while
+      the overlay owns delivery.
+- [ ] Synchronization checkpoints must advertise application-committed
+      frontiers, not merely transport-received frontiers. A slow or failed
+      profile apply must never make a later snapshot claim that value.
 - [ ] Kabel's WebSocket adapters need bounded asynchronous writes or byte
       credits. Netz cannot bound a queue below the transport that owns it.
 - [ ] The actual socket layer must enforce the 5 MiB encoded-frame ceiling and

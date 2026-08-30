@@ -297,8 +297,8 @@ opaque checkpoint and replay its entire captured suffix.
 ## Direct pub/sub and mesh dissemination
 
 Kabel direct fan-out and Netz mesh dissemination must not remain two independent
-inbound application paths. Both feed the same local subscription/profile apply
-owner:
+inbound application paths. Kabel now exposes its peer/topic application
+serializer and Netz uses it for overlay delivery:
 
 ```text
 Kabel direct publish ----+
@@ -306,10 +306,11 @@ Kabel direct publish ----+
 Netz ordered stream -----+
 ```
 
-An installation chooses which live transport owns a topic. The other path must
-be disabled or act only as a state-sync carrier. During migration, accepting
-both without a shared origin/sequence identity risks duplicates, divergent
-ordering, and subscribers that see only half the network.
+An installation chooses which live transport owns a topic. Netz installs an
+inbound hook that explicitly rejects Kabel v0 direct live frames, while keeping
+the point-to-point snapshot protocol. Accepting both without a shared
+origin/sequence identity would risk duplicates, divergent ordering, and
+subscribers that see only half the network.
 
 For mesh delivery, FIFO means per `(origin, epoch, topic)` after gap repair. No
 meaningful total order exists across origins. CRDT profiles merge concurrent
@@ -361,8 +362,8 @@ streams; a fenced single-writer profile rejects the wrong writer/term/index.
 1. Add the pure subscription machine and exhaustive schedule tests.
 2. Apply the narrow version-zero Kabel correction and downstream regression
    tests; do not merge the current global-dispatcher prototype.
-3. Route Netz direct and overlay live input through the same lifecycle owner and
-   remove the split-delivery mode.
+3. **Implemented for the v0 adapter:** route Netz overlay application through
+   Kabel's peer/topic serializer and reject the identity-less direct live path.
 4. Finalize the version-one `sync/committed`/done-ACK semantics and canonical
    CBOR fixtures.
 5. Implement the independent Python transport/sync client.
