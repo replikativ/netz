@@ -37,8 +37,8 @@
   presenting that id has proved it holds the matching key. An impostor at the
   dialled address therefore cannot absorb the dial — it registers under its own
   id, our outbox never flushes, and the membership layer's dial timeout records
-  a failure. That is the eclipse defence of `.internal/DHT_DESIGN.md` §2 falling
-  out of self-certifying ids rather than being bolted on.
+  a failure. The eclipse defence falls out of self-certifying ids rather than
+  being bolted on.
 
   ## Effects are injected
 
@@ -46,7 +46,9 @@
   so the action interpreter and event loop are testable without opening a
   socket. `kabel-effects` supplies the real ones."
   (:refer-clojure :exclude [run!])
-  (:require [replikativ.logging :as log]
+  (:require [clojure.string :as str]
+            [replikativ.logging :as log]
+            [netz.content :as content]
             [netz.dissemination :as d]
             [netz.identity :as id]
             [netz.ratelimit :as rl]
@@ -139,6 +141,11 @@
    ;; a peer quietly discarding traffic is indistinguishable from a quiet
    ;; network, and that is the failure mode this guard could otherwise hide.
    :dropped (atom 0)
+   ;; Lifecycle belongs to the overlay rather than to whichever socket happened
+   ;; to be installed last. Timers and adapters consult this before submitting
+   ;; more work, and adapters register their own cleanup functions below.
+   :stopped? (atom false)
+   :stop-fns (atom [])
    :events (chan 1024)})
 
 (defn submit!
@@ -150,7 +157,8 @@
   replikativ did and drop the connection, which is the correct answer to a peer
   sending faster than we can process."
   [ctx event]
-  (boolean (async/offer! (:events ctx) event)))
+  (and (not @(:stopped? ctx))
+       (boolean (async/offer! (:events ctx) event))))
 
 (defn- apply-action!
   [{:keys [effects] :as ctx} [op & args]]
@@ -162,9 +170,9 @@
     :timer (let [[delay payload] args] ((:schedule! effects) delay payload))
     :persist (let [[k v] args]
                (when-let [f (:persist! effects)] (f k v)))
-    :deliver (let [[topic payload] args]
+    :deliver (let [[from topic payload] args]
                (when-let [f @(:deliver-fn ctx)]
-                 (f topic payload)))
+                 (f from topic payload)))
 
     :state-sync (let [[from stranded] args]
                   (when-let [f @(:state-sync-fn ctx)]
@@ -375,57 +383,139 @@
   (swap! (:limiter ctx) update-in [:stats :dropped-frames] (fnil inc 0))
   nil)
 
+(def ^:private max-wire-items 16384)
+(def ^:private max-wire-depth 64)
+(def ^:private max-wire-string-bytes (* 1024 1024))
+(def ^:private max-wire-bytes (* 5 1024 1024))
+
+#?(:clj (def ^:private byte-array-class (Class/forName "[B")))
+
+(defn- byte-count
+  [x]
+  #?(:clj (when (= (class x) byte-array-class) (alength ^bytes x))
+     :cljs (when (instance? js/Uint8Array x) (.-byteLength x))))
+
+(defn- text-byte-count
+  [x]
+  #?(:clj (alength (.getBytes ^String x java.nio.charset.StandardCharsets/UTF_8))
+     :cljs (.-byteLength (.encode (js/TextEncoder.) x))))
+
+(defn- bounded-value?
+  "Bound decoded structure before a handler hashes, reduces or stores it.
+
+  The transport must still enforce a raw frame-byte ceiling before decoding;
+  this is the second line of defence and is portable across JVM and JS."
+  [value]
+  (letfn [(walk [stack remaining-items remaining-bytes]
+            (if-let [[v depth] (peek stack)]
+              (if (or (not (pos? remaining-items)) (> depth max-wire-depth))
+                false
+                (let [stack (pop stack)]
+                  (cond
+                    (string? v)
+                    (let [n (text-byte-count v)]
+                      (and (<= n max-wire-string-bytes)
+                           (<= n remaining-bytes)
+                           (walk stack (dec remaining-items)
+                                 (- remaining-bytes n))))
+
+                    (some? (byte-count v))
+                    (let [n (byte-count v)]
+                      (and (<= n max-wire-bytes)
+                           (<= n remaining-bytes)
+                           (walk stack (dec remaining-items) (- remaining-bytes n))))
+
+                    (map? v)
+                    (let [entries (seq v)
+                          n (bounded-count (inc remaining-items) entries)]
+                      (if (> n remaining-items)
+                        false
+                        (walk (into stack
+                                    (mapcat (fn [[k x]] [[k (inc depth)] [x (inc depth)]])
+                                            entries))
+                              (dec remaining-items) remaining-bytes)))
+
+                    (coll? v)
+                    (let [xs (seq v)
+                          n (bounded-count (inc remaining-items) xs)]
+                      (and (<= n remaining-items)
+                           (walk (into stack (map #(vector % (inc depth)) xs))
+                                 (dec remaining-items) remaining-bytes)))
+
+                    :else (walk stack (dec remaining-items) remaining-bytes))))
+              true))]
+    (boolean (walk [[value 0]] max-wire-items max-wire-bytes))))
+
 (def ^:private frame-schema
-  "What each overlay message type must look like on the wire.
+  "Required and optional fields for every remotely accepted overlay message.
 
-  A map of message type to `{field predicate}`. A field absent from the map is
-  unconstrained; a field present must satisfy the predicate or the frame is
-  refused. This is a GATE, not a parser -- it exists so a handler can assume
-  the shapes it destructures, not to validate semantics.
-
-  It is here rather than in the pure machines on purpose: the machines are
-  driven by the simulator with well-formed input, and scattering `number?`
-  guards through five namespaces is both larger and easy to leave incomplete.
-  One table is also reviewable in a way that scattered checks are not."
-  (let [iset? (fn [x] (and (sequential? x)
+  Unknown message types are rejected. Protocol evolution happens through an
+  explicit version/capability negotiation, not by feeding unknown input into a
+  collection of state machines and hoping every one ignores it. Extra fields
+  on a known type remain allowed for compatible extensions."
+  (let [bounded-coll? (fn [n]
+                        (fn [x] (and (coll? x)
+                                     (<= (bounded-count (inc n) x) n))))
+        addresses? (fn [x] (and ((bounded-coll? 16) x)
+                                (every? #(and (string? %) (<= (count %) 2048)) x)))
+        entries? (fn [x] (and ((bounded-coll? 64) x) (every? map? x)))
+        iset? (fn [x] (and ((bounded-coll? 512) x)
                            (every? #(and (sequential? %) (= 2 (count %))
                                          (every? int? %)) x)))
-        summary? (fn [x] (and (map? x)
+        summary? (fn [x] (and (map? x) (<= (count x) 512)
                               (every? (fn [[_ epochs]]
-                                        (and (map? epochs)
+                                        (and (map? epochs) (<= (count epochs) 32)
                                              (every? (fn [[e rs]] (and (int? e) (iset? rs)))
                                                      epochs)))
                                       x)))
-        horizon? (fn [x] (and (map? x)
-                              (every? (fn [[k v]] (and (sequential? k) (int? v))) x)))
-        ranges? (fn [x] (and (sequential? x)
-                             (every? #(and (map? %) (int? (:lo %)) (int? (:hi %))) x)))]
-    {:gossip {:epoch int? :seq int? :hops int?}
-     :have {:summary summary? :horizon horizon?}
-     :want {:ranges ranges?}
-     :interests {:topics coll? :carries coll?}
-     :peers {:peers coll?}
-     :dial {:addresses coll?}
-     :dial-refused {:peers coll?}
-     :content/announce {:keys coll?}
-     :content/found {:providers coll?}
-     :content/want-tree {:have coll?}
-     :content/tree-batch {:nodes coll?}}))
+        horizon? (fn [x] (and (map? x) (<= (count x) 512)
+                              (every? (fn [[k v]]
+                                        (and (sequential? k) (= 2 (count k)) (int? v))) x)))
+        ranges? (fn [x] (and ((bounded-coll? 256) x)
+                             (every? #(and (map? %) (int? (:lo %)) (int? (:hi %))) x)))
+        nodes? (fn [x] (and ((bounded-coll? 256) x)
+                            (every? #(and (map? %) (contains? % :key)
+                                          (contains? % :value)) x)))]
+    {:gossip {:required {:origin some? :epoch int? :seq int? :topic some?
+                         :hops int? :payload (constantly true)}}
+     :have {:required {:summary summary? :horizon horizon?}}
+     :want {:required {:ranges ranges?}}
+     :interests {:required {:topics (bounded-coll? 1024)}
+                 :optional {:carries (bounded-coll? 1024) :relay? boolean?}}
+     :dial {:required {:addresses addresses?}
+            :optional {:carries (bounded-coll? 1024)}}
+     :dial-ok {:required {:addresses addresses?}
+               :optional {:carries (bounded-coll? 1024)}}
+     :dial-refused {:required {:reason keyword?}
+                    :optional {:peers entries?}}
+     :peers {:required {:entries entries?}}
+     :disconnect {:required {}}
+     :content/announce {:required {:keys (bounded-coll? 256)}}
+     :content/find {:required {:key some?}}
+     :content/found {:required {:key some? :providers (bounded-coll? 64)}
+                     :optional {:ttl int?}}
+     :content/want {:required {:key some?}}
+     :content/block {:required {:key some? :value (constantly true)}}
+     :content/dont-have {:required {:key some?}}
+     :content/want-tree {:required {:root some? :have (bounded-coll? 4096)}}
+     :content/tree-batch {:required {:root some? :nodes nodes?}}
+     :content/tree-done {:required {:root some? :count int?
+                                    :frontier (bounded-coll? 4096)}}}))
 
 (defn well-formed?
-  "Does `payload` satisfy `frame-schema` for its type?
-
-  Unknown types pass: a peer running a newer version may legitimately send
-  something this one does not know, and the handlers already fall through to
-  `:else`. The gate refuses malformed KNOWN messages, which is the class that
-  reached `interval-set` arithmetic and killed the loop."
+  "Does `payload` satisfy the bounded schema for its known wire type?"
   [payload]
-  (let [fields (get frame-schema (:type payload))]
-    (or (nil? fields)
-        (every? (fn [[k pred]]
-                  (let [v (get payload k ::absent)]
-                    (or (= ::absent v) (pred v))))
-                fields))))
+  (let [{:keys [required optional] :as schema} (get frame-schema (:type payload))]
+    (boolean
+     (and (map? payload)
+          schema
+          (bounded-value? payload)
+          (every? (fn [[k pred]]
+                    (and (contains? payload k) (pred (get payload k))))
+                  required)
+          (every? (fn [[k pred]]
+                    (or (not (contains? payload k)) (pred (get payload k))))
+                  optional)))))
 
 (defn- accept-or-drop!
   "Submit an event, or close the connection if the machine cannot keep up.
@@ -476,11 +566,17 @@
   Per connection: announce our signed identity, verify theirs, register the
   connection under their peer id, and funnel overlay frames into the runtime.
   Everything else passes through."
-  [{:keys [ctx identity addresses seq-no require-signed?]
-    :or {require-signed? true}}]
+  [{:keys [ctx identity addresses seq-no require-signed? handshake-max-attempts
+           handshake-timeout-ms]
+    :or {require-signed? true handshake-max-attempts 4
+         handshake-timeout-ms 15000}}]
   (fn [[S peer [in out]]]
     (let [pass-in (chan)
           pass-out (chan)
+          ;; Kabel preserves channel order, so make the two Netz producers
+          ;; establish that order explicitly: the inbound loop cannot enqueue
+          ;; a proof until the startup loop has enqueued our hello.
+          hello-sent (chan)
           ;; Set once this connection's PROOF verifies; nil until then, which
           ;; is exactly the "only frames on an identified connection become
           ;; events" rule.
@@ -489,7 +585,31 @@
           ;; worth nothing unless it answers a nonce we picked ourselves.
           our-nonce (id/new-nonce)
           ;; Their record, verified but not yet proven live.
-          pending-record (atom nil)]
+          pending-record (atom nil)
+          handshake-state (atom :pending)
+          handshake-attempts (atom 0)
+          ;; Application messages may race the identity exchange on a fresh
+          ;; socket. They are held, not trusted, until proof completes.
+          pending-app (atom [])
+          attempt! (fn []
+                     (let [n (swap! handshake-attempts inc)]
+                       (if (<= n handshake-max-attempts)
+                         true
+                         (do (reset! handshake-state :failed)
+                             (close! out)
+                             false))))
+          complete! (fn [record signature]
+                      (go-try S
+                              (when (and (= :pending @handshake-state)
+                                         (<? S (id/verify-challenge
+                                                record our-nonce signature)))
+                                (reset! conn-peer-id
+                                        (register! S peer (:netz/peer-id record) out))
+                                (reset! handshake-state :complete)
+                                (doseq [app @pending-app]
+                                  (>? S pass-in app))
+                                (reset! pending-app [])
+                                true)))]
 
       ;; Announce ourselves immediately. Both ends do this unconditionally, so
       ;; the handshake needs no notion of who dialled whom.
@@ -499,7 +619,16 @@
                 ;; round-trip a byte array. See `netz.identity/record->wire`.
                 (>? S out {:type hello-type
                            :record (id/record->wire record)
-                           :nonce our-nonce})))
+                           :nonce our-nonce})
+                (close! hello-sent)))
+
+      ;; A peer that never finishes authentication must not retain a socket,
+      ;; challenge, record and buffered application messages indefinitely.
+      (go
+        (<! (timeout handshake-timeout-ms))
+        (when (= :pending @handshake-state)
+          (reset! handshake-state :failed)
+          (close! out)))
 
       (go-loop-super S [m (<? S in)]
                      (if m
@@ -514,25 +643,33 @@
                          (try
                            (cond
                              (= hello-type (:type m))
-                             (let [record (id/wire->record (:record m))]
+                             (if-not (and (= :pending @handshake-state)
+                                          (attempt!)
+                                          (bounded-value? m))
+                               (close! out)
+                               (let [record (id/wire->record (:record m))]
                                ;; A verified record says who they CLAIM to be.
                                ;; It does not say they are here: it is signed
                                ;; over constants of the identity, so anyone who
                                ;; has seen it can replay it. Hold it, and
                                ;; answer their challenge; registration waits
                                ;; for them to answer ours.
-                               (when (and record (<? S (id/verify-record record))
-                                          (string? (:nonce m)))
-                                 (reset! pending-record record)
-                                 (>? S out {:type proof-type
-                                            :sig (<? S (id/sign-challenge identity
-                                                                          (:nonce m)))})))
+                                 (when (and record (<? S (id/verify-record record))
+                                            (string? (:nonce m))
+                                            (= 64 (count (:nonce m))))
+                                   (reset! pending-record record)
+                                   (<? S hello-sent)
+                                   (>? S out {:type proof-type
+                                              :sig (<? S (id/sign-challenge identity
+                                                                            (:nonce m)))}))))
 
                              (= proof-type (:type m))
-                             (when-let [record @pending-record]
-                               (when (<? S (id/verify-challenge record our-nonce (:sig m)))
-                                 (reset! conn-peer-id
-                                         (register! S peer (:netz/peer-id record) out))))
+                             (if-not (and (= :pending @handshake-state)
+                                          (attempt!)
+                                          (bounded-value? m))
+                               (close! out)
+                               (when-let [record @pending-record]
+                                 (<? S (complete! record (:sig m)))))
 
                              (= frame-type (:type m))
                              ;; The connection's own peer id, remembered when
@@ -578,7 +715,13 @@
                                      (accept-or-drop! S ctx peer out from payload)))))
 
                              :else
-                             (>? S pass-in m))
+                             (if (= :complete @handshake-state)
+                               (>? S pass-in m)
+                               (if (and (bounded-value? m)
+                                        (< (count @pending-app) 32))
+                                 (swap! pending-app conj m)
+                                 (do (reset! handshake-state :failed)
+                                     (close! out)))))
                            (catch #?(:clj Throwable :cljs :default) e
                              (swap! (:dropped ctx) inc)
                              (log/warn :overlay/frame-dropped
@@ -624,30 +767,59 @@
         (send-frame! S peer to (assoc m :payload signed))))
     (send-frame! S peer to m)))
 
+(defn websocket-address?
+  "Is `address` an absolute ws/wss URL without embedded credentials?
+
+  This deliberately does not pretend to solve DNS rebinding or decide whether
+  private networks are legitimate; P2P deployments commonly use them. Pass a
+  stricter `:allow-address?` policy to `start!` at a public trust boundary."
+  [address]
+  (boolean
+   (try
+     (when (string? address)
+       #?(:clj
+          (let [u (java.net.URI. address)]
+            (and (contains? #{"ws" "wss"} (some-> (.getScheme u) str/lower-case))
+                 (some? (.getHost u))
+                 (nil? (.getRawUserInfo u))
+                 (nil? (.getRawFragment u))))
+          :cljs
+          (let [u (js/URL. address)]
+            (and (contains? #{"ws:" "wss:"} (str/lower-case (.-protocol u)))
+                 (seq (.-hostname u))
+                 (empty? (.-username u))
+                 (empty? (.-password u))
+                 (empty? (.-hash u))))))
+     (catch #?(:clj Exception :cljs :default) _ false))))
+
 (defn kabel-effects
   "Real effects: kabel connections, core.async timers, and — when a store is
   supplied — durable persistence of verified content."
-  [S peer ctx identity store]
+  [S peer ctx identity store {:keys [allow-address?]
+                              :or {allow-address? (fn [{:keys [address]}]
+                                                    (websocket-address? address))}}]
   {:send!
    (fn [to m] (outgoing S peer ctx identity to m))
 
    :connect!
    (fn [to address m]
-     (if (contains? (connections peer) to)
-       (outgoing S peer ctx identity to m)
-       (go
-         (try
+     (if-not (allow-address? {:peer-id to :address address})
+       (swap! (:limiter ctx) update-in [:stats :address-refused] (fnil inc 0))
+       (if (contains? (connections peer) to)
+         (outgoing S peer ctx identity to m)
+         (go
+           (try
            ;; Queue first: the frame is released by `register!` once a peer
            ;; presenting `to` has proved it holds the key. An impostor at
            ;; `address` registers under its own id and never sees this.
-           (outgoing S peer ctx identity to m)
-           (<? S (peer/connect S peer address))
-           (catch #?(:clj Exception :cljs js/Error) _
+             (outgoing S peer ctx identity to m)
+             (<? S (peer/connect S peer address))
+             (catch #?(:clj Exception :cljs js/Error) _
              ;; A failed dial needs no event: the membership layer already
              ;; armed a dial timeout, and letting the timeout be the single
              ;; failure path keeps one code path instead of two that must
              ;; agree.
-             nil)))))
+               nil))))))
 
    :disconnect!
    (fn [to]
@@ -665,7 +837,8 @@
    (fn [delay payload]
      (go
        (<! (timeout (max 0 delay)))
-       (submit! ctx {:type :timer :payload payload})))
+       (when-not @(:stopped? ctx)
+         (submit! ctx {:type :timer :payload payload}))))
 
    :persist!
    (fn [k v]
@@ -716,18 +889,31 @@
   - `:seeds`     — configured peers `[{:peer-id … :addresses […] :group …}]`
   - `:topics`    — topics to subscribe to
   - `:store`     — a `netz.store.protocol/PPeerStore`; optional
+  - `:recovery-store` — a separate store for rotation/revocation secrets
+  - `:allow-address?` — `(fn [{:keys [peer-id address]}] ...)`; defaults to
+                        absolute credential-free ws/wss URLs
+  - `:handshake-max-attempts` — signature-bearing hello/proof messages allowed
+  - `:handshake-timeout-ms` — deadline for connection identity proof
   - `:seed`      — rng seed; derived from the peer id when absent
 
   Returns a channel yielding a context map with `:ctx` (the runtime) and
   `:middleware` (to install on the peer)."
-  [S peer {:keys [identity addresses seeds topics store seed overlay-opts
-                  require-signed?]}]
+  [S peer {:keys [identity addresses seeds topics store recovery-store seed
+                  overlay-opts require-signed? allow-address?
+                  handshake-max-attempts handshake-timeout-ms]}]
   (go-try S
-          (let [identity (or identity
-                             (when store (<? S (store/-load store :identity)))
-                             (let [i (<? S (id/generate-identity))]
-                               (when store (<? S (store/-store! store :identity i)))
-                               i))
+          (let [stored-identity (when (and (nil? identity) store)
+                                  (<? S (store/-load store :identity)))
+                generated? (and (nil? identity) (nil? stored-identity))
+                identity (or identity stored-identity (<? S (id/generate-identity)))
+                recovery (when generated? (id/recovery-material identity))
+                ;; Ordinary storage gets only the hot key. Recovery material
+                ;; may be written only when the caller supplied a distinct
+                ;; storage boundary explicitly.
+                _ (when (and generated? store)
+                    (<? S (store/-store! store :identity (id/hot-identity identity))))
+                _ (when (and generated? recovery-store recovery)
+                    (<? S (store/-store! recovery-store :identity/recovery recovery)))
                 peer-id (id/peer-id (:genesis identity))
                 prev-epoch (when store (<? S (store/-load store :epoch)))
                 epoch (store/monotonic-epoch prev-epoch)
@@ -745,7 +931,12 @@
                           ;; ahead of strangers after a restart.
                           (cond-> book (assoc-in [:membership :book] book)))
                 ctx (make-runtime {:id peer-id :state state :effects nil})
-                ctx (assoc ctx :effects (kabel-effects S peer ctx identity store))
+                ctx (assoc ctx :effects
+                           (kabel-effects S peer ctx identity store
+                                          {:allow-address? (or allow-address?
+                                                               (fn [{:keys [address]}]
+                                                                 (websocket-address? address)))})
+                           :peer peer)
                 ;; The book is durable membership state, not content, so it
                 ;; does not go through `:persist!` (which is content-shaped and
                 ;; writes under `[:blocks …]`).
@@ -757,20 +948,54 @@
                                                 nil))))))]
             (run! S ctx)
             {:ctx ctx
+             :peer peer
              :peer-id peer-id
              :identity identity
+             :recovery-material (when (and generated? (nil? recovery-store)) recovery)
              :epoch epoch
              :middleware (middleware {:ctx ctx
                                       :identity identity
                                       :addresses (vec addresses)
                                       :seq-no epoch
+                                      :handshake-max-attempts (or handshake-max-attempts 4)
+                                      :handshake-timeout-ms (or handshake-timeout-ms 15000)
                                       :require-signed? (if (nil? require-signed?)
                                                          true
                                                          require-signed?)})})))
 
+(defn on-stop!
+  "Register a zero-argument cleanup function owned by an adapter.
+
+  If the overlay is already stopped, runs `f` immediately."
+  [{:keys [ctx]} f]
+  (if @(:stopped? ctx)
+    (f)
+    (swap! (:stop-fns ctx) conj f))
+  nil)
+
+(defn stop!
+  "Stop a running overlay and release its in-process resources.
+
+  This closes the event loop, adapter workers and every registered connection;
+  timers may still wake, but observe `:stopped?` and submit no work. Idempotent;
+  returns true only for the call that performed the transition. The owning
+  Kabel server/listener remains the caller's lifecycle responsibility."
+  [{:keys [ctx peer]}]
+  (when (compare-and-set! (:stopped? ctx) false true)
+    (doseq [f @(:stop-fns ctx)]
+      (try (f) (catch #?(:clj Throwable :cljs :default) _ nil)))
+    (let [reg (registry peer)]
+      (doseq [out (distinct (vals (:by-id @reg)))]
+        (close! out))
+      (reset! reg {:by-id {} :outbox {}}))
+    (close! (:events ctx))
+    true))
+
 (defn set-deliver!
-  "Install the application delivery function — what `[:deliver topic payload]`
-  means. `netz.pubsub` sets this to `-apply-publish`."
+  "Install the application delivery function — what
+  `[:deliver source topic payload]` means. `netz.pubsub` sets this to an
+  ordered, bounded `-apply-publish` worker. The source exists so overload can
+  recover through application state sync rather than becoming silent loss."
   [{:keys [ctx]} f]
   (reset! (:deliver-fn ctx) f)
   nil)
@@ -798,6 +1023,31 @@
   (submit! ctx {:type :message
                 :from :app
                 :payload {:type :publish :topic topic :payload payload}}))
+
+(defn provide!
+  "Make an immutable content-addressed `value` servable under `key`.
+
+  Refuses a key/value mismatch before it reaches the state machine. Returns the
+  same immediate acceptance boolean as `publish!`."
+  [{:keys [ctx]} key value]
+  (and (content/verified? key value)
+       (submit! ctx {:type :message :from :app
+                     :payload {:type :content/loaded :key key :value value
+                               :immutable? true}})))
+
+(defn fetch!
+  "Begin fetching one content-addressed block. Returns whether the request was
+  accepted by the runtime; completion is observable in `overlay-state`."
+  [{:keys [ctx]} key]
+  (submit! ctx {:type :message :from :app
+                :payload {:type :content/fetch :key key}}))
+
+(defn fetch-tree!
+  "Begin fetching the DAG at `root`, pruning subtrees in `have`."
+  [{:keys [ctx]} root have]
+  (submit! ctx {:type :message :from :app
+                :payload {:type :content/fetch-tree :root root
+                          :have (vec have)}}))
 
 (defn warm!
   "Load `ks` from the durable store into the servable working set.

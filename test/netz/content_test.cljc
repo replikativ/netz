@@ -52,8 +52,8 @@
       (is (pos? (get-in s [:stats :records-refused])))))
 
   (testing "per provider — one peer cannot claim everything"
-    ;; `.internal/DHT_DESIGN.md` §6: a single peer announcing itself as
-    ;; provider for a million keys should not be able to.
+    ;; A single peer announcing itself as provider for a million keys should
+    ;; not be able to.
     (let [s (reduce (fn [st i] (c/add-record st (keyword (str "k" i)) :greedy 9999))
                     (content-state :me {} {:max-per-provider 5})
                     (range 100))]
@@ -375,6 +375,25 @@
 ;; =============================================================================
 ;; Subtree transfer
 ;; =============================================================================
+
+(deftest subtree-timeout-retries-another-provider
+  (let [root :root
+        state (-> (content-state :me {} {:tree-timeout-ms 100
+                                         :max-tree-tries 3})
+                  (assoc :peers #{:p1 :p2})
+                  (assoc :providers {root {:p1 10000 :p2 10000}}))
+        [state actions] (c/fetch-tree state root [] 0)
+        _ (is (= :p1 (get-in state [:tree-wants root :provider])))
+        _ (is (some #(= [:send :p1 {:type :content/want-tree
+                                    :root root :have []}] %)
+                    actions))
+        {state' :state actions' :actions}
+        (c/handler state {:type :timer :payload [:tree-timeout root]} {:now 100})]
+    (is (= :p2 (get-in state' [:tree-wants root :provider])))
+    (is (= 2 (get-in state' [:tree-wants root :tries])))
+    (is (some #(= [:send :p2 {:type :content/want-tree
+                              :root root :have []}] %)
+              actions'))))
 
 (defn- tree-blocks
   "A content-addressed tree of `depth` levels with `branching` children each.

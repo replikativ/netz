@@ -5,8 +5,7 @@
 
   - **Known-answer tests** pin the exact stream, so the JVM and ClojureScript
     are proven to agree rather than assumed to. A 32-bit truncation would show
-    up on exactly one platform, which is the failure mode
-    `.internal/DHT_DESIGN.md` §5 is about.
+    up on exactly one platform.
   - **Property tests on `shuffle` and `sample`**, because a peer-selection
     function that is silently not random is a documented, shipped bug —
     partisan's `shuffle/2` returns the first K peers and reorders them, and

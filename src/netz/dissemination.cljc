@@ -46,7 +46,7 @@
   No peer scoring, no peer exchange, no adaptive gossip, no mesh degree
   management. Those exist in gossipsub to synthesise accountability from
   observed behaviour in an open network; a network with admission control
-  already has it (`.internal/reference/gossipsub.md`). Adding them later is a
+  already has it. Adding them later is a
   decision that should be forced by an actual threat, not by symmetry with
   another system."
   (:require [hasch.core :refer [edn-hash]]
@@ -419,9 +419,10 @@
            ;; event rather than only when a peer appeared -- the largest
            ;; per-event cost in the machine, paid for nothing.
             (when (seq added)
-              (let [digest (summary state)]
+              (let [digest (summary state)
+                    floors (horizon state)]
                 (for [p added]
-                  [:send p {:type :have :summary digest}])))))])))
+                  [:send p {:type :have :summary digest :horizon floors}])))))])))
 
 (defn- interested?
   "Should we forward `topic` to `peer-id`?
@@ -479,7 +480,11 @@
         ;; which for `kabel.pubsub` is `-apply-publish` on the topic's
         ;; strategy. `:delivered` is still recorded so tests and inspection
         ;; can see it without interpreting actions.
-        deliver (when subscribed? [[:deliver topic payload]])]
+        ;; Include the transport source so an overloaded application adapter
+        ;; can request state from a peer that demonstrably carried it. For a
+        ;; local publication the origin is ourselves and the adapter may fall
+        ;; back to any subscribed peer.
+        deliver (when subscribed? [[:deliver (or from origin) topic payload]])]
     (if (>= hops max-hops)
       [(update-in state [:stats :hop-expired] inc) (vec deliver)]
       (let [targets (forward-targets state topic from)

@@ -1,0 +1,11 @@
+{
+  "name": "hello-minimal-draft-00",
+  "diagnostic": {
+    "v": 1,
+    "type": "hello",
+    "peer": "netz1-example",
+    "nonce_hex": "00010203",
+    "features": ["sync/1", "content/1"]
+  },
+  "canonical_cbor_hex": "a561760164706565726d6e65747a312d6578616d706c6564747970656568656c6c6f656e6f6e63654400010203686665617475726573826673796e632f3169636f6e74656e742f31"
+}

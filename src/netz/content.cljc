@@ -7,16 +7,15 @@
 
   - **Routing** answers \"who has key K\". A wrong answer costs a wasted
     request, and is self-detecting the moment the block arrives and its hash
-    does not match. This is the low-trust half (`.internal/DHT_DESIGN.md` §0).
+    does not match. This is the low-trust half.
   - **Transfer** moves the bytes. This is the half that decides whether
     \"fetch a database\" is fast or unusable, and it is where IPFS spent years
     (bitswap → graphsync) after content routing was already working.
 
   ## Why there is no Kademlia here
 
-  kabel peers are addressed by URL, so peer discovery needs no DHT
-  (`.internal/reference/hyperswarm.md`: ~55% of hyperdht is NAT traversal a
-  URL-addressed transport does not need). What remains is content routing over
+  Kabel peers are addressed by URL, so the current deployments do not need a
+  DHT for peer discovery. What remains is content routing over
   konserve's content-addressed keys, and the sharpening that makes it tractable
   is that records name **database roots**, not every block: thousands of
   records, not billions. At that scale, announce-to-neighbours plus
@@ -64,8 +63,7 @@
    :max-providers-per-key 20
    ;; Hard ceiling on distinct keys we hold records for.
    :max-keys 4096
-   ;; One peer must not be able to claim a million keys
-   ;; (`.internal/DHT_DESIGN.md` §6).
+   ;; One peer must not be able to claim a million keys.
    :max-per-provider 256
    ;; Keys offered per announcement.
    :announce-batch 32
@@ -105,7 +103,11 @@
    ;; its frontier instead.
    :max-tree-nodes 4096
    ;; Nodes per message, so a batch is bounded independently of the walk.
-   :max-tree-batch 256})
+   :max-tree-batch 256
+   ;; A provider that disconnects or withholds `tree-done` must not strand the
+   ;; root forever.
+   :tree-timeout-ms 30000
+   :max-tree-tries 4})
 
 (defn make-state
   ([id] (make-state id {} {}))
@@ -144,7 +146,7 @@
             :finds 0 :wants-sent 0 :blocks-served 0 :blocks-received 0
             :verify-failed 0 :expired 0 :queued 0 :fetch-refused 0
             :tree-requests 0 :tree-nodes-sent 0 :tree-nodes-received 0
-            :tree-truncated 0}}))
+            :tree-truncated 0 :tree-timeouts 0 :tree-failed 0}}))
 
 ;; =============================================================================
 ;; Local holdings
@@ -188,6 +190,14 @@
                (update :block-order #(vec (subvec % 1)))))
          state)))))
 
+(defn content-key
+  "The reference implementation's current content address for `value`.
+
+  Wire profile 1 will expose CID bytes at its boundary; this UUID remains the
+  compatible key used by Konserve/Datahike inside the Clojure stack."
+  [value]
+  (uuid value))
+
 (defn verified?
   "Does `value` hash to `k`?
 
@@ -195,7 +205,7 @@
   the same check the store itself makes — which is why a provider can serve
   content it cannot forge."
   [k value]
-  (= k (uuid value)))
+  (= k (content-key value)))
 
 ;; =============================================================================
 ;; Subtree walking
@@ -345,8 +355,8 @@
 
   The two are deliberately different things. The record store holds
   **unsolicited** announcements and is capped per provider, per key and
-  overall, because an announcement is attacker-supplied
-  (`.internal/DHT_DESIGN.md` §6). Solicited knowledge — a `:content/found`
+  overall, because an announcement is attacker-supplied. Solicited knowledge —
+  a `:content/found`
   answering a query *we* issued — is transient, lives on the want, and is not
   capped, because it cannot be pushed at us.
 
@@ -419,6 +429,21 @@
                         [:send p {:type :content/find :key k}]))
                  [:timer want-timeout-ms [:want-timeout k]])])))))
 
+(defn- request-tree-from
+  [state root provider now]
+  (let [timeout-ms (get-in state [:opts :tree-timeout-ms])]
+    [(-> state
+         (update-in [:tree-wants root :asked] (fnil conj #{}) provider)
+         (assoc-in [:tree-wants root :provider] provider)
+         (assoc-in [:tree-wants root :deadline] (+ now timeout-ms))
+         (update-in [:tree-wants root :tries] (fnil inc 0))
+         (update-in [:tree-wants root] dissoc :pending?)
+         (update-in [:stats :tree-requests] inc))
+     [[:send provider {:type :content/want-tree
+                       :root root
+                       :have (get-in state [:tree-wants root :have] [])}]
+      [:timer timeout-ms [:tree-timeout root]]]]))
+
 (defn fetch-tree
   "Request the whole subtree at `root` in one exchange. Returns `[state actions]`.
 
@@ -432,19 +457,23 @@
       (contains? (:tree-wants state) root) [state []]
 
       (seq providers)
-      [(-> state
-           (assoc-in [:tree-wants root] {:received 0 :frontier [] :have (vec have)})
-           (update-in [:stats :tree-requests] inc))
-       [[:send (first providers) {:type :content/want-tree
-                                  :root root
-                                  :have (vec have)}]]]
+      (request-tree-from
+       (assoc-in state [:tree-wants root]
+                 {:received 0 :frontier [] :have (vec have)
+                  :processed 0 :asked #{} :tries 0})
+       root (first providers) now)
 
       :else
       ;; Nobody known yet. Remember the intent; :content/found starts it.
-      [(assoc-in state [:tree-wants root] {:received 0 :frontier []
-                                           :have (vec have) :pending? true})
-       (vec (for [p (sort (:peers state))]
-              [:send p {:type :content/find :key root}]))])))
+      (let [timeout-ms (get-in state [:opts :tree-timeout-ms])]
+        [(assoc-in state [:tree-wants root] {:received 0 :frontier []
+                                             :processed 0
+                                             :have (vec have) :pending? true
+                                             :asked #{} :tries 1
+                                             :deadline (+ now timeout-ms)})
+         (conj (vec (for [p (sort (:peers state))]
+                      [:send p {:type :content/find :key root}]))
+               [:timer timeout-ms [:tree-timeout root]])]))))
 
 (defn drain-pending
   "Start as many queued fetches as there are free slots. Returns `[state actions]`.
@@ -529,8 +558,8 @@
       (cond
         (= :content/maintenance payload)
         ;; Expiry and re-announcement on one timer: a record store without
-        ;; expiry leaks, and expiry without republication makes it lossy
-        ;; (`.internal/DHT_DESIGN.md` §6).
+        ;; expiry leaks, and expiry without republication makes it lossy over
+        ;; time.
         (let [state (expire-records state now)
               [state offer] (announcement state)]
           {:state state
@@ -546,6 +575,37 @@
             (let [[state actions] (send-wants state k now)]
               {:state state :actions actions})
             {:state state :actions []}))
+
+        (and (vector? payload) (= :tree-timeout (first payload)))
+        (let [root (second payload)
+              want (get-in state [:tree-wants root])]
+          (if-not (and want (not (:done? want)) (:deadline want)
+                       (<= (:deadline want) now))
+            {:state state :actions []}
+            (let [state (update-in state [:stats :tree-timeouts] inc)
+                  candidates (remove (:asked want) (providers-for state root now))
+                  max-tries (get-in state [:opts :max-tree-tries])
+                  timeout-ms (get-in state [:opts :tree-timeout-ms])]
+              (cond
+                (seq candidates)
+                (let [[state actions] (request-tree-from state root (first candidates) now)]
+                  {:state state :actions actions})
+
+                (>= (:tries want 0) max-tries)
+                {:state (-> state
+                            (update :tree-wants dissoc root)
+                            (update-in [:stats :tree-failed] inc))
+                 :actions []}
+
+                :else
+                {:state (-> state
+                            (assoc-in [:tree-wants root :pending?] true)
+                            (assoc-in [:tree-wants root :provider] nil)
+                            (assoc-in [:tree-wants root :deadline] (+ now timeout-ms))
+                            (update-in [:tree-wants root :tries] (fnil inc 0)))
+                 :actions (conj (vec (for [p (sort (:peers state))]
+                                       [:send p {:type :content/find :key root}]))
+                                [:timer timeout-ms [:tree-timeout root]])}))))
 
         :else {:state state :actions []}))
 
@@ -640,13 +700,8 @@
             (get-in state [:tree-wants k :pending?])
             (let [provider (first (:providers payload))]
               (if provider
-                {:state (-> state
-                            (update-in [:tree-wants k] dissoc :pending?)
-                            (update-in [:stats :tree-requests] inc))
-                 :actions [[:send provider
-                            {:type :content/want-tree
-                             :root k
-                             :have (get-in state [:tree-wants k :have] [])}]]}
+                (let [[state actions] (request-tree-from state k provider now)]
+                  {:state state :actions actions})
                 {:state state :actions []}))
 
             :else {:state state :actions []}))
@@ -680,30 +735,50 @@
         ;; accepting on faith would be cheapest and worst.
         (let [root (:root payload)
               verify? (get-in state [:opts :verify?])]
-          (if-not (contains? (:tree-wants state) root)
+          (if-not (and (contains? (:tree-wants state) root)
+                       (= from (get-in state [:tree-wants root :provider])))
             ;; Unsolicited: dropped, like an unsolicited block.
             {:state state :actions []}
-            (let [[state acts]
+            (let [want (get-in state [:tree-wants root])
+                  remaining (when (:done? want)
+                              (max 0 (- (:expected want 0) (:processed want 0))))
+                  nodes (cond->> (:nodes payload) remaining (take remaining))
+                  [state acts]
                   (reduce (fn [[st acts] {:keys [key value]}]
-                            (if (and verify? (not (verified? key value)))
-                              [(update-in st [:stats :verify-failed] inc) acts]
-                              [(-> st
-                                   (put-block key value)
-                                   (update-in [:tree-wants root :received] inc)
-                                   (update-in [:stats :tree-nodes-received] inc))
-                               (conj acts [:persist key value])]))
+                            (let [st (update-in st [:tree-wants root :processed]
+                                                (fnil inc 0))]
+                              (if (and verify? (not (verified? key value)))
+                                [(update-in st [:stats :verify-failed] inc) acts]
+                                [(-> st
+                                     (put-block key value)
+                                     (update-in [:tree-wants root :received] inc)
+                                     (update-in [:stats :tree-nodes-received] inc))
+                                 (conj acts [:persist key value])])))
                           [state []]
-                          (:nodes payload))]
+                          nodes)
+                  state (if (and (get-in state [:tree-wants root :done?])
+                                 (>= (get-in state [:tree-wants root :processed] 0)
+                                     (get-in state [:tree-wants root :expected] 0)))
+                          (update-in state [:tree-wants root]
+                                     dissoc :deadline :provider :pending?)
+                          state)]
               {:state state :actions acts})))
 
         :content/tree-done
         (let [root (:root payload)]
-          (if-not (contains? (:tree-wants state) root)
+          (if-not (and (contains? (:tree-wants state) root)
+                       (= from (get-in state [:tree-wants root :provider])))
             {:state state :actions []}
             (let [frontier (vec (:frontier payload))
                   state (-> state
                             (assoc-in [:tree-wants root :frontier] frontier)
-                            (assoc-in [:tree-wants root :done?] true))]
+                            (assoc-in [:tree-wants root :done?] true)
+                            (assoc-in [:tree-wants root :expected] (:count payload)))
+                  state (if (>= (get-in state [:tree-wants root :processed] 0)
+                                (:count payload))
+                          (update-in state [:tree-wants root]
+                                     dissoc :deadline :provider :pending?)
+                          state)]
               ;; A truncated walk is resumed by fetching the frontier — those
               ;; are subtree roots, so a bounded provider stays bounded and the
               ;; requester still converges.

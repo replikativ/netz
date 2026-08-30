@@ -2,11 +2,8 @@
   "Tests for the deterministic simulator.
 
   The style to notice: faults are asserted by their **effect on node state**,
-  not by a counter. `.internal/reference/gossipsub.md` found two defences that
-  were dead code with passing counter-shaped tests, and
-  `.internal/reference/partisan.md` found a peer selector that was not random.
-  A test that says `(is (= 3 (:dropped stats)))` would pass against a
-  simulator that dropped the wrong three messages."
+  not by a counter. A test that says `(is (= 3 (:dropped stats)))` would pass
+  against a simulator that dropped the wrong three messages."
   (:require [clojure.test :refer [deftest testing is]]
             [netz.sim :as sim]
             [netz.sim.rng :as rng]))

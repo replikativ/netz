@@ -12,22 +12,19 @@
   churn: nodes joining and leaving *during* a lookup, views being read while
   they split, repair racing expiry. An integration test against a handful of
   live peers does not produce them and will pass while the design is wrong.
-  See `.internal/DHT_DESIGN.md` §7.
 
   ## The rule this simulator exists to enforce
 
   **Determinism comes from a seeded RNG, never from replacing the algorithm.**
   Each node carries its own rng in its state, seeded from the simulation seed
   and the node id, so the real peer-selection code runs — with reproducible
-  draws — rather than a stub. Three of the four systems reviewed in
-  `.internal/reference/` shipped a defence that was inert, or a selection
-  function that was wrong, with tests that passed anyway. Assert that an
-  attack has **no effect**; never that a counter moved.
+  draws — rather than a stub. Assert that an attack has **no effect**; never
+  merely that a counter moved.
 
   ## Node model
 
-  A node is a pure state machine, following partisan's
-  `partisan_broadcast_engine` shape (`.internal/reference/partisan.md` §7):
+  A node is a pure state machine, following the same transition shape used by
+  Partisan's broadcast engine:
 
       (fn handler [state event ctx] -> {:state state' :actions [action ...]})
 
@@ -45,7 +42,7 @@
       [:connect    <to-id> <address> <first-frame>]
       [:disconnect <to-id>]
       [:persist    <key> <value>]
-      [:deliver    <topic> <payload>]
+      [:deliver    <source-id> <topic> <payload>]
 
   `:connect` and `:disconnect` exist because opening a transport is not a
   message — in a deployment they are `kabel.peer/connect` against a URL

@@ -4,8 +4,8 @@
   This is L1 of the overlay — *which peers do I keep connections to* — and it
   is useful on its own, with no dissemination layer above it: seed a node with
   one address and the network assembles itself. That is the \"auto connect\"
-  and \"backend auto-discovery\" story, and it needs no DHT
-  (`.internal/DHT_DESIGN.md` §9).
+  and \"backend auto-discovery\" story, and it needs no DHT at the current
+  deployment scale. See `docs/interoperability.md` for the routing boundary.
 
   ## Shape
 
@@ -19,9 +19,8 @@
 
   ## Policy, and where it comes from
 
-  The dial policy follows hyperswarm's connection layer, which is the most
-  battle-tested version of this available and is transport-agnostic enough to
-  port (`.internal/reference/hyperswarm.md`). Specifically:
+  The dial policy is informed by Hyperswarm's transport-agnostic connection
+  layer. Specifically:
 
   - a **priority ladder** over proven/attempts, where a *single* failure is
     treated as a transient blip and retried promptly rather than demoted;
@@ -33,8 +32,7 @@
   - a **duplicate-dial tie-break**, so two peers dialing each other
     simultaneously keep exactly one connection and agree on which.
 
-  To that we add two things hyperswarm does not have and this deployment needs
-  (`.internal/DHT_DESIGN.md` §2):
+  To that we add two things this deployment needs:
 
   - **group diversity** — at most `:max-per-group` peers share a group, so one
     operator with many addresses cannot fill the book. A caller may supply the
@@ -48,8 +46,8 @@
   ## What this deliberately is not
 
   It never answers *does this peer count*. Membership is reachability, not
-  authority (`.internal/DHT_DESIGN.md` §1). A consensus layer above may use
-  this to find an address for an identity it already trusts, and nothing more."
+  authority. A consensus layer above may use this to find an address for an
+  identity it already trusts, and nothing more."
   (:require [netz.sim.rng :as rng]
             [netz.topics :as topics]))
 

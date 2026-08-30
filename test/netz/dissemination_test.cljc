@@ -121,7 +121,7 @@
         (is (= ["x"] (:delivered s')) "hop-expired message was not delivered")
         ;; Delivered AND not relayed — the two halves of the hop limit, and
         ;; now separable because delivery is its own action.
-        (is (= [[:deliver :t "x"]] (filter #(= :deliver (first %)) actions))
+        (is (= [[:deliver :p1 :t "x"]] (filter #(= :deliver (first %)) actions))
             "hop-expired message was not handed to the application")
         (is (empty? (filter #(= :send (first %)) actions))
             "hop-expired message was relayed anyway")

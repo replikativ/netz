@@ -41,8 +41,7 @@
 
   Byte operations work on byte arrays / `Uint8Array`, never on numbers.
   ClojureScript coerces bit operations to 32-bit signed integers, so a 256-bit
-  identifier manipulated as numbers is silently wrong on exactly one platform —
-  see `.internal/DHT_DESIGN.md` §5."
+  identifier manipulated as numbers is silently wrong on exactly one platform."
   (:require [hasch.core :refer [edn-hash]]
             [org.replikativ.geheimnis.codec :as codec]
             [org.replikativ.geheimnis.core :as gcore]
@@ -318,6 +317,25 @@
       (close! ch))
     ch))
 
+(defn hot-identity
+  "The identity material that may live in the ordinary peer store.
+
+  It is sufficient to keep the peer id stable and sign day-to-day traffic, but
+  deliberately excludes the rotation private key and revocation secret.  A
+  compromise of the online store must not also compromise every recovery path."
+  [identity]
+  (select-keys identity [:genesis :peer-id :peer-id-bytes :operational]))
+
+(defn recovery-material
+  "Cold recovery material extracted from a freshly generated identity.
+
+  Store this separately from `hot-identity`.  The map is nil when an identity
+  was loaded from a correctly separated hot store and therefore contains no
+  recovery secrets."
+  [identity]
+  (when (or (:rotation identity) (:revocation-secret identity))
+    (select-keys identity [:rotation :revocation-secret])))
+
 ;; =============================================================================
 ;; Identity records
 ;; =============================================================================
@@ -325,8 +343,8 @@
 ;; by the key it names, so it can travel over any transport, be relayed by
 ;; anyone, and still be checked by the recipient.
 ;;
-;; This is the invariant from .internal/DHT_DESIGN.md §1, in the form it takes
-;; once identity rides on pub/sub: **announcement is not authority**. A record
+;; The central invariant once identity rides on pub/sub is that
+;; **announcement is not authority**. A record
 ;; says "this key claims these addresses". It never says who counts.
 
 (defn record-bytes

@@ -3,8 +3,8 @@
 
   The sync half of this namespace is where the value is: peer-id derivation
   and the byte primitives are pure, run identically on both platforms, and are
-  exactly the places where a ClojureScript 32-bit coercion would hide
-  (`.internal/DHT_DESIGN.md` §5). `peer-id-known-answer` is the wire-format
+  exactly the places where a ClojureScript 32-bit coercion would hide.
+  `peer-id-known-answer` is the wire-format
   lock — if it ever changes, every deployed node id changes with it."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
@@ -40,6 +40,21 @@
     (is (id/bufs= (id/hex->bytes "0102") (id/hex->bytes "0102")))
     (is (not (id/bufs= (id/hex->bytes "0102") (id/hex->bytes "0103"))))
     (is (not (id/bufs= (id/hex->bytes "0102") (id/hex->bytes "010203"))))))
+
+(deftest hot-and-recovery-material-are-separated
+  (let [identity {:genesis {:version 2}
+                  :peer-id :peer
+                  :peer-id-bytes :authority
+                  :operational {:public :hot-public :private :hot-private}
+                  :rotation {:public :cold-public :private :cold-private}
+                  :revocation-secret :offline-secret}]
+    (is (= #{:genesis :peer-id :peer-id-bytes :operational}
+           (set (keys (id/hot-identity identity)))))
+    (is (nil? (:rotation (id/hot-identity identity))))
+    (is (nil? (:revocation-secret (id/hot-identity identity))))
+    (is (= {:rotation (:rotation identity)
+            :revocation-secret :offline-secret}
+           (id/recovery-material identity)))))
 
 (deftest sha256-known-answer
   (testing "SHA-256 agrees with the published vector on both platforms"

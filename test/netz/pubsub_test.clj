@@ -294,19 +294,25 @@
 
 (deftest the-pre-handshake-buffer-is-bounded
   ;; The sender controls the rate, so the buffer is attacker-influenced.
-  ;; Dropping the oldest is survivable -- dissemination repairs gaps -- where
-  ;; unbounded growth during a slow handshake is not.
+  ;; Dissemination has already marked these messages seen, so overflow must
+  ;; request application state sync rather than pretending message repair can
+  ;; recover them.
   (let [applied (atom [])
+        overflows (atom [])
         peer (atom {:pubsub {:subscriptions
                              {:t {:strategy (recording-strategy applied)
                                   :handshake-complete? false}}}})
         subs (atom {:t {}})
         pending (atom {})]
     (dotimes [i 10]
-      (pso/deliver-to-strategy! S peer subs pending :t {:n i} {:max-pending 4}))
+      (pso/deliver-to-strategy! S peer subs pending :t {:n i}
+                                {:max-pending 4
+                                 :on-overflow #(swap! overflows conj %)}))
     (is (= 4 (count (get @pending :t))))
     (is (= [{:n 6} {:n 7} {:n 8} {:n 9}] (vec (get @pending :t)))
-        "the oldest are dropped, so the newest state survives")))
+        "the oldest are dropped, so the newest state survives")
+    (is (= 6 (count @overflows)) "every application-level loss is signalled")
+    (is (= #{:t} (set @overflows)))))
 
 (deftest a-topic-owner-is-not-made-to-wait
   ;; A peer that REGISTERED a topic has no subscription and so no handshake to

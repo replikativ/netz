@@ -26,7 +26,7 @@
   | key | why |
   |---|---|
   | `:identity` | **essential** — the keypair *is* the peer's name; losing it means becoming a different peer |
-  | `:book`     | the sticky/anchor-peer mitigation (`.internal/DHT_DESIGN.md` §2.3) is worthless without it |
+  | `:book`     | sticky/anchor-peer history is worthless unless it survives restart |
   | `:epoch`    | must never go backwards, or replayed sequence numbers are suppressed as duplicates |
   | `:records`  | L3 provider records, when content routing lands |
 

@@ -116,14 +116,22 @@
   arrival order, and released when it has. `:handshake-complete?` already
   existed on the subscription; nothing was reading it.
 
-  Bounded, because the sender controls the rate: past `max-pending` the OLDEST
-  is dropped. Dropping is survivable — dissemination will repair a gap — where
-  unbounded growth during a slow handshake is not."
-  [S peer subs pending topic payload & [{:keys [max-pending] :or {max-pending 1024}}]]
+  Bounded, because the sender controls the rate: past `max-pending` the oldest
+  item is dropped and `on-overflow` is called. The adapter MUST answer that
+  signal with a state sync: dissemination has already marked the publication
+  seen, so message anti-entropy alone cannot repair an application-level drop."
+  [S peer subs pending topic payload & [{:keys [max-pending on-overflow]
+                                         :or {max-pending 1024}}]]
   (if-not (handshake-complete? peer topic)
-    (swap! pending update topic
-           (fn [q] (let [q (conj (vec q) payload)]
-                     (if (> (count q) max-pending) (vec (subvec q 1)) q))))
+    (let [overflow? (volatile! false)
+          result (swap! pending update topic
+                        (fn [q]
+                          (let [q (conj (vec q) payload)]
+                            (if (> (count q) max-pending)
+                              (do (vreset! overflow? true) (vec (subvec q 1)))
+                              q))))]
+      (when (and @overflow? on-overflow) (on-overflow topic))
+      result)
     ;; Drain first, and AWAIT it, so a payload arriving just after the
     ;; handshake completed cannot overtake the buffer it was queued behind.
     (go-try S
@@ -139,8 +147,9 @@
 
   `subs` is an atom of `{topic opts}`, remembered so that a horizon-triggered
   `re-handshake!` can reproduce the ORIGINAL subscription rather than a
-  stripped-down one. `pending` is the pre-handshake buffer."
-  [S peer running subs pending]
+  stripped-down one. `pending` is the pre-handshake buffer. `enqueue-drain!`
+  serializes handshake completion with live delivery."
+  [S peer running subs pending enqueue-drain!]
   {:publish!
    (fn [_peer topic payload]
      ;; `submit!` returns false when the runtime's event queue is full, and its
@@ -168,8 +177,7 @@
                      opts (update opts :on-handshake-complete
                                   (fn [f]
                                     (fn [t]
-                                      (drain-pending! S peer subs pending t)
-                                      (when f (f t)))))]
+                                      (enqueue-drain! t f))))]
                  (doseq [t topics] (swap! subs assoc t opts))
                  ;; Then the ordinary point-to-point handshake — the SAME code
                  ;; the direct transport runs. A handshake is a bulk,
@@ -229,6 +237,11 @@
         subs (atom {})
         ;; Publishes that arrived before their topic's handshake finished.
         pending (atom {})
+        ;; Sources whose accepted gossip could not be handed to the
+        ;; application. Message repair cannot help after dissemination marked
+        ;; it seen, so the worker schedules a differential state sync once the
+        ;; ordered delivery backlog has drained.
+        dirty-sources (atom #{})
         ;; ONE consumer, so applications happen in the order they arrived.
         ;;
         ;; `deliver-to-strategy!` returns a go block and the runtime's
@@ -242,22 +255,57 @@
         ;; Submission is already serial (the runtime is a single event loop),
         ;; so one consumer that AWAITS each application is all that is needed
         ;; to keep it that way.
-        deliveries (chan 1024)]
+        deliveries (chan 1024)
+        mark-dirty! (fn [source]
+                      (swap! dirty-sources conj
+                             (when-not (= source (:peer-id running)) source)))]
     (go-loop-try S [d (<? S deliveries)]
                  (when d
-                   (let [[topic payload] d]
-                     (<? S (deliver-to-strategy! S peer subs pending
-                                                 topic payload)))
-                   (recur (<? S deliveries))))
+                   (let [[op source topic payload] d]
+                     (case op
+                       :deliver
+                       (<? S (deliver-to-strategy!
+                              S peer subs pending topic payload
+                              {:on-overflow (fn [_] (mark-dirty! source))}))
+
+                       :drain
+                       (do
+                         (<? S (drain-pending! S peer subs pending topic))
+                         (when payload (payload topic)))))
+                   ;; Recover only after the ordered backlog is empty. A
+                   ;; re-subscribe marks the handshake incomplete, so anything
+                   ;; arriving while recovery runs is buffered behind it.
+                   (if-let [next-delivery (async/poll! deliveries)]
+                     (recur next-delivery)
+                     (do
+                       ;; Atomically take the set. A concurrent failed offer
+                       ;; belongs to the next drain and cannot be erased
+                       ;; between a deref and reset.
+                       (let [sources (first (swap-vals! dirty-sources
+                                                        (constantly #{})))]
+                         (doseq [source sources]
+                           (re-handshake! S peer subs source)))
+                       (recur (<? S deliveries))))))
     (rt/set-deliver! running
-                     (fn [topic payload]
+                     (fn [source topic payload]
                        ;; `offer!`, not a parking put: the delivery function is
                        ;; called from the runtime's own loop, and blocking it
                        ;; to deliver to ourselves would deadlock. A full queue
-                       ;; means the application cannot keep up, which is the
-                       ;; application's problem to notice.
-                       (async/offer! deliveries [topic payload])))
+                       ;; means the application cannot keep up. It converts
+                       ;; overload into state synchronization;
+                       ;; silently dropping here is never correct because the
+                       ;; dissemination layer has already recorded the message.
+                       (or (async/offer! deliveries [:deliver source topic payload])
+                           (do (mark-dirty! source) false))))
     (rt/set-state-sync! running (fn [from _stranded]
                                   (re-handshake! S peer subs from)))
-    (pubsub/set-transport! peer (transport S peer running subs pending))
+    (rt/on-stop! running #(close! deliveries))
+    (pubsub/set-transport!
+     peer
+     (transport S peer running subs pending
+                (fn [topic callback]
+                  ;; A control item must not be lost behind a full data queue.
+                  ;; `put!` is safe here: at most one is pending per active
+                  ;; handshake, and the worker is independent of the runtime.
+                  (put! deliveries [:drain nil topic callback]))))
     peer))

@@ -152,8 +152,7 @@
   This function is written out rather than delegated because getting it subtly
   wrong is a documented failure mode: partisan's `shuffle/2` selects the
   **first** K peers and only reorders the result, so its peer sampling is not
-  random at all and no test noticed
-  (see `.internal/reference/partisan.md`). `netz.sim.rng-test` asserts the
+  random at all and no test noticed. `netz.sim.rng-test` asserts the
   property that catches it — that every element can reach every position."
   [rng coll]
   (let [v (vec coll)

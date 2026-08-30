@@ -7,11 +7,26 @@ jobs:
     steps:
       - checkout
       - run:
+          name: Install portability runtimes
+          command: apt-get update && apt-get install -y nodejs npm python3
+      - run:
           name: JVM tests
           command: clojure -X:test :dirs '["test"]'
       - run:
+          name: Konserve integration tests
+          command: clojure -X:konserve:test :dirs '["test" "test-konserve"]'
+      - run:
+          name: ClojureScript and Node tests
+          command: npm ci && npx shadow-cljs compile :node-test && node target/node-tests.js
+      - run:
+          name: Python wire conformance
+          command: python3 -m unittest discover -s interop/python -v
+      - run:
           name: Format
           command: clojure -M:format
+      - run:
+          name: Build release artifact
+          command: clojure -T:build jar
 
 workflows:
   build:

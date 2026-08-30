@@ -8,13 +8,13 @@
 
   gossipsub remembers message ids in a time-bounded cache — 2 minutes, no size
   cap, no overflow path — so its memory is `arrival-rate × 120 s` and a burst
-  is unbounded (`.internal/reference/gossipsub.md`). It has to work that way,
+  is unbounded. It has to work that way,
   because it cannot assume its message ids are anything but opaque hashes.
 
   partisan can do better, and does: its Plumtree backend tracks
   `{origin, epoch, monotonic-seq}` and collapses each origin's history to a
-  handful of intervals — `O(#peers)` rows, **no TTL and no GC at all**
-  (`.internal/reference/partisan.md`). A peer that has received everything
+  handful of intervals — `O(#peers)` rows, **no TTL and no GC at all**. A peer
+  that has received everything
   from an origin needs exactly one interval to say so.
 
   We can use that because our senders number their own messages, which

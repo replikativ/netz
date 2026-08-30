@@ -8,7 +8,7 @@
             #?@(:clj [[netz.dissemination :as d]
                       [netz.identity :as id]
                       [superv.async :refer [S <??]]
-                      [clojure.core.async :refer [<!!]]])))
+                      [clojure.core.async :refer [chan <!! >!!]]])))
 
 (defn- recording-effects
   "Effects that record instead of acting."
@@ -77,6 +77,28 @@
       (rt/step! ctx {:type :init})
       (is (= {:kept true} @(:state ctx))))))
 
+(deftest websocket-address-policy
+  (testing "only absolute credential-free WebSocket URLs pass by default"
+    (is (rt/websocket-address? "ws://localhost:8080/netz"))
+    (is (rt/websocket-address? "wss://peer.example/netz"))
+    (is (not (rt/websocket-address? "http://peer.example/netz")))
+    (is (not (rt/websocket-address? "ws://user:secret@peer.example/netz")))
+    (is (not (rt/websocket-address? "ws://peer.example/netz#fragment")))
+    (is (not (rt/websocket-address? "not a url")))))
+
+(deftest stopping-a-runtime-is-idempotent-and-refuses-new-work
+  (let [ctx (rt/make-runtime {:id :me :state {}
+                              :handler (fn [s _ _] {:state s :actions []})
+                              :effects (recording-effects (atom []))})
+        cleaned (atom 0)
+        running {:ctx ctx :peer (atom {})}]
+    (rt/on-stop! running #(swap! cleaned inc))
+    (is (true? (rt/stop! running)))
+    (is (= 1 @cleaned))
+    (is (false? (rt/submit! ctx {:type :init})))
+    (is (nil? (rt/stop! running)))
+    (is (= 1 @cleaned))))
+
 #?(:clj
    (deftest publisher-authentication
      (let [kp (<!! (id/generate-identity))
@@ -125,6 +147,31 @@
          (is (false? (<!! (rt/verify-gossip S (assoc signed :origin-sig "zz")))))
          (is (false? (<!! (rt/verify-gossip S (assoc signed :origin-key "00")))))
          (is (false? (<!! (rt/verify-gossip S (assoc signed :origin-key 42)))))))))
+
+#?(:clj
+   (deftest hello-is-enqueued-before-proof
+     (let [local (<!! (id/generate-identity))
+           remote (<!! (id/generate-identity))
+           ctx (rt/make-runtime
+                {:id (id/peer-id (:genesis local))
+                 :state {}
+                 :handler (fn [state _ _] {:state state :actions []})
+                 :effects (recording-effects (atom []))})
+           peer (atom {})
+           in (chan)
+           out (chan)
+           _ ((rt/middleware {:ctx ctx :identity local :addresses [] :seq-no 0})
+              [S peer [in out]])
+           remote-nonce (id/new-nonce)
+           remote-record (<!! (id/sign-record remote [] 0))]
+       (testing "concurrent Netz producers preserve the protocol order Kabel ships"
+         ;; Feed their hello before consuming our output. Without the
+         ;; hello-sent gate, the reply producer can win the race to `out`.
+         (>!! in {:type rt/hello-type
+                  :record (id/record->wire remote-record)
+                  :nonce remote-nonce})
+         (is (= rt/hello-type (:type (<!! out))))
+         (is (= rt/proof-type (:type (<!! out))))))))
 
 (deftest frames-are-recognisable
   (testing "overlay frames are distinguishable from application messages"
@@ -201,6 +248,7 @@
       {:type :have :summary {:o {0 "abc"}}}
       {:type :have :summary "xxx"}
       {:type :have :summary {:o [1 2 3]}}
+      {:type :have :summary {}}
       {:type :have :summary {} :horizon {[:o 0] "hi"}}
       {:type :want :ranges [{:lo "x" :hi 5}]}
       {:type :want :ranges 42}
@@ -215,24 +263,30 @@
       {:type :content/want-tree :have 5}
       {:type :dial :addresses 42}
       {:type :dial-refused :peers 42}
-      {:type :peers :peers 42}))
+      {:type :peers :peers []}
+      {:type :peers :entries 42}
+      {:type :something/new :whatever 42}))
 
   (testing "well-formed messages pass"
     (are [payload] (true? (rt/well-formed? payload))
       {:type :have :summary {:o {0 [[0 5]]}} :horizon {[:o 0] 3}}
       {:type :want :ranges [{:lo 0 :hi 5}]}
-      {:type :gossip :origin :o :epoch 0 :seq 1 :hops 2}
+      {:type :gossip :origin :o :epoch 0 :seq 1 :hops 2 :topic :t :payload "x"}
       {:type :interests :topics #{:t} :carries #{}}
-      {:type :peers :peers []}))
+      {:type :peers :entries []}))
 
-  (testing "absent optional fields pass"
-    ;; The gate constrains shape, not presence -- a handler that needs a field
-    ;; is the thing that decides it is required.
-    (is (true? (rt/well-formed? {:type :have})))
-    (is (true? (rt/well-formed? {:type :gossip :origin :o}))))
+  (testing "required fields must be present"
+    (is (false? (rt/well-formed? {:type :have})))
+    (is (false? (rt/well-formed? {:type :gossip :origin :o}))))
 
-  (testing "unknown types pass"
-    ;; A newer peer may legitimately send something this one does not know, and
-    ;; the handlers already fall through to :else. Refusing would make every
-    ;; protocol addition a flag day.
-    (is (true? (rt/well-formed? {:type :something/new :whatever 42})))))
+  (testing "unknown types require explicit protocol negotiation"
+    (is (false? (rt/well-formed? {:type :something/new :whatever 42}))))
+
+  (testing "decoded values are bounded before handlers process them"
+    (is (false? (rt/well-formed?
+                 {:type :gossip :origin :o :epoch 0 :seq 1 :hops 0
+                  :topic :t :payload (apply str (repeat 1048577 "x"))})))
+    (is (false? (rt/well-formed?
+                 {:type :gossip :origin :o :epoch 0 :seq 1 :hops 0
+                  :topic :t :payload (apply str (repeat 262145 "🕸"))}))
+        "text limits count UTF-8 bytes, not host-language characters")))
