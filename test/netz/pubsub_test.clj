@@ -13,6 +13,7 @@
             [netz.identity :as id]
             [kabel.peer :as peer]
             [kabel.pubsub :as pubsub]
+            [netz.apply-owner :as apply-owner]
             [netz.pubsub :as pso]
             [kabel.pubsub.protocol :as proto]
             [netz.overlay.runtime :as rt]
@@ -39,6 +40,24 @@
          {:active? true :intent-generation 1 :dirty-generation 0
           :pending-sources #{} :gated? false
           :status {:status :joining}}))
+
+(defn- activate-managed-topic!
+  [peer installed-subs topic opts]
+  (let [generation 1
+        state (apply-owner/make-state
+               {:topic topic :profile "kabel/psync-strategy/0"
+                :generation generation :live-transport :overlay
+                :phase :joining})
+        state (:state
+               (apply-owner/transition
+                state {:type :sync/begin :generation generation
+                       :sync-id [:initial generation]}))]
+    (swap! @installed-subs assoc topic opts)
+    (swap! (get-in @peer [:pubsub :netz/recovery-control])
+           assoc-in [:topics topic]
+           {:active? true :intent-generation generation :dirty-generation 0
+            :pending-sources #{} :gated? true :owner state
+            :status {:status :joining}})))
 
 (defn- recording-strategy
   "Records what it was handed. Deliberately the SAME implementation under both
@@ -764,6 +783,194 @@
         (<?? S (timeout 50))
         (is (= [first-publication] @committed)
             "failed application must not enter a later sync checkpoint"))
+      (@stop!))))
+
+(deftest installed-apply-owner-serializes-snapshot-and-live-receipts
+  (let [deliver! (atom nil)
+        stop! (atom nil)
+        installed-subs (atom nil)
+        enqueue-drain! (atom nil)
+        committed (atom [])
+        applied (atom [])
+        completion (chan 1)
+        strategy (recording-strategy applied)
+        p (atom {:pubsub {:subscriptions
+                          {:t {:strategy strategy
+                               :handshake-complete? true}}}})]
+    (with-redefs [rt/set-deliver! (fn [_ f] (reset! deliver! f) true)
+                  rt/set-state-sync! (fn [_ _] true)
+                  rt/on-stop! (fn [_ f] (reset! stop! f) true)
+                  rt/application-committed!
+                  (fn [_ publication]
+                    (swap! committed conj publication)
+                    true)
+                  pubsub/set-transport! (fn [_ _] true)
+                  pso/transport (fn [_ _ _ subs _ enqueue _]
+                                  (reset! installed-subs subs)
+                                  (reset! enqueue-drain! enqueue)
+                                  {})]
+      (pso/install! S p {:peer-id :self})
+      (activate-managed-topic! p installed-subs :t {:strategy strategy})
+      (let [publication {:type :gossip :origin :writer :epoch 0 :seq 0
+                         :topic :t :payload :live}
+            control (get-in @p [:pubsub :netz/recovery-control])]
+        (@deliver! :source :t :live publication)
+        (<?? S (timeout 50))
+        (is (empty? @applied)
+            "live data waits behind the owner-controlled snapshot")
+        (is (empty? @committed))
+
+        (let [operation-id (get-in @control
+                                   [:topics :t :owner :active-sync])]
+          (@enqueue-drain! :t nil #(put! completion %)
+                           (constantly true)
+                           {:intent-generation 1
+                            :dirty-generation 0
+                            :operation-id operation-id}))
+        (is (= {:ok true} (<?? S completion)))
+        (is (= [:live] @applied))
+        (is (= [(assoc publication :bytes 0)] @committed))
+        (is (= 0 (get-in @control
+                         [:topics :t :owner :applied-frontiers
+                          [:writer 0 :t]])))
+        (is (= :live (get-in @control [:topics :t :owner :phase]))))
+      (@stop!))))
+
+(deftest recovery-snapshot-waits-for-an-in-flight-managed-apply
+  (let [deliver! (atom nil)
+        state-sync! (atom nil)
+        stop! (atom nil)
+        installed-subs (atom nil)
+        enqueue-drain! (atom nil)
+        apply-gate (chan 1)
+        recovery-gate (chan 1)
+        recovery-calls (atom [])
+        applications (atom 0)
+        strategy (reify proto/PSyncStrategy
+                   (-init-client-state [_] (done {}))
+                   (-handshake-items [_ _] (done []))
+                   (-apply-handshake-item [_ _] (done {:ok true}))
+                   (-apply-publish [_ _]
+                     (swap! applications inc)
+                     apply-gate))
+        p (atom {:pubsub {:subscriptions
+                          {:t {:strategy strategy
+                               :handshake-complete? true}}}})]
+    (with-redefs [rt/set-deliver! (fn [_ f] (reset! deliver! f) true)
+                  rt/set-state-sync! (fn [_ f] (reset! state-sync! f) true)
+                  rt/on-stop! (fn [_ f] (reset! stop! f) true)
+                  rt/application-committed! (fn [_ _] true)
+                  pubsub/set-transport! (fn [_ _] true)
+                  pso/transport (fn [_ _ _ subs _ enqueue _]
+                                  (reset! installed-subs subs)
+                                  (reset! enqueue-drain! enqueue)
+                                  {})
+                  pso/re-handshake!
+                  (fn [_ _ _ source _]
+                    (swap! recovery-calls conj source)
+                    recovery-gate)]
+      (pso/install! S p {:peer-id :self})
+      (activate-managed-topic! p installed-subs :t {:strategy strategy})
+      (let [control (get-in @p [:pubsub :netz/recovery-control])
+            initial-completion (chan 1)
+            initial-operation (get-in @control
+                                      [:topics :t :owner :active-sync])]
+        (@enqueue-drain! :t nil #(put! initial-completion %)
+                         (constantly true)
+                         {:intent-generation 1 :dirty-generation 0
+                          :operation-id initial-operation})
+        (is (= {:ok true} (<?? S initial-completion)))
+        (is (= :live (get-in @control [:topics :t :owner :phase])))
+
+        (is (@deliver! :source :t :live
+                       {:type :gossip :origin :writer :epoch 0 :seq 0
+                        :topic :t :payload :live}))
+        (is (wait-for 3000
+                      #(some? (get-in @control
+                                      [:topics :t :owner :in-flight]))))
+        (is (wait-for 3000 #(= 1 @applications)))
+        (@state-sync! :repair-source [{:topic :t}])
+        (<?? S (timeout 100))
+        (is (empty? @recovery-calls)
+            "snapshot capture cannot race the in-flight live mutation")
+
+        (put! apply-gate {:ok true})
+        (is (wait-for 3000 #(= [:repair-source] @recovery-calls)))
+        (is (= 0 (get-in @control
+                         [:topics :t :owner :applied-frontiers
+                          [:writer 0 :t]])))
+        (put! recovery-gate {:error :test/stop-recovery}))
+      (@stop!))))
+
+(deftest managed-unsubscribe-waits-for-the-apply-owner-to-close
+  (let [deliver! (atom nil)
+        stop! (atom nil)
+        installed-subs (atom nil)
+        enqueue-drain! (atom nil)
+        apply-gate (chan 1)
+        applications (atom 0)
+        receipts (atom [])
+        withdrawals (atom 0)
+        direct-unsubscribes (atom 0)
+        strategy (reify proto/PSyncStrategy
+                   (-init-client-state [_] (done {}))
+                   (-handshake-items [_ _] (done []))
+                   (-apply-handshake-item [_ _] (done {:ok true}))
+                   (-apply-publish [_ _]
+                     (swap! applications inc)
+                     apply-gate))
+        p (atom {:pubsub {:subscriptions
+                          {:t {:strategy strategy
+                               :handshake-complete? true}}}})]
+    (with-redefs [rt/set-deliver! (fn [_ f] (reset! deliver! f) true)
+                  rt/set-state-sync! (fn [_ _] true)
+                  rt/on-stop! (fn [_ f] (reset! stop! f) true)
+                  rt/application-committed!
+                  (fn [_ publication]
+                    (swap! receipts conj publication)
+                    true)
+                  rt/unsubscribe-topics-ordered!
+                  (fn [_ _]
+                    (swap! withdrawals inc)
+                    (done true))
+                  pubsub/set-transport! (fn [_ _] true)
+                  pubsub/direct-unsubscribe!
+                  (fn [_ _ _]
+                    (swap! direct-unsubscribes inc)
+                    (done {:ok true}))
+                  pso/transport (fn [_ _ _ subs _ enqueue _]
+                                  (reset! installed-subs subs)
+                                  (reset! enqueue-drain! enqueue)
+                                  {})]
+      (pso/install! S p {:peer-id :self})
+      (activate-managed-topic! p installed-subs :t {:strategy strategy})
+      (let [control (get-in @p [:pubsub :netz/recovery-control])
+            initial-completion (chan 1)
+            initial-operation (get-in @control
+                                      [:topics :t :owner :active-sync])]
+        (@enqueue-drain! :t nil #(put! initial-completion %)
+                         (constantly true)
+                         {:intent-generation 1 :dirty-generation 0
+                          :operation-id initial-operation})
+        (is (= {:ok true} (<?? S initial-completion)))
+
+        (let [publication {:type :gossip :origin :writer :epoch 0 :seq 0
+                           :topic :t :payload :live}]
+          (is (@deliver! :source :t :live publication))
+          (is (wait-for 3000 #(= 1 @applications)))
+          (let [unsubscribed (pso/unsubscribe! p #{:t})]
+            (<?? S (timeout 100))
+            (is (zero? @withdrawals))
+            (is (zero? @direct-unsubscribes)
+                "unsubscribe cannot overtake the in-flight application")
+            (put! apply-gate {:ok true})
+            (is (= {:ok true} (<?? S unsubscribed))))
+
+          (is (= [(assoc publication :bytes 0)] @receipts))
+          (is (= 1 @withdrawals))
+          (is (= 1 @direct-unsubscribes))
+          (is (= :closed
+                 (get-in @control [:topics :t :owner :phase])))))
       (@stop!))))
 
 (deftest snapshot-drain-emits-receipts-for-the-buffered-publication-identities

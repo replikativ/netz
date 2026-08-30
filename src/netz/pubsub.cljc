@@ -48,6 +48,7 @@
   application answers with a differential sync, which is an application fact.
   Neither needs to know the other's semantics."
   (:require [kabel.pubsub :as pubsub]
+            [netz.apply-owner :as apply-owner]
             [netz.overlay.runtime :as rt]
             #?(:clj [superv.async :refer [<? go-try go-loop-try]])
             [clojure.core.async :as async :refer [chan put! close! timeout]])
@@ -73,6 +74,32 @@
 
 (defn- throwable? [value]
   (instance? #?(:clj Throwable :cljs js/Error) value))
+
+(defn- initial-apply-owner
+  [topic generation]
+  (let [state (apply-owner/make-state
+               {:topic topic
+                :profile "kabel/psync-strategy/0"
+                :generation generation
+                :live-transport :overlay
+                :phase :joining})
+        started (apply-owner/transition
+                 state {:type :sync/begin
+                        :generation generation
+                        :sync-id [:initial generation]})]
+    (:state started)))
+
+(defn- transition-topic-owner!
+  [recovery-control topic event]
+  (let [result (volatile! {:state nil :effects []})]
+    (swap! recovery-control update-in [:topics topic]
+           (fn [topic-state]
+             (if-let [state (:owner topic-state)]
+               (let [next (apply-owner/transition state event)]
+                 (vreset! result next)
+                 (assoc topic-state :owner (:state next)))
+               topic-state)))
+    @result))
 
 (defn recovery-status
   "Return the last observable recovery state for `topic`."
@@ -325,14 +352,20 @@
                                                    recovery-control update-in
                                                    [:topics t]
                                                    (fn [state]
-                                                     {:active? true
-                                                      :intent-generation
-                                                      (inc (or (:intent-generation state)
-                                                               0))
-                                                      :dirty-generation 0
-                                                      :pending-sources #{}
-                                                      :gated? false
-                                                      :status {:status :joining}}))]
+                                                     (let [generation
+                                                           (inc (or (:intent-generation
+                                                                     state)
+                                                                    0))]
+                                                       {:active? true
+                                                        :intent-generation generation
+                                                        :dirty-generation 0
+                                                        :pending-sources #{}
+                                                        :gated? true
+                                                        :owner
+                                                        (initial-apply-owner
+                                                         t generation)
+                                                        :status
+                                                        {:status :joining}})))]
                                               [t (get-in after
                                                          [:topics t
                                                           :intent-generation])]))))
@@ -688,24 +721,103 @@
                                           :gated? true
                                           :status {:status :pending
                                                    :generation generation})))))]
-                        (when (not= before after)
+                        (if (= before after)
+                          []
                           (let [state (get-in after [:topics topic])]
-                            ;; Every value still waiting behind the gate now
-                            ;; belongs to the newest replacement snapshot. This
-                            ;; happens on the ordered delivery owner, so no old
-                            ;; drain can take the buffer between the generation
-                            ;; transition and this retag.
-                            (swap! pending update topic
-                                   (fn [entries]
-                                     (mapv #(if (::pending? %)
-                                              (assoc %
-                                                     ::intent-generation
-                                                     (:intent-generation state)
-                                                     ::dirty-generation
-                                                     (:dirty-generation state))
-                                              %)
-                                           entries))))
-                          (async/offer! recovery-wake :wake))))
+                            (if (:owner state)
+                              (:effects
+                               (transition-topic-owner!
+                                recovery-control topic
+                                {:type :sync/begin
+                                 :generation (:intent-generation state)
+                                 :sync-id [(:intent-generation state)
+                                           (:dirty-generation state)]}))
+                              (do
+                                (async/offer! recovery-wake :wake)
+                                []))))))
+        run-owner-effects!
+        (fn run-owner-effects! [topic initial-effects]
+          (go-try S
+                  (loop [effects (seq initial-effects)]
+                    (if-let [{:keys [op] :as effect} (first effects)]
+                      (case op
+                        :invoke-live
+                        (let [publication (:publication effect)
+                              result (<? S (apply-one! S peer subs topic
+                                                       (:payload publication)))
+                              next-effects
+                              (:effects
+                               (transition-topic-owner!
+                                recovery-control topic
+                                {:type :apply-result
+                                 :operation-id (:operation-id effect)
+                                 :result result}))]
+                          (recur (concat next-effects (next effects))))
+
+                        :settle
+                        (let [{:keys [publication source]} (:receipt effect)
+                              result (:result effect)
+                              committed?
+                              (or (:duplicate result)
+                                  (:subsumed result)
+                                  (not (exact-success? result))
+                                  (nil? publication)
+                                  (rt/application-committed! running
+                                                             publication))
+                              recovery-effects
+                              (if committed?
+                                []
+                                (mark-dirty! source topic))]
+                          (recur (concat recovery-effects (next effects))))
+
+                        :request-sync
+                        (recur (concat (mark-dirty! (:source effect) topic)
+                                       (next effects)))
+
+                        :begin-sync
+                        (do
+                          (swap! recovery-control update-in [:topics topic]
+                                 assoc
+                                 :gated? true
+                                 :sync-operation-id (:operation-id effect)
+                                 :status {:status :pending
+                                          :generation
+                                          (get-in @recovery-control
+                                                  [:topics topic
+                                                   :dirty-generation])})
+                          (async/offer! recovery-wake :wake)
+                          (recur (next effects)))
+
+                        :ready
+                        (do
+                          (swap! recovery-control update-in [:topics topic]
+                                 assoc :gated? false)
+                          (recur (next effects)))
+
+                        :retire-direct
+                        (do
+                          (retire-recovery-outs!
+                           (pubsub/subscriptions peer) #{topic} nil)
+                          (recur (next effects)))
+
+                        :sync-protocol-error
+                        (if (= :sync-already-active (:reason effect))
+                          (recur (next effects))
+                          {:error :netz/apply-owner-protocol
+                           :reason (:reason effect)})
+
+                        (recur (next effects)))
+                      {:ok true}))))
+        close-topic-owner!
+        (fn [topic]
+          (if-let [generation (get-in @recovery-control
+                                      [:topics topic :owner :generation])]
+            (let [completion (chan 1)]
+              (put! deliveries
+                    [:owner-close nil topic
+                     {:generation generation :completion completion}])
+              completion)
+            (ok {:ok true :skipped true})))
         cancel-and-unsubscribe!
         (fn [topics]
           (go-try S
@@ -721,6 +833,10 @@
                             {:error :netz/stopped}
                             (let [held (pubsub/subscriptions peer)
                                   remembered (select-keys @subs topics)
+                                  _ (loop [remaining (seq topics)]
+                                      (when-let [topic (first remaining)]
+                                        (<? S (close-topic-owner! topic))
+                                        (recur (next remaining))))
                                   intent-generations
                                   (into {}
                                         (keep (fn [topic]
@@ -801,34 +917,60 @@
                         ;; so a peer may still forward a frame until its retry.
                         (false? (get-in @recovery-control
                                         [:topics topic :active?]))
-                         (let [result
-                               (<? S (deliver-to-strategy!
-                                      S peer subs pending topic payload
-                                      {:desynchronized recovery-control
-                                       :publication publication
-                                       :on-overflow
-                                       (fn [overflow-topic]
-                                         (mark-dirty! source overflow-topic))}))]
-                           (when (and (map? result) (:error result))
-                             (mark-dirty! source topic))
-                           (when (exact-success? result)
-                             (let [publications
-                                   (or (seq (:committed-publications result))
-                                       (when publication [publication]))]
-                               (when (and (seq publications)
-                                          (not (commit-publications!
-                                                running publications)))
-                               ;; The application committed but its receipt
-                               ;; could not enter the bounded overlay lane. A
-                               ;; later snapshot must not claim it; gate and
-                               ;; recover instead of continuing silently.
-                                 (mark-dirty! source topic))))))
+                         (if-let [state (get-in @recovery-control
+                                                [:topics topic :owner])]
+                           (let [publication
+                                 (-> (or publication
+                                         {:origin source :epoch 0 :seq 0
+                                          :topic topic :payload payload})
+                                     (assoc :payload payload)
+                                     (update :bytes #(or % 0)))
+                                 owner-result
+                                 (transition-topic-owner!
+                                  recovery-control topic
+                                  {:type :live
+                                   :generation (:generation state)
+                                   :transport :overlay
+                                   :source source
+                                   :receipt {:publication publication
+                                             :source source}
+                                   :publication publication})]
+                             (<? S (run-owner-effects!
+                                    topic (:effects owner-result))))
+                           ;; Compatibility fallback for callers that install
+                           ;; subscriptions before the owner-aware transport.
+                           (let [result
+                                 (<? S (deliver-to-strategy!
+                                        S peer subs pending topic payload
+                                        {:desynchronized recovery-control
+                                         :publication publication
+                                         :on-overflow
+                                         (fn [overflow-topic]
+                                           (let [effects
+                                                 (mark-dirty!
+                                                  source overflow-topic)]
+                                             (run-owner-effects!
+                                              overflow-topic effects)))}))]
+                             (when (and (map? result) (:error result))
+                               (run-owner-effects!
+                                topic (mark-dirty! source topic)))
+                             (when (exact-success? result)
+                               (let [publications
+                                     (or (seq (:committed-publications result))
+                                         (when publication [publication]))]
+                                 (when (and (seq publications)
+                                            (not (commit-publications!
+                                                  running publications)))
+                                   (run-owner-effects!
+                                    topic (mark-dirty! source topic))))))))
 
                        :drain
                        (let [{:keys [callback completion valid? owner]} payload
                              validation (if valid? (valid?) true)
                              valid? (or (= true validation)
                                         (= :valid validation))
+                             managed? (some? (get-in @recovery-control
+                                                     [:topics topic :owner]))
                              _ (when-not valid?
                                  (swap! pending
                                         (fn [all]
@@ -840,14 +982,51 @@
                                             (if (seq remaining)
                                               (assoc all topic remaining)
                                               (dissoc all topic))))))
-                             drained (if valid?
-                                       (<? S (drain-pending!
-                                              S peer subs pending topic owner))
-                                       {:error (if (= :superseded validation)
-                                                 :netz/recovery-superseded
-                                                 :netz/recovery-cancelled)})
+                             drained
+                             (cond
+                               (not valid?)
+                               {:error (if (= :superseded validation)
+                                         :netz/recovery-superseded
+                                         :netz/recovery-cancelled)}
+
+                               managed?
+                               (let [operation-id
+                                     (or (:operation-id owner)
+                                         (get-in @recovery-control
+                                                 [:topics topic :owner
+                                                  :active-sync]))
+                                     ;; The snapshot is now committed. Open the
+                                     ;; legacy Kabel gate before the owner
+                                     ;; drains its queued live suffix.
+                                     _ (swap! recovery-control
+                                              assoc-in
+                                              [:topics topic :gated?] false)
+                                     owner-result
+                                     (transition-topic-owner!
+                                      recovery-control topic
+                                      {:type :profile-sync-result
+                                       :operation-id operation-id
+                                       :result {:ok true
+                                                :frontiers {}
+                                                :frontier-bytes 1}})
+                                     result
+                                     (<? S (run-owner-effects!
+                                            topic (:effects owner-result)))]
+                                 (if (and (exact-success? result)
+                                          (= :live
+                                             (get-in @recovery-control
+                                                     [:topics topic :owner
+                                                      :phase])))
+                                   {:ok true}
+                                   (or result
+                                       {:error :netz/apply-owner-not-ready})))
+
+                               :else
+                               (<? S (drain-pending!
+                                      S peer subs pending topic owner)))
                              receipts-ok?
-                             (or (not (exact-success? drained))
+                             (or managed?
+                                 (not (exact-success? drained))
                                  (commit-publications!
                                   running
                                   (:committed-publications drained)))
@@ -877,8 +1056,22 @@
                            ;; owner. An initial-join drain has no owner and must
                            ;; schedule recovery here.
                            (when-not completion
-                             (mark-dirty! source topic)))
+                             (<? S (run-owner-effects!
+                                    topic (mark-dirty! source topic)))))
                          (when completion (completion result)))
+
+                       :owner-close
+                       (let [{:keys [generation completion]} payload
+                             owner-result
+                             (transition-topic-owner!
+                              recovery-control topic
+                              {:type :close :generation generation})
+                             result
+                             (<? S (run-owner-effects!
+                                    topic (:effects owner-result)))]
+                         (when completion
+                           (put! completion result)
+                           (close! completion)))
 
                        :gap
                        (let [[batch _]
@@ -886,7 +1079,9 @@
                                          (constantly {:queued? false
                                                       :by-topic {}}))]
                          (doseq [[gap-topic sources] (:by-topic batch)]
-                           (mark-dirty! sources gap-topic))))
+                           (<? S (run-owner-effects!
+                                  gap-topic
+                                  (mark-dirty! sources gap-topic))))))
 
                      (recur (<? S deliveries)))))
     ;; One recovery owner, independent of the delivery worker it waits on.
@@ -928,6 +1123,24 @@
                                           sources]}
                                   (first tasks)]
                          (let [source (first (sort-by str sources))
+                               managed? (some? (get-in @recovery-control
+                                                       [:topics topic :owner]))
+                               owner-start
+                               (when managed?
+                                 (transition-topic-owner!
+                                  recovery-control topic
+                                  {:type :sync/begin
+                                   :generation intent-generation
+                                   :sync-id [intent-generation generation]}))
+                               owner-start-result
+                               (if managed?
+                                 (<? S (run-owner-effects!
+                                        topic (:effects owner-start)))
+                                 {:ok true})
+                               operation-id
+                               (when managed?
+                                 (get-in @recovery-control
+                                         [:topics topic :owner :active-sync]))
                                valid-intent?
                                #(let [state (get-in @recovery-control
                                                     [:topics topic])]
@@ -940,32 +1153,49 @@
                                                     [:topics topic])]
                                   (cond
                                     (not (valid-intent?)) false
-                                    (not= generation
-                                          (:dirty-generation state))
+                                    (if managed?
+                                      (not= operation-id
+                                            (get-in state
+                                                    [:owner :active-sync]))
+                                      (not= generation
+                                            (:dirty-generation state)))
                                     :superseded
                                     :else true))
                                [token port]
                                (async/alts! [recovery-lock stop-signal])
-                               value (if (or (= port stop-signal)
-                                             (not= :available token))
-                                       {:error :netz/stopped}
-                                       (try
-                                         (if (:stopped? @recovery-control)
-                                           {:error :netz/stopped}
-                                           (async/<! (re-handshake!
-                                                      S peer subs source
-                                                      {:topics #{topic}
-                                                       :enqueue-drain! enqueue-drain!
-                                                       :valid? valid-intent?
-                                                       :drain-valid? drain-valid?
-                                                       :drain-owner
-                                                       {:intent-generation
-                                                        intent-generation
-                                                        :dirty-generation
-                                                        generation}})))
-                                         (finally
+                               value (if (or (not (exact-success?
+                                                   owner-start-result))
+                                             (and managed?
+                                                  (nil? operation-id)))
+                                       (do
+                                         (when (= port recovery-lock)
                                            (async/offer! recovery-lock
-                                                         :available))))
+                                                         :available))
+                                         {:error :netz/apply-owner-not-ready})
+                                       (if (or (= port stop-signal)
+                                               (not= :available token))
+                                         {:error :netz/stopped}
+                                         (try
+                                           (if (:stopped? @recovery-control)
+                                             {:error :netz/stopped}
+                                             (async/<! (re-handshake!
+                                                        S peer subs source
+                                                        {:topics #{topic}
+                                                         :enqueue-drain!
+                                                         enqueue-drain!
+                                                         :valid? valid-intent?
+                                                         :drain-valid?
+                                                         drain-valid?
+                                                         :drain-owner
+                                                         {:intent-generation
+                                                          intent-generation
+                                                          :dirty-generation
+                                                          generation
+                                                          :operation-id
+                                                          operation-id}})))
+                                           (finally
+                                             (async/offer! recovery-lock
+                                                           :available)))))
                                result (cond
                                         (nil? value)
                                         {:error :netz/recovery-closed}
@@ -1070,14 +1300,25 @@
                              (fn [topics]
                                (reduce-kv
                                 (fn [next-topics topic state]
-                                  (assoc next-topics topic
-                                         (-> state
-                                             (assoc :active? false
-                                                    :gated? true
-                                                    :pending-sources #{}
-                                                    :status {:status :stopped})
-                                             (update :intent-generation
-                                                     (fnil inc 0)))))
+                                  (let [owner (:owner state)
+                                        closed
+                                        (when owner
+                                          (:state
+                                           (apply-owner/transition
+                                            owner
+                                            {:type :close
+                                             :generation
+                                             (:generation owner)})))]
+                                    (assoc next-topics topic
+                                           (cond->
+                                            (-> state
+                                                (assoc :active? false
+                                                       :gated? true
+                                                       :pending-sources #{}
+                                                       :status {:status :stopped})
+                                                (update :intent-generation
+                                                        (fnil inc 0)))
+                                             closed (assoc :owner closed)))))
                                 {}
                                 topics))))))
         (close! deliveries)

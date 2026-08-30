@@ -48,12 +48,12 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       start, buffered values are intent/generation-owned, subscription interest
       is rolled back reliably, shutdown cannot open the lifecycle semaphore,
       and terminal failure is observable by status/callback.
-- [ ] Move the now-separated delivery receipts and validated snapshot commits
-      under one `netz.apply-owner` generation per v1 topic/profile. The runtime
-      already prevents slow or failed applies and untrusted `sync/done` claims
-      from advancing checkpoints; the remaining gate is generation-fenced
-      live/snapshot ownership and receipt settlement for every negotiated
-      transport.
+- [x] Route every Netz-managed Kabel-v0 topic through one `netz.apply-owner`
+      generation. Initial and recovery snapshots gate overlay live delivery;
+      slow live applies, snapshot completion, queued suffix drain, receipts,
+      recovery, unsubscribe, and shutdown are serialized by the owner lane.
+      Apply and sync completions are attempt-fenced, and only exact local
+      application success advances a publication frontier.
 - [ ] Kabel's WebSocket adapters need bounded asynchronous writes or byte
       credits. Netz cannot bound a queue below the transport that owns it.
 - [ ] The actual socket layer must enforce the 5 MiB encoded-frame ceiling and

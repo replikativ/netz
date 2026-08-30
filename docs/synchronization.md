@@ -89,9 +89,17 @@ publications only with application-committed stream frontiers returned by the
 local profile receipt. Buffered values at or below those frontiers are
 subsumed; the newer contiguous suffix is then released. Overflow marks the
 topic desynchronized and reruns the handshake; message repair cannot recover a
-value that dissemination already marked seen. The receipt/frontier path is now
-wired; placing its live and snapshot operations under one generation-fenced
-pure apply owner remains an explicit alpha release gate.
+value that dissemination already marked seen.
+
+Each Netz-managed Kabel-v0 topic now has one runtime `netz.apply-owner`
+generation. The owner begins before the initial handshake, holds overlay live
+publications while the Kabel snapshot lane applies, accepts only the matching
+snapshot completion, drains the contiguous live suffix, and then publishes
+ready. Recovery uses a fresh owner-minted operation ID; slow live application
+must finish before snapshot capture starts. Explicit unsubscribe is queued on
+the same application lane, so it cannot withdraw routing or Kabel state until
+the in-flight mutation has settled and the exact owner generation is closed.
+Shutdown closes all remaining owners into an absorbing state.
 
 The current Kabel-v0 adapter serializes recovery on a separate one-slot control
 lane. Dirty work retains `topic -> candidate sources`, so a horizon report for

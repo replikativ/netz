@@ -1,8 +1,9 @@
 # Kabel pub/sub lifecycle design
 
-Status: proposed design, before implementation. This document defines the
-correctness boundary between Kabel's legacy `PSyncStrategy` pub/sub API and
-Netz's portable dissemination and synchronization protocols.
+Status: the narrow Kabel-v0 correction and Netz apply-owner integration are
+implemented; the portable version-one boundary remains a design. This document
+defines the correctness boundary between Kabel's legacy `PSyncStrategy`
+pub/sub API and Netz's portable dissemination and synchronization protocols.
 
 ## Decision
 
@@ -364,6 +365,9 @@ streams; a fenced single-writer profile rejects the wrong writer/term/index.
    tests; do not merge the current global-dispatcher prototype.
 3. **Implemented for the v0 adapter:** route Netz overlay application through
    Kabel's peer/topic serializer and reject the identity-less direct live path.
+   Netz also routes initial/recovery snapshot completion, queued overlay live
+   application, receipts, unsubscribe, and shutdown through one
+   generation-fenced `netz.apply-owner` per topic.
 4. Finalize the version-one `sync/committed`/done-ACK semantics and canonical
    CBOR fixtures.
 5. Implement the independent Python transport/sync client.

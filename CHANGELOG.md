@@ -30,6 +30,10 @@ may make incompatible protocol changes.
   serialization, generation- and owner-minted sync-attempt fencing, portable
   exact-integer/frontier bounds, absorbing terminal states, and locally bound
   application-committed frontiers.
+- Integrated that apply owner into every Netz-managed Kabel-v0 topic. Initial
+  and recovery snapshots now gate live overlay application; slow applies,
+  owner-minted snapshot attempts, suffix drain, receipt settlement,
+  unsubscribe, and shutdown share one ordered generation boundary.
 - Preserved authenticated publication identity through application delivery
   and advanced synchronization frontiers only after exact local apply success.
   Legacy sync profiles now claim no live-stream frontier; an opted-in profile
