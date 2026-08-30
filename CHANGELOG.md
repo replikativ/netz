@@ -59,6 +59,7 @@ may make incompatible protocol changes.
   of sender frontier claims, and local canonical receipt-size accounting.
 - Added an installable, typed, dependency-free `netz-protocol` Python alpha
   wheel with Apache-2.0 package metadata and a CI build gate.
+- Updated to Kabel 0.3.118 for bounded WebSocket frames and transport queues.
 - Added an optional stack gate composing Urd/Raft, Datahike, Netz,
   Spindel, and durable Yggdrasil G-Sets across partition and recovery.
 - Replaced ignored internal-design references with public release and

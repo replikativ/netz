@@ -58,10 +58,11 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       recovery, unsubscribe, and shutdown are serialized by the owner lane.
       Apply and sync completions are attempt-fenced, and only exact local
       application success advances a publication frontier.
-- [ ] Release a Kabel version containing the bounded 5 MiB frame/queue changes
-      now on Kabel `main`, then update Netz from 0.3.117. Jetty writes await
-      adapter completion; http-kit still requires upstream PR #619 (or an
-      equivalent hard queued-byte limit) because Ring 2.0 async send is optional.
+- [x] Kabel 0.3.118 supplies bounded 5 MiB frames/queues, and Netz consumes the
+      released coordinate. Jetty writes await adapter completion.
+- [ ] http-kit still requires upstream PR #619 (or an equivalent hard
+      queued-byte limit) because Ring 2.0 async send is optional. Until then,
+      public servers must use Jetty or a bounded replikativ http-kit build.
 - [ ] Public deployments need DNS/private-address/redirect policy in addition
       to the socket frame limit.
 - [ ] Subtree disconnect handling should retry immediately rather than waiting
