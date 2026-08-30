@@ -6,13 +6,13 @@ one mechanism either floods too much state or silently loses updates.
 ## 1. Live dissemination
 
 A publication is signed at its origin, forwarded across interested peers, and
-deduplicated by `(origin, epoch, sequence)`. The adapter serializes application
-in arrival order, but the mesh does not currently restore source sequence order:
-different paths and repair traffic can reorder publications. Ordered delta
-profiles must not rely on Kabel's per-connection FIFO until Netz defines and
-implements a stream-scoped ordering frontier. `publish!` succeeding means the
-local bounded runtime accepted the item; it does not promise that every peer is
-online or has applied it.
+deduplicated by `(origin, epoch, topic, sequence)`. Sequence numbers are scoped
+to a topic stream. Subscribers buffer a bounded out-of-order suffix and release
+only its contiguous prefix, providing FIFO per publisher and topic without
+inventing a total order across independent writers. A missing prefix is repaired
+from recent history; overflow or a gap below the repair horizon triggers state
+synchronization. `publish!` succeeding means the local bounded runtime accepted
+the item; it does not promise that every peer is online or has applied it.
 
 ## 2. Recent-message repair
 
@@ -38,8 +38,11 @@ The current Kabel adapter maps this to `PSyncStrategy`:
 | Apply a live value | `-apply-publish` |
 
 Live values received before the initial handshake completes are bounded and
-ordered. Overflow marks the topic desynchronized and reruns the handshake;
-message repair cannot recover a value that dissemination already marked seen.
+ordered. A successful synchronization checkpoint carries the stream frontiers
+represented by its snapshot. Buffered values at or below those frontiers are
+subsumed; the newer contiguous suffix is then released. Overflow marks the topic
+desynchronized and reruns the handshake; message repair cannot recover a value
+that dissemination already marked seen.
 
 ## Initial profiles
 

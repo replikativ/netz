@@ -181,7 +181,7 @@
                     (d/make-state :pub #{:t} {:store-size 5})
                     (range 20))
         ;; A peer that has seen only message 0 — hopelessly behind.
-        behind (d/mark-seen (d/make-state :behind #{:t}) :pub 0 0)
+        behind (d/mark-seen (d/make-state :behind #{:t}) :pub 0 :t 0)
         {acts :actions} (d/handler behind
                                    {:type :message
                                     :from :pub
@@ -192,7 +192,8 @@
         syncs (filter #(= :state-sync (first %)) acts)]
     (is (= 1 (count syncs))
         "a stranded peer must be told, or it asks for the unfetchable forever")
-    (is (= [:state-sync :pub [{:origin :pub :epoch 0 :missing-below 15}]]
+    (is (= [:state-sync :pub [{:origin :pub :epoch 0 :topic :t
+                               :missing-below 15 :through 19}]]
            (first syncs))
         "the signal names who reported it and exactly what cannot be repaired")
     ;; Both, not either: the reachable part is still repaired by gossip and
@@ -205,7 +206,7 @@
     (let [pub (reduce (fn [s i] (first (d/publish s :t i)))
                       (d/make-state :pub #{:t} {:store-size 5})
                       (range 20))
-          current (reduce (fn [s i] (d/mark-seen s :pub 0 i))
+          current (reduce (fn [s i] (d/mark-seen s :pub 0 :t i))
                           (d/make-state :current #{:t}) (range 20))
           {acts :actions} (d/handler current
                                      {:type :message

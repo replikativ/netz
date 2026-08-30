@@ -269,8 +269,8 @@
 
   (testing "well-formed messages pass"
     (are [payload] (true? (rt/well-formed? payload))
-      {:type :have :summary {:o {0 [[0 5]]}} :horizon {[:o 0] 3}}
-      {:type :want :ranges [{:lo 0 :hi 5}]}
+      {:type :have :summary {:o {0 {:t [[0 5]]}}} :horizon {[:o 0 :t] 3}}
+      {:type :want :ranges [{:topic :t :lo 0 :hi 5}]}
       {:type :gossip :origin :o :epoch 0 :seq 1 :hops 2 :topic :t :payload "x"}
       {:type :interests :topics #{:t} :carries #{}}
       {:type :peers :entries []}))

@@ -13,24 +13,26 @@
 (deftest seen-tracking
   (testing "marking and testing"
     (let [s (-> (d/make-state :me)
-                (d/mark-seen :a 0 1)
-                (d/mark-seen :a 0 2))]
-      (is (d/seen? s :a 0 1))
-      (is (d/seen? s :a 0 2))
-      (is (not (d/seen? s :a 0 3)))
+                (d/mark-seen :a 0 :t 1)
+                (d/mark-seen :a 0 :t 2))]
+      (is (d/seen? s :a 0 :t 1))
+      (is (d/seen? s :a 0 :t 2))
+      (is (not (d/seen? s :a 0 :t 3)))
       (testing "epochs are separate namespaces"
         ;; A restarted node bumps its epoch; without separation its fresh
         ;; sequence numbers would be suppressed as duplicates of the old run.
-        (is (not (d/seen? s :a 1 1))))
+        (is (not (d/seen? s :a 1 :t 1))))
       (testing "origins are separate namespaces"
-        (is (not (d/seen? s :b 0 1))))))
+        (is (not (d/seen? s :b 0 :t 1))))
+      (testing "topics are separate ordered streams"
+        (is (not (d/seen? s :a 0 :other 1))))))
 
   (testing "a fully received stream costs one range, whatever the volume"
-    (let [s (reduce #(d/mark-seen %1 :a 0 %2) (d/make-state :me) (range 5000))]
-      (is (= 1 (is*/count-ranges (get-in s [:seen :a 0]))))))
+    (let [s (reduce #(d/mark-seen %1 :a 0 :t %2) (d/make-state :me) (range 5000))]
+      (is (= 1 (is*/count-ranges (get-in s [:seen :a 0 :t]))))))
 
   (testing "summary is capped"
-    (let [s (reduce #(d/mark-seen %1 %2 0 1)
+    (let [s (reduce #(d/mark-seen %1 %2 0 :t 1)
                     (d/make-state :me #{} {:max-summary-origins 5})
                     (map #(keyword (str "o" %)) (range 50)))]
       (is (= 5 (count (d/summary s)))))))
@@ -38,22 +40,72 @@
 (deftest gap-computation
   (testing "we ask only for what a peer claims to hold, and only for gaps"
     (let [mine (-> (d/make-state :me)
-                   (d/mark-seen :a 0 1)
-                   (d/mark-seen :a 0 2)
-                   (d/mark-seen :a 0 5))
-          theirs {:a {0 (is*/add-all is*/empty [1 2 3 4 5])}}
+                   (d/mark-seen :a 0 :t 1)
+                   (d/mark-seen :a 0 :t 2)
+                   (d/mark-seen :a 0 :t 5))
+          theirs {:a {0 {:t (is*/add-all is*/empty [1 2 3 4 5])}}}
           wants (d/gaps-against mine theirs)]
-      (is (= [{:origin :a :epoch 0 :lo 3 :hi 4}] wants))))
+      (is (= [{:origin :a :epoch 0 :topic :t :lo 3 :hi 4}] wants))))
 
   (testing "nothing to ask when we are ahead or level"
-    (let [mine (reduce #(d/mark-seen %1 :a 0 %2) (d/make-state :me) (range 10))
-          theirs {:a {0 (is*/add-all is*/empty (range 5))}}]
+    (let [mine (reduce #(d/mark-seen %1 :a 0 :t %2) (d/make-state :me) (range 10))
+          theirs {:a {0 {:t (is*/add-all is*/empty (range 5))}}}]
       (is (empty? (d/gaps-against mine theirs)))))
 
   (testing "everything is a gap when we have nothing"
     (let [wants (d/gaps-against (d/make-state :me)
-                                {:a {0 (is*/add-all is*/empty [3 4 5])}})]
-      (is (= [{:origin :a :epoch 0 :lo 3 :hi 5}] wants)))))
+                                {:a {0 {:t (is*/add-all is*/empty [3 4 5])}}})]
+      (is (= [{:origin :a :epoch 0 :topic :t :lo 3 :hi 5}] wants)))))
+
+(deftest delivery-is-fifo-within-a-topic-stream
+  (let [receive (fn [state topic seq-no payload]
+                  (d/handler state
+                             {:type :message
+                              :from :sender
+                              :payload {:type :gossip :topic topic
+                                        :origin :publisher :epoch 0
+                                        :seq seq-no :hops 0 :payload payload}}
+                             {:now seq-no}))
+        base (d/make-state :receiver #{:t :other})
+        later (receive base :t 1 :second)
+        earlier (receive (:state later) :t 0 :first)]
+    (is (empty? (:delivered (:state later)))
+        "a later publication must wait for its missing prefix")
+    (is (= [:first :second] (:delivered (:state earlier))))
+    (is (= [[:deliver :sender :t :first]
+            [:deliver :sender :t :second]]
+           (filter #(= :deliver (first %)) (:actions earlier))))
+
+    (testing "unrelated topics have independent counters"
+      (let [a (receive base :t 0 :t0)
+            b (receive (:state a) :other 0 :other0)]
+        (is (= [:t0 :other0] (:delivered (:state b))))))))
+
+(deftest ordered-delivery-overflow-and-sync-frontier
+  (let [receive (fn [state seq-no]
+                  (d/handler state
+                             {:type :message
+                              :from :sender
+                              :payload {:type :gossip :topic :t
+                                        :origin :publisher :epoch 0
+                                        :seq seq-no :hops 0 :payload seq-no}}
+                             {:now seq-no}))
+        base (d/make-state :receiver #{:t} {:max-order-buffer 2})
+        s1 (:state (receive base 1))
+        s2 (:state (receive s1 2))
+        overflow (receive s2 3)
+        syncs (filter #(= :state-sync (first %)) (:actions overflow))]
+    (is (= 1 (count syncs)) "overflow must request state exactly once")
+    (is (contains? (:delivery-desynchronized (:state overflow))
+                   [:publisher 0 :t]))
+
+    (testing "an atomic snapshot frontier subsumes old buffered values"
+      (let [[state actions] (d/sync-committed (:state overflow)
+                                              {[:publisher 0 :t] 1})]
+        (is (= [2] (:delivered state)))
+        (is (= [[:deliver :sender :t 2]] actions))
+        (is (not (contains? (:delivery-desynchronized state)
+                            [:publisher 0 :t])))))))
 
 (deftest store-is-bounded
   (testing "the repair store evicts oldest first and never exceeds its cap"
@@ -64,8 +116,8 @@
       (is (= 10 (count (:store s))))
       (is (= 10 (count (:store-order s))))
       (testing "and it retains the most recent"
-        (is (contains? (:store s) [:me 0 99]))
-        (is (not (contains? (:store s) [:me 0 0])))))))
+        (is (contains? (:store s) [:me 0 :t 99]))
+        (is (not (contains? (:store s) [:me 0 :t 0])))))))
 
 (deftest authorization-is-checked-at-every-hop
   (testing "a refused message is neither delivered nor forwarded"
@@ -74,7 +126,7 @@
           {s' :state actions :actions}
           (d/handler s {:type :message :from :p0
                         :payload {:type :gossip :topic :secret :origin :o
-                                  :epoch 0 :seq 1 :hops 0 :payload "x"}}
+                                  :epoch 0 :seq 0 :hops 0 :payload "x"}}
                      {:now 0})]
       (is (empty? actions) "an unauthorized message was forwarded")
       (is (empty? (:delivered s')))
@@ -84,7 +136,7 @@
         ;; If it were, a later authorized copy of the same id would be
         ;; suppressed as a duplicate — a refusal that silently poisons the
         ;; message id.
-        (is (not (d/seen? s' :o 0 1))))))
+        (is (not (d/seen? s' :o 0 :secret 0))))))
 
   (testing "an authorized message on another topic passes"
     (let [s (-> (d/make-state :me #{:open} {:authorize-fn (fn [topic _] (not= :secret topic))})
@@ -92,7 +144,7 @@
           {s' :state actions :actions}
           (d/handler s {:type :message :from :p0
                         :payload {:type :gossip :topic :open :origin :o
-                                  :epoch 0 :seq 1 :hops 0 :payload "x"}}
+                                  :epoch 0 :seq 0 :hops 0 :payload "x"}}
                      {:now 0})]
       (is (= ["x"] (:delivered s')))
       (is (= 1 (count (filter #(= :send (first %)) actions)))))))
@@ -116,7 +168,7 @@
             {s' :state actions :actions}
             (d/handler s {:type :message :from :p1
                           :payload {:type :gossip :topic :t :origin :o
-                                    :epoch 0 :seq 1 :hops 3 :payload "x"}}
+                                    :epoch 0 :seq 0 :hops 3 :payload "x"}}
                        {:now 0})]
         (is (= ["x"] (:delivered s')) "hop-expired message was not delivered")
         ;; Delivered AND not relayed — the two halves of the hop limit, and
@@ -180,11 +232,12 @@
                 (assoc :peers {:p {:interests nil :carries #{tp/everything}}}))
           {s' :state} (d/handler s {:type :message :from :p
                                     :payload {:type :gossip :topic [:db "alice" "kb1"]
-                                              :origin :o :epoch 0 :seq 1 :hops 0
+                                              :origin :o :epoch 0 :seq 0 :hops 0
                                               :payload "x"}}
                                  {:now 0})]
       (is (empty? (:delivered s')) "a relayed topic was delivered as if subscribed")
-      (is (d/seen? s' :o 0 1) "but it was still relayed, so it must be marked seen"))))
+      (is (d/seen? s' :o 0 [:db "alice" "kb1"] 0)
+          "but it was still relayed, so it must be marked seen"))))
 
 ;; =============================================================================
 ;; Under simulation, composed with membership
@@ -318,7 +371,8 @@
         (is (<= (count (o/delivered st)) 30))
         (testing "and the seen set stays compact rather than growing per message"
           (let [ranges (reduce + 0 (for [[_ epochs] (get-in st [:dissemination :seen])
-                                         [_ iset] epochs]
+                                         [_ streams] epochs
+                                         [_ iset] streams]
                                      (is*/count-ranges iset)))]
             (is (< ranges 20)
                 (str (:id st) " seen set fragmented into " ranges " ranges"))))))))
@@ -333,11 +387,11 @@
                                             (= "mine" (:db (:payload ctx))))})
                 (assoc :peers {:p1 {:interests nil :relay? true}}))
           msg (fn [db] {:type :gossip :topic :db/roots :origin :alice
-                        :epoch 0 :seq 1 :hops 0 :payload {:db db :root "r"}})
+                        :epoch 0 :seq 0 :hops 0 :payload {:db db :root "r"}})
           {allowed :state} (d/handler s {:type :message :from :p0
                                          :payload (msg "mine")} {:now 0})
           {denied :state} (d/handler s {:type :message :from :p0
-                                        :payload (assoc (msg "yours") :seq 2)}
+                                        :payload (assoc (msg "yours") :seq 1)}
                                      {:now 0})]
       (is (= [{:db "mine" :root "r"}] (:delivered allowed)))
       (is (empty? (:delivered denied)))
@@ -455,7 +509,8 @@
     (testing "and a legitimate request still works"
       (let [[s' _] (d/publish s :t "a")
             [s' _] (d/publish s' :t "b")]
-        (is (= 2 (count (d/stored s' {:origin :me :epoch 0 :lo 0 :hi 10}))))))
+        (is (= 2 (count (d/stored s' {:origin :me :epoch 0 :topic :t
+                                      :lo 0 :hi 10}))))))
 
     (testing "nonsense bounds are refused rather than computed"
       (is (empty? (d/stored s {:origin :x :epoch 0 :lo 100 :hi 1})))))
@@ -475,23 +530,23 @@
   ;; the PUBLISHER. A peer emitting only even sequence numbers produced one
   ;; range per message — 10 000 messages, 10 000 ranges.
   (testing "an honest contiguous stream still costs one range"
-    (let [s (reduce (fn [st i] (d/mark-seen st :honest 0 i))
+    (let [s (reduce (fn [st i] (d/mark-seen st :honest 0 :t i))
                     (d/make-state :me) (range 5000))]
-      (is (= 1 (is*/count-ranges (get-in s [:seen :honest 0]))))))
+      (is (= 1 (is*/count-ranges (get-in s [:seen :honest 0 :t]))))))
 
   (testing "and a deliberately sparse one is capped"
-    (let [s (reduce (fn [st i] (d/mark-seen st :attacker 0 (* 2 i)))
+    (let [s (reduce (fn [st i] (d/mark-seen st :attacker 0 :t (* 2 i)))
                     (d/make-state :me #{} {:max-seen-ranges 64})
                     (range 5000))]
-      (is (= 64 (is*/count-ranges (get-in s [:seen :attacker 0]))))))
+      (is (= 64 (is*/count-ranges (get-in s [:seen :attacker 0 :t]))))))
 
   (testing "eviction keeps the RECENT end, because that is what repair needs"
-    (let [s (reduce (fn [st i] (d/mark-seen st :a 0 (* 2 i)))
+    (let [s (reduce (fn [st i] (d/mark-seen st :a 0 :t (* 2 i)))
                     (d/make-state :me #{} {:max-seen-ranges 8})
                     (range 100))
-          iset (get-in s [:seen :a 0])]
-      (is (d/seen? s :a 0 198) "the newest message was forgotten")
-      (is (not (d/seen? s :a 0 0)) "the oldest should have been evicted")
+          iset (get-in s [:seen :a 0 :t])]
+      (is (d/seen? s :a 0 :t 198) "the newest message was forgotten")
+      (is (not (d/seen? s :a 0 :t 0)) "the oldest should have been evicted")
       (is (= 8 (is*/count-ranges iset))))))
 
 (deftest repair-has-a-horizon
@@ -506,29 +561,31 @@
                     (range 20))]
 
     (testing "the floor rises as history falls out of the store"
-      (is (= {[:pub 0] 15} (d/horizon pub))))
+      (is (= {[:pub 0 :t] 15} (d/horizon pub))))
 
     (testing "a peer only asks for what can still be served"
-      (let [behind (d/mark-seen (d/make-state :behind #{:t}) :pub 0 0)
+      (let [behind (d/mark-seen (d/make-state :behind #{:t}) :pub 0 :t 0)
             wants (d/gaps-against behind (d/summary pub) (d/horizon pub))]
         (is (seq wants))
         (is (every? #(>= (:lo %) 15) wants)
             "asked below the horizon, where the answer is silence forever")))
 
     (testing "and without a horizon it would ask for all of it"
-      (let [behind (d/mark-seen (d/make-state :behind #{:t}) :pub 0 0)
+      (let [behind (d/mark-seen (d/make-state :behind #{:t}) :pub 0 :t 0)
             wants (d/gaps-against behind (d/summary pub))]
         (is (some #(< (:lo %) 15) wants))))
 
     (testing "being stranded is REPORTED, not silently skipped"
       ;; The layer above cannot derive "you are too far behind to catch up this
       ;; way" and has to be told, so it can do a state sync instead.
-      (let [behind (d/mark-seen (d/make-state :behind #{:t}) :pub 0 0)
+      (let [behind (d/mark-seen (d/make-state :behind #{:t}) :pub 0 :t 0)
             stranded (d/beyond-horizon behind (d/summary pub) (d/horizon pub))]
-        (is (= [{:origin :pub :epoch 0 :missing-below 15}] stranded))))
+        (is (= [{:origin :pub :epoch 0 :topic :t :missing-below 15
+                 :through 19}]
+               stranded))))
 
     (testing "a caught-up peer is not stranded"
-      (let [current (reduce (fn [s i] (d/mark-seen s :pub 0 i))
+      (let [current (reduce (fn [s i] (d/mark-seen s :pub 0 :t i))
                             (d/make-state :current #{:t}) (range 20))]
         (is (empty? (d/beyond-horizon current (d/summary pub) (d/horizon pub))))
         (is (empty? (d/gaps-against current (d/summary pub) (d/horizon pub))))))
@@ -539,7 +596,7 @@
                                        {:type :timer :payload :have-tick}
                                        {:now 0})
             have (first (filter #(= :have (:type (nth % 2))) acts))]
-        (is (= {[:pub 0] 15} (:horizon (nth have 2))))))))
+        (is (= {[:pub 0 :t] 15} (:horizon (nth have 2))))))))
 
 (deftest app-only-events-are-refused-from-the-wire
   ;; `netz.overlay.runtime` funnels every inbound overlay frame into the

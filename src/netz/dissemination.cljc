@@ -124,6 +124,9 @@
    :max-origins 256
    ;; Cap on origins described in one :have digest.
    :max-summary-origins 64
+   ;; Out-of-order live publications retained per (origin, epoch, topic) while
+   ;; recent-message repair closes the gap.
+   :max-order-buffer 1024
    ;; Bound on the retained delivery log. Real integrations hand off to the
    ;; application instead; this exists so tests can assert and state stays
    ;; bounded.
@@ -184,7 +187,7 @@
     :seen {}
     :store {}
     :store-order []
-    ;; (origin, epoch) -> the lowest sequence number we can still serve.
+    ;; (origin, epoch, topic) -> the lowest sequence number we can still serve.
     ;;
     ;; The repair horizon. Gossip repair covers RECENT gaps; a peer that has
     ;; been away longer than the store window is asking for messages that no
@@ -194,7 +197,15 @@
     ;; per identity is much smaller than every change that produced it.
     :store-floor {}
     :epoch 0
-    :next-seq 0
+    ;; Sequence numbers are scoped to a topic stream. A global publisher
+    ;; counter cannot provide FIFO on a selectively routed network: a
+    ;; subscriber would wait forever for numbers used by topics it never sees.
+    :next-seq {}
+    ;; Next publication that may be delivered to the application, and later
+    ;; arrivals waiting for recent-message repair to close the prefix.
+    :delivery-next {}
+    :delivery-pending {}
+    :delivery-desynchronized #{}
     :delivered []
     :stats {:published 0 :forwarded 0 :delivered 0 :duplicates 0
             :hop-expired 0 :unauthorized 0 :repaired 0 :want-served 0}}))
@@ -231,8 +242,10 @@
     (:carries state)))
 
 (defn seen?
-  [state origin epoch seq-no]
-  (is*/contains? (get-in state [:seen origin epoch] is*/empty) seq-no))
+  ([state origin epoch seq-no]
+   (seen? state origin epoch topics/everything seq-no))
+  ([state origin epoch topic seq-no]
+   (is*/contains? (get-in state [:seen origin epoch topic] is*/empty) seq-no)))
 
 (defn- evict-origins
   "Bound `path` to `cap` KEYS.
@@ -255,21 +268,24 @@
       state)))
 
 (defn mark-seen
-  [state origin epoch seq-no]
-  (let [{:keys [max-seen-ranges max-origins]} (:opts state)
-        updated (is*/add (get-in state [:seen origin epoch] is*/empty) seq-no)
+  ([state origin epoch seq-no]
+   (mark-seen state origin epoch topics/everything seq-no))
+  ([state origin epoch topic seq-no]
+   (let [{:keys [max-seen-ranges max-origins]} (:opts state)
+         updated (is*/add (get-in state [:seen origin epoch topic] is*/empty) seq-no)
         ;; A sparse publisher fragments the set one range per message. Evict
         ;; the lowest, which keeps the recent end contiguous.
-        trimmed (if (and max-seen-ranges (> (is*/count-ranges updated) max-seen-ranges))
-                  (vec (drop (- (is*/count-ranges updated) max-seen-ranges) updated))
-                  updated)]
-    (-> state
-        (assoc-in [:seen origin epoch] trimmed)
-        (evict-origins [:seen] max-origins)
-        (evict-origins [:seen origin] max-origins))))
+         trimmed (if (and max-seen-ranges (> (is*/count-ranges updated) max-seen-ranges))
+                   (vec (drop (- (is*/count-ranges updated) max-seen-ranges) updated))
+                   updated)]
+     (-> state
+         (assoc-in [:seen origin epoch topic] trimmed)
+         (evict-origins [:seen] max-origins)
+         (evict-origins [:seen origin] max-origins)
+         (evict-origins [:seen origin epoch] max-origins)))))
 
 (defn summary
-  "A digest of what we hold: `{origin {epoch interval-set}}`, capped.
+  "A digest of what we hold: `{origin {epoch {topic interval-set}}}`, capped.
 
   Compact by construction — a peer that has received an origin's whole stream
   contributes one range, however many messages that was."
@@ -286,62 +302,67 @@
   ([state their-summary] (gaps-against state their-summary nil))
   ([state their-summary their-horizon]
    (vec (for [[origin epochs] their-summary
-              [epoch their-iset] epochs
-              :let [mine (get-in state [:seen origin epoch] is*/empty)
+              [epoch streams] epochs
+              [topic their-iset] streams
+              :let [mine (get-in state [:seen origin epoch topic] is*/empty)
                     hi (is*/maximum their-iset)
                     ;; Never ask below what they said they can serve. Without
                     ;; this a peer asks every tick for messages that fell out
                     ;; of the store, and the answer is silence, forever.
-                    floor (get their-horizon [origin epoch] 0)]
+                    floor (get their-horizon [origin epoch topic] 0)]
               :when hi
               [lo hi'] (is*/missing mine (max floor (or (is*/minimum their-iset) 0)) hi)
               ;; Only ask for what they actually claim to hold.
               :when (some (fn [[a b]] (and (<= a hi') (<= lo b))) their-iset)]
-          {:origin origin :epoch epoch :lo lo :hi hi'}))))
+          {:origin origin :epoch epoch :topic topic :lo lo :hi hi'}))))
 
 (defn beyond-horizon
-  "Which (origin, epoch) we are behind on further than `their-horizon` can
+  "Which (origin, epoch, topic) streams we are behind on further than
+  `their-horizon` can
   serve — i.e. where gossip repair cannot help and a state sync is required.
 
   Reported rather than silently skipped, because \"you are too far behind to
   catch up this way\" is information the layer above needs and cannot derive."
   [state their-summary their-horizon]
   (vec (for [[origin epochs] their-summary
-             [epoch _] epochs
-             :let [floor (get their-horizon [origin epoch] 0)
-                   mine (get-in state [:seen origin epoch] is*/empty)
-                   my-hi (or (is*/maximum mine) -1)]
+             [epoch streams] epochs
+             [topic their-iset] streams
+             :let [floor (get their-horizon [origin epoch topic] 0)
+                   mine (get-in state [:seen origin epoch topic] is*/empty)
+                   my-hi (or (is*/maximum mine) -1)
+                   their-hi (or (is*/maximum their-iset) -1)]
              :when (and (pos? floor) (< my-hi (dec floor)))]
-         {:origin origin :epoch epoch :missing-below floor})))
+         {:origin origin :epoch epoch :topic topic :missing-below floor
+          :through their-hi})))
 
 ;; =============================================================================
 ;; Message store
 ;; =============================================================================
 
 (defn- store-message
-  [state {:keys [origin epoch seq] :as msg}]
-  (let [k [origin epoch seq]
+  [state {:keys [origin epoch topic seq] :as msg}]
+  (let [k [origin epoch topic seq]
         {:keys [store-size]} (:opts state)
         state (-> state
                   (assoc-in [:store k] msg)
                   (update :store-order conj k))
         ;; A first message for an (origin, epoch) sets the floor there.
         state (-> state
-                  (update-in [:store-floor [origin epoch]]
+                  (update-in [:store-floor [origin epoch topic]]
                              (fn [f] (if f (min f seq) seq)))
                   (evict-origins [:store-floor] (:max-origins (:opts state))))]
     (if (> (count (:store-order state)) store-size)
-      (let [[eo ee es :as evict] (first (:store-order state))]
+      (let [[eo ee et es :as evict] (first (:store-order state))]
         (-> state
             (update :store dissoc evict)
             (update :store-order #(vec (subvec % 1)))
             ;; The floor rises as history falls out. Below it we cannot help,
             ;; and saying so is what stops the asking.
-            (update-in [:store-floor [eo ee]] (fn [f] (max (or f 0) (inc es))))))
+            (update-in [:store-floor [eo ee et]] (fn [f] (max (or f 0) (inc es))))))
       state)))
 
 (defn horizon
-  "The lowest sequence number we can still serve per (origin, epoch).
+  "The lowest sequence number we can still serve per (origin, epoch, topic).
 
   Published in the digest so a peer knows what is worth asking for. Everything
   below is gone, and recovering it is a state sync — a different protocol, one
@@ -357,14 +378,14 @@
   bounds what we LOOK AT, and without it the lookup walks every sequence number
   named — so an empty range of ten million costs ten million probes and sends
   nothing."
-  [state {:keys [origin epoch lo hi]}]
+  [state {:keys [origin epoch topic lo hi]}]
   (let [{:keys [max-want max-want-span]} (:opts state)
         lo (max 0 (or lo 0))
         hi (min (or hi lo) (+ lo (dec max-want-span)))]
     (if (< hi lo)
       []
       (->> (range lo (inc hi))
-           (keep #(get-in state [:store [origin epoch %]]))
+           (keep #(get-in state [:store [origin epoch topic %]]))
            (take max-want)
            vec))))
 
@@ -448,17 +469,103 @@
 ;; Delivery
 ;; =============================================================================
 
-(defn- deliver-local
-  [state {:keys [topic payload] :as _msg}]
-  (if (contains? (:topics state) topic)
-    (let [{:keys [max-delivered]} (:opts state)
-          delivered (conj (:delivered state) payload)]
-      (-> state
-          (assoc :delivered (if (> (count delivered) max-delivered)
-                              (vec (subvec delivered 1))
-                              delivered))
-          (update-in [:stats :delivered] inc)))
-    state))
+(defn- record-delivery
+  [state payload]
+  (let [{:keys [max-delivered]} (:opts state)
+        delivered (conj (:delivered state) payload)]
+    (-> state
+        (assoc :delivered (if (> (count delivered) max-delivered)
+                            (vec (subvec delivered 1))
+                            delivered))
+        (update-in [:stats :delivered] inc))))
+
+(defn- stream-key [{:keys [origin epoch topic]}]
+  [origin epoch topic])
+
+(defn- release-contiguous
+  "Release the contiguous prefix waiting at `stream`.
+
+  Each pending value remembers the transport peer that supplied it so overload
+  recovery can synchronize from a peer that demonstrably has the stream."
+  [state stream]
+  (loop [state state
+         actions []]
+    (let [next-seq (get-in state [:delivery-next stream] 0)]
+      (if-let [{:keys [msg from]} (get-in state [:delivery-pending stream next-seq])]
+        (let [pending (dissoc (get-in state [:delivery-pending stream]) next-seq)
+              state (-> state
+                        (assoc-in [:delivery-next stream] (inc next-seq))
+                        (record-delivery (:payload msg))
+                        (cond-> (empty? pending)
+                          (update :delivery-pending dissoc stream))
+                        (cond-> (seq pending)
+                          (assoc-in [:delivery-pending stream] pending)))]
+          (recur state
+                 (conj actions [:deliver (or from (:origin msg))
+                                (:topic msg) (:payload msg)])))
+        [state actions]))))
+
+(defn- order-for-delivery
+  "Buffer `msg` by its topic-scoped sequence and release only a contiguous
+  prefix. Returns `[state actions]`.
+
+  A bounded overflow is an application-state gap, not a message-repair gap:
+  the message has already been accepted and may disappear from the buffer. It
+  therefore escalates the stream to state synchronization exactly once."
+  [state msg from]
+  (let [stream (stream-key msg)
+        seq-no (:seq msg)
+        next-seq (get-in state [:delivery-next stream] 0)]
+    (if (< seq-no next-seq)
+      [state []]
+      (let [pending (assoc (get-in state [:delivery-pending stream] (sorted-map))
+                           seq-no {:msg msg :from from})
+            cap (get-in state [:opts :max-order-buffer])
+            overflow? (> (count pending) cap)
+            pending (if overflow?
+                      (into (sorted-map) (take cap pending))
+                      pending)
+            first-overflow? (and overflow?
+                                 (not (contains? (:delivery-desynchronized state)
+                                                 stream)))
+            state (-> state
+                      (assoc-in [:delivery-pending stream] pending)
+                      (cond-> overflow?
+                        (update :delivery-desynchronized conj stream)))
+            [state actions] (release-contiguous state stream)]
+        [state (cond-> actions
+                 first-overflow?
+                 (conj [:state-sync (or from (:origin msg))
+                        [{:origin (:origin msg)
+                          :epoch (:epoch msg)
+                          :topic (:topic msg)
+                          :missing-below next-seq
+                          :through seq-no
+                          :reason :order-buffer-overflow}]]))]))))
+
+(defn sync-committed
+  "Advance application delivery through transport `frontiers` after an atomic
+  state-sync commit.
+
+  `frontiers` is `{[origin epoch topic] through-seq}`. Buffered publications at
+  or below a committed frontier are already represented by the snapshot;
+  newer contiguous values are released in order. Returns `[state actions]`."
+  [state frontiers]
+  (reduce (fn [[state actions] [stream through]]
+            (let [pending (into (sorted-map)
+                                (remove (fn [[seq-no _]] (<= seq-no through)))
+                                (get-in state [:delivery-pending stream]))
+                  state (-> state
+                            (assoc-in [:delivery-next stream] (inc through))
+                            (update :delivery-desynchronized disj stream)
+                            (cond-> (empty? pending)
+                              (update :delivery-pending dissoc stream))
+                            (cond-> (seq pending)
+                              (assoc-in [:delivery-pending stream] pending)))
+                  [state released] (release-contiguous state stream)]
+              [state (into actions released)]))
+          [state []]
+          frontiers))
 
 (defn- authorized?
   [state topic origin payload]
@@ -472,9 +579,8 @@
         {:keys [max-hops]} (:opts state)
         subscribed? (contains? (:topics state) topic)
         state (-> state
-                  (mark-seen origin epoch seq)
-                  (store-message msg)
-                  (deliver-local msg))
+                  (mark-seen origin epoch topic seq)
+                  (store-message msg))
         ;; Delivery to the APPLICATION is an action, not a callback. The state
         ;; machine stays pure and the runtime decides what delivery means —
         ;; which for `kabel.pubsub` is `-apply-publish` on the topic's
@@ -484,7 +590,9 @@
         ;; can request state from a peer that demonstrably carried it. For a
         ;; local publication the origin is ourselves and the adapter may fall
         ;; back to any subscribed peer.
-        deliver (when subscribed? [[:deliver (or from origin) topic payload]])]
+        [state deliver] (if subscribed?
+                          (order-for-delivery state msg from)
+                          [state []])]
     (if (>= hops max-hops)
       [(update-in state [:stats :hop-expired] inc) (vec deliver)]
       (let [targets (forward-targets state topic from)
@@ -501,7 +609,7 @@
 
   Exposed separately from the handler so an application can call it directly."
   [state topic payload]
-  (let [seq-no (:next-seq state)
+  (let [seq-no (get-in state [:next-seq topic] 0)
         msg {:type :gossip
              :topic topic
              :origin (:id state)
@@ -510,7 +618,7 @@
              :hops 0
              :payload payload}
         state (-> state
-                  (assoc :next-seq (inc seq-no))
+                  (assoc-in [:next-seq topic] (inc seq-no))
                   (update-in [:stats :published] inc))
         [state actions] (accept-and-forward state msg nil)]
     [state actions]))
@@ -591,6 +699,16 @@
                                        :topics (:topics state)
                                        :carries (effective-carries state now)}]))}))
 
+        ;; State synchronization commits an application snapshot atomically,
+        ;; then tells dissemination which ordered stream prefix that snapshot
+        ;; subsumes. Only the local sync runtime may advance this frontier.
+        :sync-committed
+        (if-not (= :app from)
+          {:state (update-in state [:stats :refused-injection] (fnil inc 0))
+           :actions []}
+          (let [[state actions] (sync-committed state (:frontiers payload))]
+            {:state state :actions actions}))
+
         :interests
         {:state (assoc-in state [:peers from]
                           {:interests (set (:topics payload))
@@ -611,7 +729,7 @@
             (not (authorized? state topic origin (:payload payload)))
             {:state (update-in state [:stats :unauthorized] inc) :actions []}
 
-            (seen? state origin epoch seq)
+            (seen? state origin epoch topic seq)
             {:state (update-in state [:stats :duplicates] inc) :actions []}
 
             :else
@@ -637,12 +755,12 @@
               ;; `:have-interval-ms` (5 s), per peer, forever, and the case is
               ;; permanent rather than transient: a relay that saw a burst and
               ;; evicted it keeps `:seen` but can serve none of it.
-              fresh (remove (fn [{:keys [origin epoch missing-below]}]
-                              (>= (get-in state [:escalated [origin epoch]] -1)
+              fresh (remove (fn [{:keys [origin epoch topic missing-below]}]
+                              (>= (get-in state [:escalated [origin epoch topic]] -1)
                                   missing-below))
                             stranded)
-              state (reduce (fn [s {:keys [origin epoch missing-below]}]
-                              (assoc-in s [:escalated [origin epoch]] missing-below))
+              state (reduce (fn [s {:keys [origin epoch topic missing-below]}]
+                              (assoc-in s [:escalated [origin epoch topic]] missing-below))
                             state fresh)
               ;; Attacker-influenced keys, so bounded like everything else here.
               state (if (> (count (:escalated state)) max-summary-origins)

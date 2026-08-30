@@ -188,18 +188,17 @@ Its Ed25519 signature covers the deterministic encoding of that map prefixed
 with `netz/gossip/v1\0`. Forwarding metadata (`hops`, previous transport peer)
 is outside the origin signature and MUST be locally bounded.
 
-Peers deduplicate by `(origin, epoch, seq)`. They periodically exchange `have`
-summaries containing bounded interval sets and repair-store horizons. `want`
-requests name bounded missing ranges. If a missing sequence is below a peer's
-horizon, the subscriber enters `desynchronized` and opens a state-sync session.
+`seq` is monotonically increasing within `(origin, epoch, topic)`. Peers
+deduplicate and repair by that same stream key. They periodically exchange
+`have` summaries containing bounded topic-stream interval sets and repair-store
+horizons. `want` requests name bounded missing ranges. If a missing sequence is
+below a peer's horizon, the subscriber enters `desynchronized` and opens a
+state-sync session.
 
-**Open ordering issue:** `seq` is currently global per origin while forwarding
-is selective by topic. It can identify duplicates and repair gaps, but cannot
-define per-topic FIFO without waiting for sequence numbers belonging to topics
-the subscriber does not receive. Draft-00 therefore does not promise source-order
-delivery for dissemination. A later draft must either introduce stream-scoped
-sequence numbers and synchronization frontiers or require every live profile to
-be order-independent.
+A subscriber MUST release publications in ascending sequence order within one
+origin/topic stream. It MUST NOT infer a total order across origins. A bounded
+out-of-order suffix waits while recent-message repair requests the missing
+prefix. Buffer overflow triggers state synchronization.
 
 The subscriber state machine is:
 
@@ -209,8 +208,10 @@ joining -> synchronized -> desynchronized -> synchronizing -> synchronized
                  +------------- abort --------------+
 ~~~
 
-Live deltas received while joining or synchronizing MUST be buffered in arrival
-order. This does not resolve the open source-order issue above.
+Live deltas received while joining or synchronizing MUST be buffered by stream
+sequence. A successful checkpoint identifies the stream frontiers represented
+by the committed state; buffered values at or below those frontiers are
+subsumed and the contiguous suffix above them is released.
 Overflow MUST restart state synchronization; it MUST NOT be treated as a gap
 that recent-message repair can necessarily observe.
 

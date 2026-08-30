@@ -138,6 +138,22 @@
       (is (= 10 (get arrivals :n1)))
       (is (= 20 (get arrivals :n2))))))
 
+(deftest link-order-matches-the-transport-binding
+  (testing "frames on one directed Kabel link remain FIFO"
+    (let [run (fn [fifo?]
+                (-> (line-network {:seed 1 :latency-min 1 :latency-max 100
+                                   :link-fifo? fifo?}
+                                  2)
+                    (sim/send-message :ext :n0 {:mid 1 :body :first})
+                    (sim/send-message :ext :n0 {:mid 2 :body :second})
+                    (sim/run-until 1000)))
+          ordered (run true)
+          unordered (run false)]
+      (is (= [:first :second] (:received (sim/node-state ordered :n1))))
+      ;; Prove the fixture can expose overtaking rather than passing because
+      ;; both independently drawn latencies happened to preserve order.
+      (is (= [:second :first] (:received (sim/node-state unordered :n1)))))))
+
 ;; =============================================================================
 ;; Faults — asserted by effect
 ;; =============================================================================

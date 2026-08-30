@@ -465,14 +465,20 @@
         summary? (fn [x] (and (map? x) (<= (count x) 512)
                               (every? (fn [[_ epochs]]
                                         (and (map? epochs) (<= (count epochs) 32)
-                                             (every? (fn [[e rs]] (and (int? e) (iset? rs)))
+                                             (every? (fn [[e streams]]
+                                                       (and (int? e)
+                                                            (map? streams)
+                                                            (<= (count streams) 256)
+                                                            (every? (fn [[_ rs]] (iset? rs))
+                                                                    streams)))
                                                      epochs)))
                                       x)))
         horizon? (fn [x] (and (map? x) (<= (count x) 512)
                               (every? (fn [[k v]]
-                                        (and (sequential? k) (= 2 (count k)) (int? v))) x)))
+                                        (and (sequential? k) (= 3 (count k)) (int? v))) x)))
         ranges? (fn [x] (and ((bounded-coll? 256) x)
-                             (every? #(and (map? %) (int? (:lo %)) (int? (:hi %))) x)))
+                             (every? #(and (map? %) (contains? % :topic)
+                                           (int? (:lo %)) (int? (:hi %))) x)))
         nodes? (fn [x] (and ((bounded-coll? 256) x)
                             (every? #(and (map? %) (contains? % :key)
                                           (contains? % :value)) x)))]

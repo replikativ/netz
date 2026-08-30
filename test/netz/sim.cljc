@@ -84,6 +84,11 @@
    :latency-max 50
    ;; Probability that a message is silently lost in the network.
    :drop-p 0.0
+   ;; Kabel/WebSocket is FIFO per connection. Keep that transport guarantee by
+   ;; default even though independently drawn latencies would otherwise let a
+   ;; later frame overtake an earlier one on the same directed link. Tests for
+   ;; unordered transports can disable it explicitly.
+   :link-fifo? true
    ;; Hard bound on events processed by `run-*`, so a protocol bug that
    ;; schedules work faster than it consumes it fails the test rather than
    ;; hanging it.
@@ -106,6 +111,9 @@
       ;; nil means "one network". Otherwise a map of node-id -> group; nodes
       ;; can reach each other exactly when their groups are equal.
       :partition nil
+      ;; Directed link -> delivery time of the last enqueued frame. Event
+      ;; insertion sequence breaks ties, so equal timestamps remain FIFO.
+      :link-next-at {}
       :opts opts
       :trace []
       :stats {:sent 0 :delivered 0 :dropped-partition 0
@@ -270,12 +278,19 @@
       (let [[sim dropped?] (drop-message? sim)]
         (if dropped?
           (update-in sim [:stats :dropped-loss] inc)
-          (let [[sim ms] (draw-latency sim)]
-            (enqueue sim {:at (+ (:now sim) ms)
+          (let [[sim ms] (draw-latency sim)
+                candidate (+ (:now sim) ms)
+                link [from to]
+                at (if (get-in sim [:opts :link-fifo?])
+                     (max candidate (get-in sim [:link-next-at link] candidate))
+                     candidate)]
+            (-> sim
+                (assoc-in [:link-next-at link] at)
+                (enqueue {:at at
                           :kind :message
                           :from from
                           :to to
-                          :payload payload})))))))
+                          :payload payload}))))))))
 
 (defn- apply-action
   [sim from [op & args]]

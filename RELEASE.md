@@ -18,10 +18,9 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 
 ## Required before exposing to untrusted peers
 
-- [ ] Define and implement publication ordering for ordered delta strategies.
-      Kabel is FIFO per connection, but multipath dissemination and repair can
-      reorder messages. The current global origin sequence is not a per-topic
-      ordering frontier.
+- [x] Publication sequence, deduplication, repair, and bounded ordered delivery
+      are scoped per origin/topic stream; synchronization checkpoints advance
+      the corresponding application frontiers.
 - [ ] Kabel must route inbound direct publications through the selected pub/sub
       transport, or reject mixed direct/overlay operation. Until then the two
       publication paths can partition.
