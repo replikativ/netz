@@ -268,6 +268,14 @@ exact bytes.
 shape in a complete `sync/done` frame. It is shared by the JVM, JavaScript and
 Python conformance tests.
 
+The Clojure reference keeps profile state as idiomatic maps internally and
+uses `netz.wire/sync-frame->wire` and `sync-frame-from-wire` as a strict
+boundary. These functions require opaque profile fields to be byte strings and
+convert the internal frontier map to the canonical array; they never stringify
+arbitrary Clojure values. Transport adapters MUST cross this boundary only
+after negotiating profile 1. The native Kabel runtime has not yet made that
+negotiation, so the existence of these codecs is not an interoperability claim.
+
 The reference implementation includes executable models of two initial
 profiles:
 

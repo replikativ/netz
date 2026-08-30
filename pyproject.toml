@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netz-protocol"
+version = "0.1.0a1"
+description = "Dependency-free CBOR and synchronization core for the Netz P2P protocol"
+readme = "interop/python/README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+  {name = "The Netz contributors"},
+]
+keywords = ["p2p", "cbor", "synchronization", "crdt", "protocol"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Distributed Computing",
+]
+
+[project.urls]
+Homepage = "https://github.com/replikativ/netz"
+Repository = "https://github.com/replikativ/netz"
+Specification = "https://github.com/replikativ/netz/blob/main/spec/netz-draft-00.md"
+Issues = "https://github.com/replikativ/netz/issues"
+
+[tool.setuptools]
+package-dir = {"" = "interop/python"}
+py-modules = ["netz_codec", "netz_sync"]
+
+[tool.setuptools.packages.find]
+where = ["interop/python"]
+include = ["netz_protocol*"]
+
+[tool.setuptools.package-data]
+netz_protocol = ["py.typed"]

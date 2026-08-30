@@ -29,6 +29,10 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 - [x] JVM, JavaScript and Python pin the same canonical `sync/open` and
       frontier-bearing `sync/done` bytes; Python also exercises ordered,
       atomic profile application and pre-commit claim validation.
+- [x] Clojure exposes a strict internal-map/profile-1 sync-frame boundary,
+      validates sender frontier claims before profile code, and computes
+      receipt sizes from locally encoded canonical bytes. The dependency-free
+      Python core builds as the Apache-2.0 `netz-protocol` wheel.
 - [x] Overlay delivery preserves authenticated publication identity through the
       asynchronous application receipt. Only exact local apply success advances
       synchronization frontiers; remote `sync/done` claims are inert unless an
@@ -54,10 +58,12 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       recovery, unsubscribe, and shutdown are serialized by the owner lane.
       Apply and sync completions are attempt-fenced, and only exact local
       application success advances a publication frontier.
-- [ ] Kabel's WebSocket adapters need bounded asynchronous writes or byte
-      credits. Netz cannot bound a queue below the transport that owns it.
-- [ ] The actual socket layer must enforce the 5 MiB encoded-frame ceiling and
-      public deployments need DNS/private-address/redirect policy.
+- [ ] Release a Kabel version containing the bounded 5 MiB frame/queue changes
+      now on Kabel `main`, then update Netz from 0.3.117. Jetty writes await
+      adapter completion; http-kit still requires upstream PR #619 (or an
+      equivalent hard queued-byte limit) because Ring 2.0 async send is optional.
+- [ ] Public deployments need DNS/private-address/redirect policy in addition
+      to the socket frame limit.
 - [ ] Subtree disconnect handling should retry immediately rather than waiting
       for the bounded deadline.
 - [ ] Root records need an independently verifiable publisher/signature binding.
@@ -66,8 +72,9 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 
 ## Required before calling wire profile 1 interoperable
 
-- [ ] Encode/decode current runtime messages through `netz.wire` rather than
-      native Clojure values.
+- [ ] Route handshake, dissemination, content, and sync runtime messages through
+      `netz.wire` rather than native Clojure values. Strict sync-frame conversion
+      exists, but is not enabled without capability negotiation.
 - [ ] Add canonical identity, signature and malformed-input fixtures.
 - [ ] Implement capability/version negotiation.
 - [ ] Complete a Python identity/handshake/dissemination/sync client.
@@ -86,6 +93,7 @@ npm ci
 npx shadow-cljs compile :node-test
 node target/node-tests.js
 python3 -m unittest discover -s interop/python -v
+python3 -m pip wheel . --no-deps --wheel-dir /tmp/netz-python-dist
 clojure -M:format
 clojure -T:build jar
 ```

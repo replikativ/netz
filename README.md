@@ -43,6 +43,7 @@ npm ci
 npx shadow-cljs compile :node-test
 node target/node-tests.js
 python3 -m unittest discover -s interop/python -v
+python3 -m pip wheel . --no-deps --wheel-dir /tmp/netz-python-dist
 clojure -T:build jar
 ```
 

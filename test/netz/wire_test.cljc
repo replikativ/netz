@@ -68,6 +68,31 @@
       (is (id/bufs= (get sync-open-fixture "summary")
                     (get decoded "summary"))))))
 
+(deftest strict-sync-frame-boundary-known-answer
+  (testing "the Clojure state-machine shape converts to the shared fixture"
+    (let [internal {:type :sync/open
+                    :session (get sync-open-fixture "session")
+                    :topic "demo/tasks"
+                    :profile "netz/join-semilattice/1"
+                    :summary (get sync-open-fixture "summary")}
+          encoded (wire/encode-sync-frame internal)
+          decoded (wire/decode-sync-frame encoded)]
+      (is (= sync-open-fixture-hex (id/bytes->hex encoded)))
+      (is (= (dissoc internal :session :summary)
+             (dissoc decoded :session :summary)))
+      (is (id/bufs= (:session internal) (:session decoded)))
+      (is (id/bufs= (:summary internal) (:summary decoded)))))
+
+  (testing "opaque native values and unknown fields are not stringified"
+    (is (thrown? #?(:clj Throwable :cljs :default)
+                 (wire/encode-sync-frame
+                  {:type :sync/chunk :session (id/hex->bytes
+                                               "000102030405060708090a0b0c0d0e0f")
+                   :index 0 :data #{:not-bytes}})))
+    (is (thrown? #?(:clj Throwable :cljs :default)
+                 (wire/sync-frame-from-wire (assoc sync-open-fixture
+                                                   "extension" true))))))
+
 (deftest canonical-sync-done-frontier-known-answer
   (testing "JVM, JS, and Python agree on the bounded frontier array"
     (is (= sync-done-fixture-hex
@@ -81,6 +106,18 @@
       (is (every? true?
                   (map #(id/bufs= (get %1 "origin") (get %2 "origin"))
                        sync-done-frontiers roundtrip)))))
+
+  (let [internal {:type :sync/done
+                  :session (get sync-done-fixture "session")
+                  :count 2
+                  :topic "demo/tasks"
+                  :checkpoint (get sync-done-fixture "checkpoint")
+                  :frontiers (wire/frontiers-from-wire "demo/tasks"
+                                                       sync-done-frontiers)}
+        encoded (wire/encode-sync-frame internal)
+        decoded (wire/decode-sync-frame encoded)]
+    (is (= sync-done-fixture-hex (id/bytes->hex encoded)))
+    (is (= (:frontiers internal) (:frontiers decoded))))
 
   (testing "noncanonical ordering and foreign topics are rejected"
     (is (thrown? #?(:clj Throwable :cljs :default)

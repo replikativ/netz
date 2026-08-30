@@ -55,6 +55,10 @@ may make incompatible protocol changes.
   dependency-free Python conformance codec.
 - Added a canonical synchronization fixture and a dependency-free Python
   ordered/atomic sync receiver with join-set and fenced-root profiles.
+- Added strict Clojure profile-1 sync-frame conversion, pre-profile validation
+  of sender frontier claims, and local canonical receipt-size accounting.
+- Added an installable, typed, dependency-free `netz-protocol` Python alpha
+  wheel with Apache-2.0 package metadata and a CI build gate.
 - Added an optional stack gate composing Urd/Raft, Datahike, Netz,
   Spindel, and durable Yggdrasil G-Sets across partition and recovery.
 - Replaced ignored internal-design references with public release and

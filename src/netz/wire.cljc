@@ -182,3 +182,115 @@
                       {:type :netz.wire/frontier-byte-limit
                        :bytes (identity/buf-length encoded)})))
     encoded))
+
+(def ^:private sync-frame-fields
+  {:sync/open #{:type :session :topic :profile :summary}
+   :sync/chunk #{:type :session :index :data}
+   :sync/ack #{:type :session :through}
+   :sync/done #{:type :session :count :topic :checkpoint :frontiers}
+   :sync/abort #{:type :session :code}})
+
+(defn- bytes-of-size? [n value]
+  (and (byte-buffer? value) (= n (identity/buf-length value))))
+
+(defn- valid-sync-frame?
+  [frame]
+  (let [{:keys [type session topic profile summary index data through count
+                checkpoint frontiers code]} frame]
+    (and (map? frame)
+         (= (get sync-frame-fields type) (set (keys frame)))
+         (bytes-of-size? 16 session)
+         (case type
+           :sync/open (and (string? topic) (seq topic)
+                           (string? profile) (seq profile)
+                           (byte-buffer? summary))
+           :sync/chunk (and (safe-uint? index) (byte-buffer? data))
+           :sync/ack (safe-uint? through)
+           :sync/done (and (safe-uint? count)
+                           (string? topic) (seq topic)
+                           (byte-buffer? checkpoint)
+                           (map? frontiers))
+           :sync/abort (or (keyword? code) (string? code))
+           false))))
+
+(defn sync-frame->wire
+  "Convert one strict internal sync frame to its profile-1 text-key shape.
+
+  This is the explicit boundary between the Clojure state machine and foreign
+  bindings. Opaque profile values must already be byte strings. In particular,
+  this function does not stringify arbitrary Clojure data."
+  [{:keys [type session topic profile summary index data through count
+           checkpoint frontiers code] :as frame}]
+  (when-not (valid-sync-frame? frame)
+    (throw (ex-info "invalid internal profile-1 synchronization frame"
+                    {:type :netz.wire/invalid-sync-frame
+                     :frame-type type})))
+  (cond-> {"v" profile-version
+           "type" (subs (str type) 1)
+           "session" session}
+    (= type :sync/open)
+    (assoc "topic" topic "profile" profile "summary" summary)
+
+    (= type :sync/chunk)
+    (assoc "index" index "data" data)
+
+    (= type :sync/ack)
+    (assoc "through" through)
+
+    (= type :sync/done)
+    (assoc "count" count "topic" topic "checkpoint" checkpoint
+           "frontiers" (frontiers->wire topic frontiers))
+
+    (= type :sync/abort)
+    (assoc "code" (if (keyword? code) (name code) code))))
+
+(defn sync-frame-from-wire
+  "Validate a decoded profile-1 sync frame and return internal Clojure data."
+  [frame]
+  (when-not (and (map? frame) (= profile-version (get frame "v")))
+    (throw (ex-info "invalid profile-1 synchronization frame"
+                    {:type :netz.wire/invalid-sync-wire-frame})))
+  (let [type-name (get frame "type")
+        type (when (string? type-name) (keyword type-name))
+        fields (get sync-frame-fields type)
+        expected (when fields
+                   (conj (set (map (comp name) fields)) "v"))
+        internal (cond-> {:type type
+                          :session (get frame "session")}
+                   (= type :sync/open)
+                   (assoc :topic (get frame "topic")
+                          :profile (get frame "profile")
+                          :summary (get frame "summary"))
+
+                   (= type :sync/chunk)
+                   (assoc :index (get frame "index") :data (get frame "data"))
+
+                   (= type :sync/ack)
+                   (assoc :through (get frame "through"))
+
+                   (= type :sync/done)
+                   (assoc :count (get frame "count")
+                          :topic (get frame "topic")
+                          :checkpoint (get frame "checkpoint")
+                          :frontiers (frontiers-from-wire
+                                      (get frame "topic")
+                                      (get frame "frontiers")))
+
+                   (= type :sync/abort)
+                   (assoc :code (get frame "code")))]
+    (when-not (and fields (= expected (set (keys frame)))
+                   (valid-sync-frame? internal))
+      (throw (ex-info "invalid profile-1 synchronization fields"
+                      {:type :netz.wire/invalid-sync-wire-frame
+                       :frame-type type-name})))
+    internal))
+
+(defn encode-sync-frame
+  "Encode one internal synchronization frame as deterministic profile-1 CBOR."
+  [frame]
+  (encode-canonical (sync-frame->wire frame)))
+
+(defn decode-sync-frame
+  "Decode and validate one deterministic profile-1 synchronization frame."
+  [bytes]
+  (sync-frame-from-wire (decode bytes)))

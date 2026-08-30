@@ -1,5 +1,6 @@
 (ns netz.sync-test
   (:require [clojure.test :refer [deftest is testing]]
+            [netz.identity :as identity]
             [netz.overlay :as overlay]
             [netz.sim :as sim]
             [netz.sync :as sync]
@@ -36,18 +37,20 @@
     (is (= a (join-value a a)) "idempotent")))
 
 (deftest fenced-root-session-commits-atomically
-  (let [old {:writer :writer :term 1 :index 4 :root :old}
+  (let [topic "db"
+        origin (apply str (repeat 64 "0"))
+        old {:writer :writer :term 1 :index 4 :root :old}
         current {:writer :writer :term 2 :index 7 :root :current}
         s (-> (sim/make-sim {:seed 8 :latency-min 1 :latency-max 10})
               (sim/add-node :reader sync/handler
-                            (sync-node :reader root-profile-id root-profile :db old))
+                            (sync-node :reader root-profile-id root-profile topic old))
               (sim/add-node :writer sync/handler
-                            (sync-node :writer root-profile-id root-profile :db current
-                                       {:frontiers {:db {[:writer 0 :db] 7}}}))
-              (pull :reader :writer :db root-profile-id :root-session))
+                            (sync-node :writer root-profile-id root-profile topic current
+                                       {:frontiers {topic {[origin 0 topic] 7}}}))
+              (pull :reader :writer topic root-profile-id :root-session))
         reader (sim/node-state s :reader)]
-    (is (= current (sync/application reader :db)))
-    (is (= :synchronized (sync/status reader :db)))
+    (is (= current (sync/application reader topic)))
+    (is (= :synchronized (sync/status reader topic)))
     (is (= 1 (get-in s [:stats :sync-committed])))
     (is (empty? (:sessions reader))))
 
@@ -112,24 +115,26 @@
       (is (= 2 (count chunks)))))
 
   (testing "chunks do not mutate committed state before done"
-    (let [[receiver _] (sync/start
-                        (sync-node :client join-profile-id join-profile :doc #{:local})
-                        :server :doc join-profile-id :s)
+    (let [topic "doc"
+          origin (apply str (repeat 64 "0"))
+          [receiver _] (sync/start
+                        (sync-node :client join-profile-id join-profile topic #{:local})
+                        :server topic join-profile-id :s)
           chunked (sync/handler receiver
                                 {:type :message :from :server
                                  :payload {:type :sync/chunk :session :s
                                            :index 0 :data #{:remote}}}
                                 {:now 1})]
-      (is (= #{:local} (sync/application (:state chunked) :doc)))
+      (is (= #{:local} (sync/application (:state chunked) topic)))
       (let [done (sync/handler (:state chunked)
                                {:type :message :from :server
                                 :payload {:type :sync/done :session :s :count 1
                                           :checkpoint #{:remote}
-                                          :frontiers {[:server 0 :doc] 99}}}
+                                          :frontiers {[origin 0 topic] 99}}}
                                {:now 2})]
         (is (= #{:local :remote}
-               (sync/application (:state done) :doc)))
-        (is (empty? (sync/frontiers (:state done) :doc))
+               (sync/application (:state done) topic)))
+        (is (empty? (sync/frontiers (:state done) topic))
             "a legacy profile must not echo a remote frontier claim")
         (is (= [[:sync-committed {}]] (:actions done))))))
 
@@ -214,6 +219,34 @@
     (is (= :new (sync/application (:state done) topic)))
     (is (= frontier (sync/frontiers (:state done) topic)))
     (is (= [[:sync-committed frontier]] (:actions done)))))
+
+(deftest sender-frontier-claims-are-validated-before-profile-code
+  (let [commits (atom 0)
+        topic "doc"
+        impl (reify
+               profile/SyncProfile
+               (-profile-id [_] "test/precommit-validation/1")
+               (-describe [_ value _] value)
+               (-respond [_ _ _ _] {:chunks [] :checkpoint nil})
+               (-begin [_ value _] value)
+               (-apply-chunk [_ staging _ _] staging)
+               (-commit [_ _ _ staging _] (swap! commits inc) staging))
+        profile-id (profile/profile-id impl)
+        [receiver _] (sync/start
+                      (sync-node :client profile-id impl topic :old)
+                      :server topic profile-id :bad-claim)
+        result (sync/handler
+                receiver
+                {:type :message :from :server
+                 :payload {:type :sync/done :session :bad-claim :count 0
+                           :topic topic :checkpoint nil
+                           :frontiers [{"origin" (identity/hex->bytes
+                                                  (apply str (repeat 62 "0")))
+                                        "epoch" 0 "topic" topic "through" 0}]}}
+                {:now 1})]
+    (is (zero? @commits))
+    (is (= :sync/abort
+           (:type (nth (first (:actions result)) 2))))))
 
 (deftest a-lost-session-times-out-desynchronized
   (let [s (-> (sim/make-sim {:drop-p 1.0})

@@ -35,6 +35,25 @@
           (assoc receipt :frontier-bytes bytes)))
       (catch #?(:clj Throwable :cljs :default) _ nil))))
 
+(defn- validated-claim
+  "Validate and normalize an untrusted sender frontier before profile code.
+
+  Profile-1 peers send the canonical array. Native Clojure transports still
+  send the historical map until capability negotiation is deployed; that path
+  receives the same strict origin/topic/integer/count/encoded-byte checks."
+  [state topic frontiers]
+  (try
+    (let [frontiers (if (vector? frontiers)
+                      (wire/frontiers-from-wire topic frontiers)
+                      frontiers)]
+      (when (and (map? frontiers)
+                 (<= (count frontiers)
+                     (get-in state [:opts :max-frontier-streams])))
+        (let [bytes (identity/buf-length (wire/encode-frontiers topic frontiers))]
+          (when (<= bytes (get-in state [:opts :max-frontier-bytes]))
+            frontiers))))
+    (catch #?(:clj Throwable :cljs :default) _ nil)))
+
 (defn make-state
   ([id] (make-state id {}))
   ([id {:keys [profiles applications frontiers] :as opts}]
@@ -216,7 +235,10 @@
       (abort state session from :incomplete)
       :else
       (try
-        (let [impl (profile-for state profile)
+        (let [frontiers (validated-claim state topic frontiers)
+              _ (when-not frontiers
+                  (throw (ex-info "invalid sender frontier claim" {})))
+              impl (profile-for state profile)
               current (application state topic)
               receipt (validated-receipt
                        state topic

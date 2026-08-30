@@ -72,3 +72,9 @@ implementation is interoperable only after it agrees on canonical bytes and
 signatures, rejects the shared malformed corpus, negotiates protocol versions,
 and completes identity, dissemination, repair, content, and state-sync tests
 against the JVM/JavaScript implementation.
+
+The first independent seam is now concrete: strict Clojure sync-frame
+conversion and the installable `netz-protocol` Python core emit the same
+`sync/open` and `sync/done` fixtures. This proves the CBOR and frontier shapes,
+not a network connection. Identity/handshake fixtures, capability negotiation,
+outbound Python sync, and two-peer tests remain prerequisites.

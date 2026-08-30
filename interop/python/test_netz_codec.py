@@ -4,12 +4,16 @@ from pathlib import Path
 
 from netz_codec import CBORError, dumps, loads
 from netz_sync import JoinSetProfile, RootLogProfile, SyncError, SyncReceiver, open_frame
+from netz_protocol import dumps as package_dumps
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 class CodecTest(unittest.TestCase):
+    def test_installed_package_facade(self):
+        self.assertEqual(dumps({"v": 1}), package_dumps({"v": 1}))
+
     def fixture(self):
         fixture = json.loads((ROOT / "spec/fixtures/profile-1.json").read_text())
         diagnostic = fixture["diagnostic"]
