@@ -33,6 +33,15 @@ application, and commit to a named profile.
 chunks, and the unacknowledged window. The same handler runs under the simulator
 and the overlay runtime.
 
+`netz.apply-owner` models the other half of the boundary: one generation of
+one topic/profile. It distinguishes network admission from profile application,
+allows one mutation in flight, admits only the selected live transport, and
+advances `(origin, epoch, topic)` frontiers only after literal application
+success. Snapshot capture waits for an in-flight mutation; commit subsumes the
+covered prefix, drains the contiguous suffix, and only then publishes ready.
+Capacity or application failure moves the owner to `desynchronized` and emits
+one state-sync request instead of dropping an item and continuing.
+
 The current Kabel adapter maps this to `PSyncStrategy`:
 
 | Portable profile operation | Kabel operation |
@@ -43,11 +52,13 @@ The current Kabel adapter maps this to `PSyncStrategy`:
 | Apply a live value | `-apply-publish` |
 
 Live values received before the initial handshake completes are bounded and
-ordered. A successful synchronization checkpoint carries the stream frontiers
-represented by its snapshot. Buffered values at or below those frontiers are
-subsumed; the newer contiguous suffix is then released. Overflow marks the topic
-desynchronized and reruns the handshake; message repair cannot recover a value
-that dissemination already marked seen.
+ordered. A successful synchronization checkpoint must carry the
+application-committed stream frontiers represented by its snapshot. Buffered
+values at or below those frontiers are subsumed; the newer contiguous suffix is
+then released. Overflow marks the topic desynchronized and reruns the handshake;
+message repair cannot recover a value that dissemination already marked seen.
+The pure owner enforces this distinction; wiring its receipts into the overlay
+runtime is an explicit alpha release gate.
 
 ## Reference profiles
 

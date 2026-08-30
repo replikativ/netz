@@ -19,6 +19,9 @@ may make incompatible protocol changes.
   the overlay owns a topic.
 - Made horizon recovery drain the old Kabel v0 generation before subscribing
   again, and stop applying later deltas while a topic is desynchronized.
+- Added a portable pure profile-apply owner with transport exclusivity,
+  item/byte admission limits, exact apply receipts, snapshot/live
+  serialization, generation fencing, and application-committed frontiers.
 - Scoped publication sequences and anti-entropy to topic streams, with bounded
   FIFO delivery and synchronization frontiers for recovery.
 - Made the deterministic simulator preserve Kabel's per-link FIFO guarantee by

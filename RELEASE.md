@@ -18,6 +18,9 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 - [x] Point-to-point sync sessions are pure, bounded, acknowledged, atomic at
       profile commit, and exercised with fenced-root and join-semilattice
       reference profiles.
+- [x] A pure per-profile apply owner separates admission from successful
+      application, serializes snapshot/live effects, bounds item/byte backlog,
+      and advances only application-committed frontiers.
 - [x] An optional sibling-workspace gate composes a real Urd/Raft fence with a
       Datahike commit root and heals durable Yggdrasil G-Sets through Spindel's
       delta hook, without leaking local roots into the artifact.
@@ -31,9 +34,10 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 - [x] Kabel routes external and direct application through one peer/topic
       serializer and lets Netz reject identity-less direct live frames while
       the overlay owns delivery.
-- [ ] Synchronization checkpoints must advertise application-committed
-      frontiers, not merely transport-received frontiers. A slow or failed
-      profile apply must never make a later snapshot claim that value.
+- [ ] Wire apply-owner receipts into overlay delivery and synchronization so
+      checkpoints advertise application-committed frontiers, not merely
+      transport-received frontiers. A slow or failed profile apply must never
+      make a later snapshot claim that value.
 - [ ] Kabel's WebSocket adapters need bounded asynchronous writes or byte
       credits. Netz cannot bound a queue below the transport that owns it.
 - [ ] The actual socket layer must enforce the 5 MiB encoded-frame ceiling and
