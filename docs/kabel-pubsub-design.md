@@ -162,9 +162,11 @@ failed/desynchronized.
 Snapshot production follows the same rule. A checked source has an item stream
 and a separate single-assignment completion carrying `{:ok true}` or
 `{:error e}`. The sender emits the snapshot completion marker only after it has
-drained the item stream and observed explicit producer success. Producer
-exception, cancellation, error result, or completion without a result fails the
-session; a clean-looking prefix must never become a successful snapshot.
+drained the source, observed explicit producer success, transmitted every final
+batch, and received the receiver's ACK for every batch. Producer exception,
+cancellation, error result, completion without a result, or an unacknowledged
+batch fails the session; a clean-looking prefix must never become a successful
+snapshot.
 
 The ordered snapshot completion event is the finite cut marker. The lane drains
 only publications that precede that marker, settles `ready`, changes to `live`,
