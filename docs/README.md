@@ -5,6 +5,8 @@
 - [Architecture](architecture.md) defines Netz's boundary in the wider stack.
 - [Synchronization](synchronization.md) separates live dissemination,
   recent-message repair, and application state synchronization.
+- [Kabel pub/sub lifecycle design](kabel-pubsub-design.md) defines the
+  snapshot/live ordering barrier, compatibility repair, and portable boundary.
 - [Deterministic simulator](simulator.md) covers scale, shrinkable schedules,
   faults, durability, and resource modelling.
 - [Interoperability](interoperability.md) records what Netz can reuse from
