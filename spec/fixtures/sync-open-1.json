@@ -1,0 +1,13 @@
+{
+  "name": "sync-open-join-semilattice-draft-00",
+  "diagnostic": {
+    "v": 1,
+    "type": "sync/open",
+    "session_hex": "000102030405060708090a0b0c0d0e0f",
+    "topic": "demo/tasks",
+    "profile": "netz/join-semilattice/1",
+    "summary_diagnostic": ["alpha", "beta"],
+    "summary_cbor_hex": "8265616c7068616462657461"
+  },
+  "canonical_cbor_hex": "a661760164747970656973796e632f6f70656e65746f7069636a64656d6f2f7461736b736770726f66696c65776e65747a2f6a6f696e2d73656d696c6174746963652f316773657373696f6e50000102030405060708090a0b0c0d0e0f6773756d6d6172794c8265616c7068616462657461"
+}

@@ -220,7 +220,7 @@ that recent-message repair can necessarily observe.
 Synchronization is point-to-point, acknowledged and backpressured. It is not
 flooded through the dissemination mesh.
 
-Either peer may open a session:
+Either peer may open a session. Every frame below also carries `v: 1`:
 
 ~~~text
 sync/open  {session: bytes16, topic: text, profile: text, summary: bytes}
@@ -235,6 +235,11 @@ The `summary`, `data` and `checkpoint` fields are opaque to Netz and defined by
 the named profile. A receiver MUST apply chunks in index order and acknowledge
 bounded batches. `done` becomes visible atomically through `SyncProfile.commit`;
 failure before commit leaves the previous checkpoint visible.
+
+`fixtures/sync-open-1.json` pins a complete join-semilattice `sync/open` frame.
+The profile summary is itself deterministic CBOR, carried as an opaque byte
+string by the outer frame. JVM, JavaScript and Python MUST emit the fixture's
+exact bytes.
 
 The reference implementation includes executable models of two initial
 profiles:

@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from netz_codec import CBORError, dumps, loads
+from netz_sync import JoinSetProfile, RootLogProfile, SyncError, SyncReceiver, open_frame
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +28,17 @@ class CodecTest(unittest.TestCase):
         self.assertEqual(fixture["canonical_cbor_hex"], encoded.hex())
         self.assertEqual(value, loads(encoded))
 
+    def test_shared_sync_open_known_answer(self):
+        fixture = json.loads((ROOT / "spec/fixtures/sync-open-1.json").read_text())
+        diagnostic = fixture["diagnostic"]
+        profile = JoinSetProfile()
+        value = set(diagnostic["summary_diagnostic"])
+        frame = open_frame(bytes.fromhex(diagnostic["session_hex"]),
+                           diagnostic["topic"], profile, value)
+        self.assertEqual(diagnostic["summary_cbor_hex"], frame["summary"].hex())
+        self.assertEqual(fixture["canonical_cbor_hex"], dumps(frame).hex())
+        self.assertEqual(frame, loads(dumps(frame)))
+
     def test_rejects_non_profile_values(self):
         with self.assertRaises(CBORError):
             dumps({1: "non-text key"})
@@ -42,6 +54,33 @@ class CodecTest(unittest.TestCase):
             loads(b"\x7a\x00\x10\x00\x01")  # text longer than 1 MiB
         with self.assertRaises(CBORError):
             loads(b"\x99\x40\x01")  # array claims 16,385 items
+
+    def test_sync_receiver_is_ordered_and_atomic(self):
+        session = bytes(range(16))
+        profile = JoinSetProfile()
+        receiver = SyncReceiver(session, "demo/tasks", profile, {"local"})
+        ack = receiver.receive({"v": 1, "type": "sync/chunk", "session": session,
+                                "index": 0, "data": dumps(["remote"])})
+        self.assertEqual(0, ack["through"])
+        self.assertEqual({"local"}, receiver.value, "staging must not leak before done")
+        receiver.receive({"v": 1, "type": "sync/done", "session": session,
+                          "count": 1, "topic": "demo/tasks", "frontiers": {},
+                          "checkpoint": dumps(["remote"])})
+        self.assertEqual({"local", "remote"}, receiver.value)
+        self.assertEqual("synchronized", receiver.status)
+
+        future = SyncReceiver(session, "demo/tasks", profile, set())
+        with self.assertRaises(SyncError):
+            future.receive({"v": 1, "type": "sync/chunk", "session": session,
+                            "index": 1, "data": dumps(["future"])})
+
+    def test_root_profile_rejects_wrong_writer_and_conflict(self):
+        profile = RootLogProfile("urd/a")
+        current = {"writer": "urd/a", "term": 2, "index": 7, "root": "cid-a"}
+        with self.assertRaises(SyncError):
+            profile.apply_chunk(None, dumps({**current, "writer": "unselected"}))
+        with self.assertRaises(SyncError):
+            profile.apply_chunk(current, dumps({**current, "root": "cid-b"}))
 
 
 if __name__ == "__main__":

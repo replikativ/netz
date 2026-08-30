@@ -18,6 +18,11 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 - [x] Point-to-point sync sessions are pure, bounded, acknowledged, atomic at
       profile commit, and exercised with fenced-root and join-semilattice
       reference profiles.
+- [x] An optional sibling-workspace gate composes a real Urd/Raft fence with a
+      Datahike commit root and heals durable Yggdrasil G-Sets through Spindel's
+      delta hook, without leaking local roots into the artifact.
+- [x] JVM, JavaScript and Python pin the same canonical `sync/open` bytes;
+      Python also exercises ordered, atomic profile application.
 
 ## Required before exposing to untrusted peers
 
@@ -53,6 +58,8 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 ```sh
 clojure -X:test :dirs '["test"]'
 clojure -X:konserve:test :dirs '["test" "test-konserve"]'
+# With ../urd, ../datahike, ../yggdrasil, and ../spindel checked out:
+clojure -X:stack :dirs '["test-stack"]'
 npm ci
 npx shadow-cljs compile :node-test
 node target/node-tests.js

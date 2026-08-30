@@ -26,6 +26,10 @@ may make incompatible protocol changes.
   join-semilattice reference profiles.
 - Added a strict RFC 8949 deterministic-CBOR draft profile, shared JVM/JS
   fixture, and dependency-free Python conformance codec.
+- Added a canonical synchronization fixture and a dependency-free Python
+  ordered/atomic sync receiver with join-set and fenced-root profiles.
+- Added an optional stack gate composing Urd/Raft, Datahike, Netz,
+  Spindel, and durable Yggdrasil G-Sets across partition and recovery.
 - Replaced ignored internal-design references with public release and
   architecture documentation.
 - Added JVM, ClojureScript, Konserve, Python, formatting, and artifact CI gates.

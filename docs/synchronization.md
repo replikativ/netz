@@ -60,8 +60,10 @@ fence/index. Missing immutable blocks are then fetched by content id.
 
 This is single-writer application state even though transport and storage are
 peer-to-peer. `netz.sync.root-log` implements fence/index ordering and accepts
-an application-supplied publisher/signature verifier. The stack adapter still
-has to bind this record to Urd and the independently signed root format.
+an application-supplied publisher/signature verifier. The optional `test-stack`
+gate binds the writer, term and index to a real Urd/Raft simulation and the root
+to a real Datahike commit UUID; immutable block closure and the independently
+signed portable root envelope remain separate release work.
 
 ### `netz/join-semilattice/1`
 
@@ -70,7 +72,17 @@ missing deltas or a snapshot. Application is commutative, associative, and
 idempotent, so multiple authorized writers can converge without leader
 selection. `netz.sync.join-semilattice` provides an executable set-based
 reference model; Spindel/Yggdrasil should replace its full-set summary with
-their causal frontier and delta/snapshot representation.
+their causal frontier and delta/snapshot representation. The optional stack
+gate runs durable Yggdrasil G-Sets through Spindel's actual `PDeltaApply` hook,
+including a failed session during partition and convergence after healing.
+
+## Cross-language conformance
+
+`spec/fixtures/sync-open-1.json` fixes one complete outer frame and one opaque
+profile summary at the byte level. Clojure/JVM, ClojureScript/Node and Python
+all assert the same deterministic CBOR. Python's `interop/python/netz_sync.py`
+implements the receiving session boundary and both reference profile shapes;
+it is not yet an identity/handshake/WebSocket implementation.
 
 ## Encryption
 

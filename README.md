@@ -7,8 +7,8 @@ an application-defined state-synchronization boundary.
 
 The reference implementation runs on the JVM and in JavaScript through shared
 Clojure/ClojureScript sources. A language-neutral protocol draft and a small
-Python CBOR conformance codec define the path to implementations outside the
-Clojure ecosystem.
+dependency-free Python CBOR/session core define the path to implementations
+outside the Clojure ecosystem.
 
 > **Release status: `0.1.0-alpha.1`.** Netz is suitable for controlled peers,
 > but not yet for an untrusted public network. Two transport issues must first
@@ -45,6 +45,13 @@ python3 -m unittest discover -s interop/python -v
 clojure -T:build jar
 ```
 
+Maintainers with sibling checkouts can also run the real stack seams without
+adding them to the published artifact:
+
+```sh
+clojure -X:stack :dirs '["test-stack"]'
+```
+
 The curated application API is `netz.core`. Constructing the underlying Kabel
 peer is transport-specific, so the complete lifecycle is documented in
 [Getting started](docs/getting-started.md).
@@ -73,7 +80,7 @@ added as another routing provider without changing application sync.
 - [Synchronization](docs/synchronization.md) — live, repair, and state-sync paths
 - [Interoperability](docs/interoperability.md) — AT Protocol, libp2p, Willow, and DHT fit
 - [Protocol draft](spec/netz-draft-00.md) — portable API and CBOR wire profile
-- [Python codec](interop/python/README.md) — cross-language conformance seed
+- [Python interoperability core](interop/python/README.md) — CBOR and sync seed
 - [Release readiness](RELEASE.md), [security policy](SECURITY.md), and
   [changelog](CHANGELOG.md)
 
