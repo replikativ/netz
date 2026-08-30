@@ -229,6 +229,15 @@ and unsubscribe/resubscribe of the same topic MUST either replace the connection
 or complete an explicit drain rule before reuse. This is a compatibility repair,
 not the language-neutral standard.
 
+The repaired Kabel v0 uses the second option for an orderly unsubscribe:
+`unsubscribe(id, topics)` is answered by `unsubscribe-ack(id, topics)`, the
+server sends that marker only after it has stopped capture, and the client
+routes the marker behind earlier frames in each topic's lifecycle lane before
+removing local state. An unsubscribe that races an active snapshot cannot
+establish this drain and therefore retires the connection. Failure, overflow,
+callback exception, and unconfirmed producer completion likewise retire the v0
+connection; no later frame may revive its readiness generation.
+
 Existing `PSyncStrategy/-handshake-items` exposes only an item channel. A
 compatibility adapter may treat close as success for explicitly trusted legacy
 strategies, but that adapter cannot make producer failure observable and is not
