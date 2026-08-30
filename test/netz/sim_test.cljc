@@ -208,13 +208,13 @@
         (is (= #{} (received s :n3)))
         (is (= #{} (received s :n4)))))))
 
-(deftest restart-preserves-state-and-re-inits
-  (testing "a crash is not amnesia"
+(deftest pause-preserves-state-and-re-inits
+  (testing "a pause is not amnesia"
     (let [s (-> (line-network {:seed 9} 3)
                 (sim/send-message :ext :n0 {:mid 1 :body "first"})
                 (sim/run-until 2000)
-                (sim/crash :n1)
-                (sim/restart :n1)
+                (sim/pause :n1)
+                (sim/resume :n1)
                 (sim/run-until 4000))]
       (is (= #{"first"} (received s :n1)) "state was lost across restart")
       (is (sim/up? s :n1))))
@@ -242,6 +242,78 @@
                 (sim/send-message :ext :n0 {:mid 1 :body "hello"})
                 (sim/run-until 10000))]
       (is (zero? (get-in s [:stats :dropped-loss]))))))
+
+(deftest duplication-is-an-explicit-network-fault
+  (let [s (-> (ring-network {:seed 4 :duplicate-p 1.0} 4)
+              (sim/send-message :ext :n0 {:mid 1 :body :once})
+              (sim/run-until 1000))]
+    (doseq [id (sim/node-ids s)]
+      (is (= #{:once} (received s id))))
+    (is (pos? (get-in s [:stats :duplicated]))
+        "the run must actually contain duplicate frames")))
+
+(defn burst-handler [state event _ctx]
+  (case (:type event)
+    :init {:state state
+           :actions (vec (repeat (:count state)
+                                 [:send :sink (:payload state)]))}
+    :message {:state (update state :received (fnil conj []) (:payload event))
+              :actions []}
+    {:state state :actions []}))
+
+(deftest inflight-and-bandwidth-bounds-are-visible
+  (testing "the global in-flight ceiling drops excess queued frames"
+    (let [s (-> (sim/make-sim {:max-inflight 2 :latency-min 100 :latency-max 100})
+                (sim/add-node :source burst-handler {:count 10 :payload :x})
+                (sim/add-node :sink burst-handler {:count 0 :payload nil})
+                (sim/run-steps 2))]
+      (is (= 2 (:peak-inflight s)))
+      (is (= 8 (get-in s [:stats :dropped-overflow])))))
+
+  (testing "a sender's per-millisecond byte budget exposes bursts"
+    (let [payload {:large (apply str (repeat 100 "x"))}
+          budget (sim/estimate-size payload)
+          s (-> (sim/make-sim {:bandwidth-bytes-per-ms budget
+                               :latency-min 10 :latency-max 10})
+                (sim/add-node :source burst-handler {:count 3 :payload payload})
+                (sim/add-node :sink burst-handler {:count 0 :payload nil})
+                (sim/run-until 100))]
+      (is (= 2 (get-in s [:stats :dropped-bandwidth])))
+      (is (= (* 3 budget) (get (sim/bytes-sent s) :source)))
+      (is (= (* 3 budget) (get-in s [:peak-time-bytes :source]))))))
+
+(defn persistence-handler [state event _ctx]
+  (case (:type event)
+    :init {:state state :actions []}
+    :message (let [value (:payload event)]
+               {:state (assoc state :value value)
+                :actions [[:persist :value value]]})
+    {:state state :actions []}))
+
+(deftest crash-restores-only-landed-durable-state
+  (let [restore (fn [initial durable]
+                  (assoc initial :value (get durable :value 0)))
+        initial (-> (sim/make-sim {:persist-latency-ms 10})
+                    (sim/add-node :n persistence-handler {:value 0}
+                                  {:restore restore}))
+        unlanded (-> initial
+                     (sim/send-message :app :n 1)
+                     (sim/run-until 5)
+                     (sim/crash :n)
+                     (sim/restart :n)
+                     (sim/run-until 20))
+        landed (-> unlanded
+                   (sim/send-message :app :n 2)
+                   (sim/run-until 40)
+                   (sim/crash :n)
+                   (sim/restart :n)
+                   (sim/run-until 50))]
+    (is (= {} (sim/durable-state unlanded :n)))
+    (is (= 0 (:value (sim/node-state unlanded :n)))
+        "an unlanded write must disappear on crash")
+    (is (= {:value 2} (sim/durable-state landed :n)))
+    (is (= 2 (:value (sim/node-state landed :n)))
+        "restart must reconstruct from durable state")))
 
 ;; =============================================================================
 ;; Timers and scheduling

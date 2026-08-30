@@ -243,7 +243,7 @@
 ;; Under simulation, composed with membership
 ;; =============================================================================
 
-(defn- overlay-network
+(defn overlay-network
   "`k` nodes seeded only from `:n0`, all subscribed to `:t`."
   ([k] (overlay-network k {} {}))
   ([k sim-opts node-opts]

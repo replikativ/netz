@@ -26,7 +26,8 @@
  ;; `:rng` and must be reproducible, so that one is production code.
  {:test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner
-                      {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+                      {:git/tag "v0.5.1" :git/sha "dfb30dd"}
+                      org.clojure/test.check {:mvn/version "1.1.1"}}
          :exec-fn cognitect.test-runner.api/test}
 
   ;; The konserve-backed PPeerStore (netz.store.konserve). konserve is the

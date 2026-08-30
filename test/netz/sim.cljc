@@ -84,11 +84,20 @@
    :latency-max 50
    ;; Probability that a message is silently lost in the network.
    :drop-p 0.0
+   ;; Probability of a second copy. This is a network fault above the ordered
+   ;; transport and is intentionally allowed to arrive later.
+   :duplicate-p 0.0
    ;; Kabel/WebSocket is FIFO per connection. Keep that transport guarantee by
    ;; default even though independently drawn latencies would otherwise let a
    ;; later frame overtake an earlier one on the same directed link. Tests for
    ;; unordered transports can disable it explicitly.
    :link-fifo? true
+   ;; Resource ceilings. nil bandwidth means unlimited.
+   :max-inflight 100000
+   :bandwidth-bytes-per-ms nil
+   ;; A persistence request lands after this virtual delay. Process crashes
+   ;; invalidate requests that have not landed yet.
+   :persist-latency-ms 1
    ;; Hard bound on events processed by `run-*`, so a protocol bug that
    ;; schedules work faster than it consumes it fails the test rather than
    ;; hanging it.
@@ -107,6 +116,8 @@
       :steps 0
       :rng (rng/make-rng (:seed opts))
       :queue (empty-queue)
+      :inflight 0
+      :peak-inflight 0
       :nodes {}
       ;; nil means "one network". Otherwise a map of node-id -> group; nodes
       ;; can reach each other exactly when their groups are equal.
@@ -114,10 +125,42 @@
       ;; Directed link -> delivery time of the last enqueued frame. Event
       ;; insertion sequence breaks ties, so equal timestamps remain FIFO.
       :link-next-at {}
+      :storage {}
+      :bytes-sent {}
+      :time-bytes {}
+      :peak-time-bytes {}
       :opts opts
       :trace []
       :stats {:sent 0 :delivered 0 :dropped-partition 0
-              :dropped-loss 0 :dropped-down 0 :timers 0 :connects 0}})))
+              :dropped-loss 0 :dropped-down 0 :dropped-overflow 0
+              :dropped-bandwidth 0 :duplicated 0 :timers 0 :connects 0
+              :persist-attempts 0 :persisted 0}})))
+
+(def ^:private size-overhead 2)
+
+(defn estimate-size
+  "Portable deterministic structural size in notional bytes.
+
+  It intentionally does not print values: host printers can differ between
+  Clojure and ClojureScript. The estimate is depth-bounded and is used for
+  relative traffic and bandwidth assertions, not as a wire encoder."
+  ([x] (estimate-size x 0))
+  ([x depth]
+   (cond
+     (> depth 32) 8
+     (nil? x) 1
+     (boolean? x) 1
+     (number? x) 8
+     (keyword? x) (+ size-overhead (count (name x))
+                     (if-let [ns' (namespace x)] (count ns') 0))
+     (string? x) (+ size-overhead (count x))
+     (map? x) (reduce (fn [n [k v]]
+                        (+ n (estimate-size k (inc depth))
+                           (estimate-size v (inc depth))))
+                      size-overhead x)
+     (coll? x) (reduce (fn [n v] (+ n (estimate-size v (inc depth))))
+                       size-overhead x)
+     :else 16)))
 
 (defn- node-seed
   "Derive a node's rng seed from the simulation seed and its id.
@@ -143,14 +186,24 @@
   The node receives an `{:type :init}` event at the current virtual time, so
   it can schedule its first timers. Its rng is seeded from the simulation seed
   and its id, and lives at `:rng` in its state."
-  [sim id handler init-state]
-  (-> sim
-      (assoc-in [:nodes id] {:handler handler
-                             :up? true
-                             :state (assoc init-state
-                                           :rng (rng/make-rng (node-seed sim id))
-                                           :id id)})
-      (enqueue {:at (:now sim) :kind :init :to id})))
+  ([sim id handler init-state]
+   (add-node sim id handler init-state {}))
+  ([sim id handler init-state {:keys [restore]}]
+   (let [decorate (fn [state]
+                    (assoc state
+                           :rng (rng/make-rng (node-seed sim id))
+                           :id id))]
+     (-> sim
+         (assoc-in [:nodes id] {:handler handler
+                                :up? true
+                                :generation 0
+                                :init-state init-state
+                                :restore (or restore
+                                             (fn [initial durable]
+                                               (assoc initial :persisted durable)))
+                                :state (decorate init-state)})
+         (assoc-in [:storage id] {:durable {}})
+         (enqueue {:at (:now sim) :kind :init :to id})))))
 
 ;; =============================================================================
 ;; Faults
@@ -185,23 +238,46 @@
       (enqueue {:at (:now sim) :kind :disconnected :to a :from b})
       (enqueue {:at (:now sim) :kind :disconnected :to b :from a})))
 
-(defn crash
-  "Take `id` down. It stops processing events; messages to it are dropped, and
-  every other node is told its transport is gone.
-
-  Its state is retained, so `restart` resumes from it — a crash is not
-  amnesia. Use `forget` for that."
+(defn pause
+  "Pause `id` without losing memory. Use this for suspension or a temporarily
+  unavailable process whose memory remains intact."
   [sim id]
   (-> sim
       (assoc-in [:nodes id :up?] false)
       (notify-disconnect id)))
 
-(defn restart
-  "Bring `id` back up and re-deliver `:init` so it can re-arm its timers."
+(defn resume
+  "Resume a paused node and let it re-arm timers."
   [sim id]
   (-> sim
       (assoc-in [:nodes id :up?] true)
       (enqueue {:at (:now sim) :kind :init :to id})))
+
+(defn crash
+  "Crash `id`: volatile state and unlanded persistence are lost.
+
+  Durable values remain in `storage`; `restart` reconstructs through the
+  node's restore function supplied to `add-node`."
+  [sim id]
+  (-> sim
+      (assoc-in [:nodes id :up?] false)
+      (assoc-in [:nodes id :state] nil)
+      (update-in [:nodes id :generation] inc)
+      (notify-disconnect id)))
+
+(defn restart
+  "Bring `id` back. A crashed node is rebuilt from durable state; a merely
+  paused node keeps its memory."
+  [sim id]
+  (let [{:keys [state init-state restore]} (get-in sim [:nodes id])
+        restored (when-not state
+                   (assoc (restore init-state (get-in sim [:storage id :durable]))
+                          :rng (rng/make-rng (node-seed sim id))
+                          :id id))]
+    (-> sim
+        (cond-> restored (assoc-in [:nodes id :state] restored))
+        (assoc-in [:nodes id :up?] true)
+        (enqueue {:at (:now sim) :kind :init :to id}))))
 
 (defn forget
   "Remove `id` entirely, state and all — a permanent departure.
@@ -210,7 +286,8 @@
   [sim id]
   (-> sim
       (notify-disconnect id)
-      (update :nodes dissoc id)))
+      (update :nodes dissoc id)
+      (update :storage dissoc id)))
 
 (defn partition-network
   "Split the network into groups: a map of `node-id -> group`.
@@ -262,11 +339,42 @@
       (let [[rng' dropped?] (rng/rand-bool (:rng sim) p)]
         [(assoc sim :rng rng') dropped?]))))
 
+(defn- duplicate-message? [sim]
+  (let [p (get-in sim [:opts :duplicate-p])]
+    (if (<= p 0.0)
+      [sim false]
+      (let [[rng' duplicate?] (rng/rand-bool (:rng sim) p)]
+        [(assoc sim :rng rng') duplicate?]))))
+
+(defn- charge-bytes [sim from bytes]
+  (let [{last-at :at current :bytes} (get-in sim [:time-bytes from])
+        current (if (= last-at (:now sim)) (or current 0) 0)
+        total (+ current bytes)]
+    (-> sim
+        (update-in [:bytes-sent from] (fnil + 0) bytes)
+        (assoc-in [:time-bytes from] {:at (:now sim) :bytes total})
+        (update-in [:peak-time-bytes from] (fnil max 0) total))))
+
+(defn- over-bandwidth? [sim from bytes]
+  (when-let [budget (get-in sim [:opts :bandwidth-bytes-per-ms])]
+    (let [{last-at :at current :bytes} (get-in sim [:time-bytes from])
+          current (if (= last-at (:now sim)) (or current 0) 0)]
+      (> (+ current bytes) budget))))
+
+(defn- enqueue-network [sim event]
+  (if (>= (:inflight sim) (get-in sim [:opts :max-inflight]))
+    (update-in sim [:stats :dropped-overflow] inc)
+    (let [sim (-> sim
+                  (enqueue (assoc event :network? true))
+                  (update :inflight inc))]
+      (update sim :peak-inflight max (:inflight sim)))))
+
 (defn- transmit
   "Put `payload` on the wire from `from` to `to`, subject to reachability,
   loss and latency."
   [sim from to payload]
-  (let [sim (update-in sim [:stats :sent] inc)]
+  (let [sim (update-in sim [:stats :sent] inc)
+        bytes (estimate-size payload)]
     (cond
       (not (contains? (:nodes sim) to))
       (update-in sim [:stats :dropped-down] inc)
@@ -274,8 +382,14 @@
       (not (reachable? sim from to))
       (update-in sim [:stats :dropped-partition] inc)
 
+      (over-bandwidth? sim from bytes)
+      (-> sim
+          (charge-bytes from bytes)
+          (update-in [:stats :dropped-bandwidth] inc))
+
       :else
-      (let [[sim dropped?] (drop-message? sim)]
+      (let [sim (charge-bytes sim from bytes)
+            [sim dropped?] (drop-message? sim)]
         (if dropped?
           (update-in sim [:stats :dropped-loss] inc)
           (let [[sim ms] (draw-latency sim)
@@ -283,14 +397,18 @@
                 link [from to]
                 at (if (get-in sim [:opts :link-fifo?])
                      (max candidate (get-in sim [:link-next-at link] candidate))
-                     candidate)]
-            (-> sim
-                (assoc-in [:link-next-at link] at)
-                (enqueue {:at at
-                          :kind :message
-                          :from from
-                          :to to
-                          :payload payload}))))))))
+                     candidate)
+                event {:at at :kind :message :from from :to to :payload payload}
+                sim (-> sim
+                        (assoc-in [:link-next-at link] at)
+                        (enqueue-network event))
+                [sim duplicate?] (duplicate-message? sim)]
+            (if duplicate?
+              (-> sim
+                  (assoc-in [:link-next-at link] (inc at))
+                  (enqueue-network (assoc event :at (inc at) :duplicate? true))
+                  (update-in [:stats :duplicated] inc))
+              sim)))))))
 
 (defn- apply-action
   [sim from [op & args]]
@@ -328,11 +446,16 @@
     (update-in sim [:stats :state-syncs] (fnil inc 0))
 
     :persist
-    ;; Handing a value to durable storage. The simulator has no store — it
-    ;; counts the call so a test can assert persistence was attempted, which is
-    ;; the part the protocol is responsible for. Whether the bytes land is the
-    ;; runtime's business.
-    (update-in sim [:stats :persisted] (fnil inc 0))
+    (let [[k v] args
+          generation (get-in sim [:nodes from :generation])]
+      (-> sim
+          (update-in [:stats :persist-attempts] inc)
+          (enqueue {:at (+ (:now sim) (get-in sim [:opts :persist-latency-ms]))
+                    :kind :persist-complete
+                    :to from
+                    :generation generation
+                    :key k
+                    :value v})))
 
     :disconnect
     (let [[to] args]
@@ -380,6 +503,15 @@
                   sim)]
         (reduce (fn [s a] (apply-action s to a)) sim (or actions []))))))
 
+(defn- complete-persist
+  [sim {:keys [to generation key value] :as event}]
+  (if (= generation (get-in sim [:nodes to :generation]))
+    (-> sim
+        (assoc-in [:storage to :durable key] value)
+        (update-in [:stats :persisted] inc)
+        (record event))
+    sim))
+
 ;; =============================================================================
 ;; Running
 ;; =============================================================================
@@ -391,9 +523,11 @@
     (let [sim (-> sim
                   (update :queue disj event)
                   (assoc :now (max (:now sim) (:at event)))
-                  (update :steps inc))]
-      (if (= :call (:kind event))
-        ((:f event) sim)
+                  (update :steps inc)
+                  (cond-> (:network? event) (update :inflight dec)))]
+      (case (:kind event)
+        :call ((:f event) sim)
+        :persist-complete (complete-persist sim event)
         (if (contains? (:nodes sim) (:to event))
           (deliver-to-node sim event)
           (update-in sim [:stats :dropped-down] inc))))
@@ -449,6 +583,16 @@
   (get-in sim [:nodes id :state]))
 
 (defn node-ids [sim] (set (keys (:nodes sim))))
+
+(defn durable-state
+  "Durable key/value state that survives a process crash for `id`."
+  [sim id]
+  (get-in sim [:storage id :durable] {}))
+
+(defn bytes-sent
+  "Notional bytes attempted by each sender."
+  [sim]
+  (:bytes-sent sim))
 
 (defn messages-to
   "Traced messages delivered to `id`."

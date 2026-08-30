@@ -18,6 +18,9 @@ may make incompatible protocol changes.
   FIFO delivery and synchronization frontiers for recovery.
 - Made the deterministic simulator preserve Kabel's per-link FIFO guarantee by
   default while retaining an explicit unordered-transport mode.
+- Added shrinkable fault schedules, true crash/durable-restart semantics,
+  duplication, in-flight and bandwidth accounting, a 1,000-peer scale gate,
+  and a pinned JVM/JavaScript simulation fingerprint.
 - Added a strict RFC 8949 deterministic-CBOR draft profile, shared JVM/JS
   fixture, and dependency-free Python conformance codec.
 - Replaced ignored internal-design references with public release and

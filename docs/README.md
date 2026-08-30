@@ -5,6 +5,8 @@
 - [Architecture](architecture.md) defines Netz's boundary in the wider stack.
 - [Synchronization](synchronization.md) separates live dissemination,
   recent-message repair, and application state synchronization.
+- [Deterministic simulator](simulator.md) covers scale, shrinkable schedules,
+  faults, durability, and resource modelling.
 - [Interoperability](interoperability.md) records what Netz can reuse from
   adjacent protocols and where semantic adapters are required.
 - [Protocol draft](../spec/netz-draft-00.md) is the prospective language-neutral
