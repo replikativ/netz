@@ -59,9 +59,20 @@
   (let [v (vec (sort values))]
     (when-not (and (<= (count v) 64)
                    (= (count v) (count (distinct v)))
-                   (every? #(and (string? %) (<= 1 (count %) 128)) v))
+                   (every? #(and (string? %)
+                                 (boolean
+                                  (re-matches
+                                   #"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}" %)))
+                           v))
       (fail "invalid capability set" {:capabilities values}))
     v))
+
+(defn- portable-address? [value]
+  ;; IDNA and percent-encoding happen before the identity record is signed.
+  ;; Keeping the signed representation printable ASCII makes host `sort`
+  ;; identical to Unicode-codepoint and UTF-8-byte order in foreign clients.
+  (and (string? value)
+       (boolean (re-matches #"[\x21-\x7e]{1,2048}" value))))
 
 (defn- checked-capabilities [values]
   (when-not (vector? values)
@@ -121,7 +132,7 @@
                                    (identity/authority-id-bytes genesis))
                    (bytes-of-length? 32 public)
                    (vector? addresses) (<= (count addresses) 16)
-                   (every? #(and (string? %) (<= (count %) 2048)) addresses)
+                   (every? portable-address? addresses)
                    (= addresses (vec (sort addresses)))
                    (integer? seq-no) (<= 0 seq-no wire/max-safe-integer)
                    (bytes-of-length? 64 signature))
@@ -534,6 +545,19 @@
                  (<= 1 handshake-timeout-ms 60000))
     (fail "Noise handshake timeout must be between 1 and 60000 ms"
           {:handshake-timeout-ms handshake-timeout-ms}))
+  (when-not (and (vector? addresses)
+                 (<= (count addresses) 16)
+                 (every? portable-address? addresses))
+    (fail "secure transport addresses must be normalized printable ASCII"
+          {:addresses addresses}))
+  ;; Validate eagerly so an invalid local profile fails at construction rather
+  ;; than timing out both sides after a socket has already been opened.
+  (let [capabilities (set (or (:capabilities opts) default-capabilities))
+        required (set (or (:required opts) default-required))]
+    (canonical-capabilities capabilities)
+    (canonical-capabilities required)
+    (when-not (set/subset? required capabilities)
+      (fail "local requirements are not capabilities" {})))
   (fn [[S peer [raw-in raw-out] :as connection]]
     (let [context (transport/connection-context connection)
           plain-in (chan 16)

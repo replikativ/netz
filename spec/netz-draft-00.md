@@ -199,6 +199,15 @@ Noise message 1 carries the initiator's deterministic-CBOR offer:
 }
 ~~~
 
+Capability identifiers MUST match
+`[A-Za-z0-9][A-Za-z0-9._/-]{0,127}` and arrays are sorted by ascending byte
+value. Signed addresses MUST be printable ASCII, at most 2,048 octets each,
+and sorted by the same order. Implementations MUST apply IDNA to host names and
+percent-encode non-ASCII URL components before signing. These restrictions make
+the ordering byte-identical in JVM, JavaScript and Unicode-codepoint-based
+foreign runtimes; implementations MUST NOT expose host-language string collation
+on this wire surface.
+
 Noise messages 2 and 3 carry the responder's and initiator's identity payloads
 respectively. An identity payload contains the signed identity record, the
 sender's Noise static public key, its role, supported and required capabilities,

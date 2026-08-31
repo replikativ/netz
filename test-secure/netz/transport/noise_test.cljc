@@ -1,6 +1,6 @@
 (ns netz.transport.noise-test
-  (:require #?(:clj [clojure.test :refer [deftest is]]
-               :cljs [cljs.test :refer-macros [deftest is async]])
+  (:require #?(:clj [clojure.test :refer [deftest is testing]]
+               :cljs [cljs.test :refer-macros [deftest is testing async]])
             [clojure.core.async :as a]
             [kabel.transport :as transport]
             [netz.identity :as identity]
@@ -66,6 +66,18 @@
 (defn- envelope [n]
   {:kabel/serialization :cbor
    :kabel/payload (wire/encode-canonical {"v" 1 "type" "test" "n" n})})
+
+(deftest portable-text-profile-is-unambiguous
+  (testing "capability identifiers are ASCII protocol tokens"
+    (is (thrown? #?(:clj Exception :cljs js/Error)
+                 (secure/middleware
+                  {:identity {} :addresses [] :seq-no 1
+                   :capabilities #{"netz/1" "sync/🕸"}}))))
+  (testing "signed transport addresses are normalized to printable ASCII"
+    (is (thrown? #?(:clj Exception :cljs js/Error)
+                 (secure/middleware
+                  {:identity {} :addresses ["wss://münich.example/netz"]
+                   :seq-no 1})))))
 
 (defn- decoded-n [value]
   (get (wire/decode (:kabel/payload value)) "n"))
