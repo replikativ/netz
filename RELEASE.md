@@ -45,7 +45,7 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 
 ## Required before exposing to untrusted peers
 
-- [ ] Bind the identity proof to a cryptographic transport/session and
+- [x] Bind the identity proof to a cryptographic transport/session and
       authenticate every subsequent Netz control frame. The two-identity,
       two-nonce transcript rejects replay and a chosen-nonce signing oracle,
       but a live adversary can splice the complete public handshake between two
@@ -57,8 +57,8 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       tests, and a real http-kit/Kabel/CBOR/Noise overlay test now exist behind
       `:secure-test`. `netz.transport.secure/start!` consumes the authenticated
       connection context without the transitional hello/proof exchange. This
-      remains unchecked until the Geheimnis PR is released. Kabel 0.3.126 now
-      contains the required transport context and Python carrier.
+      Kabel 0.3.126 contains the required transport context and Python carrier;
+      Geheimnis 0.2.39 contains the Noise binding.
 - [x] Publication sequence, deduplication, repair, and bounded ordered delivery
       are scoped per origin/topic stream.
 - [x] Kabel routes external and direct application through one peer/topic
@@ -149,8 +149,7 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 
 ```sh
 clojure -X:test :dirs '["test"]'
-# Released Kabel 0.3.126 and exact unreleased Geheimnis Noise commit:
-clojure -X:deps prep :aliases '[:secure-test]'
+# Released Kabel 0.3.126 and Geheimnis 0.2.39:
 clojure -X:secure-test :dirs '["test" "test-secure"]'
 clojure -X:konserve:test :dirs '["test" "test-konserve"]'
 # With ../urd, ../datahike, ../yggdrasil, and ../spindel checked out:

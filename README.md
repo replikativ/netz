@@ -14,8 +14,9 @@ outside the Clojure ecosystem.
 > share deterministic CBOR and authenticated Noise/Kabel fixtures, and the
 > secure JVM overlay passes a real three-peer rejoin test. Exact configured
 > `wss` gateways have a supported dial policy. Arbitrary public discovery still
-> waits on socket-level resolved-IP pinning, and secure artifacts wait on the
-> Kabel/Geheimnis dependency releases. Rotation remains explicitly reserved. See
+> waits on socket-level resolved-IP pinning. The authenticated transport uses
+> released Kabel 0.3.126 and Geheimnis 0.2.39 artifacts. Rotation remains
+> explicitly reserved. See
 > [release readiness](RELEASE.md) for the exact gates.
 
 ## What Netz owns

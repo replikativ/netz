@@ -12,7 +12,7 @@
         ;; Ed25519, SHA-256, constant-time compare, CSPRNG — portable across
         ;; JVM and ClojureScript. Unlike kabel, netz cannot make crypto
         ;; optional: self-certifying identity is the bottom of the design.
-        org.replikativ/geheimnis {:mvn/version "0.2.38"}
+        org.replikativ/geheimnis {:mvn/version "0.2.39"}
         org.replikativ/superv.async {:mvn/version "0.3.50"}
         org.replikativ/hasch {:mvn/version "0.4.100"}
         ;; RFC 8949 deterministic CBOR for the language-neutral wire profile.
@@ -32,15 +32,10 @@
                       org.clojure/test.check {:mvn/version "1.1.1"}}
          :exec-fn cognitect.test-runner.api/test}
 
-  ;; Integration gate for the not-yet-released Geheimnis Noise stack. Keep the
-  ;; Git override out of the runtime graph: consumers resolve released
-  ;; coordinates while this checkout tests the reviewed Noise commit exactly.
+  ;; Full authenticated-transport integration gate. Both Kabel and Geheimnis
+  ;; are released coordinates, so this exercises exactly what consumers get.
   :secure-test
   {:extra-paths ["test" "test-secure"]
-   :override-deps
-    {org.replikativ/geheimnis
-    {:git/url "https://github.com/replikativ/geheimnis.git"
-     :git/sha "ed95baf100456ea09c3d6ae4dd089049363785d2"}}
    :extra-deps
    {io.github.cognitect-labs/test-runner
     {:git/tag "v0.5.1" :git/sha "dfb30dd"}
