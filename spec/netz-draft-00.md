@@ -409,6 +409,9 @@ convert the internal frontier map to the canonical array; they never stringify
 arbitrary Clojure values. Transport adapters MUST cross this boundary only
 after negotiating profile 1. The native Kabel runtime has not yet made that
 negotiation, so the existence of these codecs is not an interoperability claim.
+The Python reference exposes the same pure receiver plus a bounded sender that
+accepts exact `sync/open` frames, enforces the cumulative-ACK chunk window, and
+emits `sync/done` only after all transmitted chunks are acknowledged.
 
 The reference implementation includes executable models of two initial
 profiles:

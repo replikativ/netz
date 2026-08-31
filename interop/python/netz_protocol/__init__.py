@@ -15,6 +15,8 @@ from netz_sync import (
     SyncError,
     SyncProfile,
     SyncReceiver,
+    SyncResponse,
+    SyncSender,
     open_frame,
 )
 from .framing import (
@@ -60,6 +62,8 @@ __all__ = [
     "SyncError",
     "SyncProfile",
     "SyncReceiver",
+    "SyncResponse",
+    "SyncSender",
     "authority_id",
     "dumps",
     "decode_kabel",

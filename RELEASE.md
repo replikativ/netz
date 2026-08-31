@@ -122,8 +122,8 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       `wire/netz-cbor/1` is not aliased to the transitional `netz/1` token.
 - [ ] Complete a Python identity/handshake/dissemination/sync client. The
       identity, secure carrier, signed publisher, bounded ordered receiver, and
-      atomic sync receiver exist; outbound sync, subscription repair and
-      reconnect orchestration remain.
+      bounded cumulative-ACK sync sender/atomic receiver exist; subscription
+      repair, content exchange and reconnect orchestration remain.
 - [x] The optional Python secure-client prototype signs and verifies identity
       records, binds Authority IDs to authenticated Noise statics, enforces the
       expected dial target, fragments bounded inner frames, and passes a real

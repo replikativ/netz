@@ -1,8 +1,8 @@
 # Python interoperability package
 
 `netz_codec.py` is a dependency-free implementation of the deterministic CBOR
-control-envelope subset in `spec/netz-draft-00.md`. `netz_sync.py` adds the
-transport-independent receiving half of an acknowledged synchronization
+control-envelope subset in `spec/netz-draft-00.md`. `netz_sync.py` adds both
+transport-independent halves of an acknowledged, windowed synchronization
 session plus the reference join-set and fenced-root profiles. The packaged
 `netz_protocol.framing` module implements both raw WebSocket-CBOR frames and
 Kabel's four-byte serializer-14 prefix.
@@ -27,7 +27,7 @@ The alpha distribution is named `netz-protocol` (the shorter `netz` name is
 already owned on PyPI) and imports as `netz_protocol`:
 
 ```python
-from netz_protocol import SyncReceiver, dumps, loads
+from netz_protocol import SyncReceiver, SyncSender, dumps, loads
 ```
 
 Build an installable wheel from the repository root without publishing it:
@@ -36,7 +36,10 @@ Build an installable wheel from the repository root without publishing it:
 python3 -m pip wheel . --no-deps --wheel-dir dist
 ```
 
-The receiver treats `sync/done.frontiers` as an untrusted sender claim. A
+`SyncSender.from_open(...)` validates an exact open frame, obtains opaque
+chunks from the selected profile, enforces the bounded cumulative-ACK window,
+and emits `sync/done` only after every chunk was acknowledged. The receiver
+treats `sync/done.frontiers` as an untrusted sender claim. A
 profile commit returns a bounded local `CommitReceipt`; the reference profiles
 claim no frontier until their checkpoint formats bind one causally or
 cryptographically.
@@ -48,11 +51,11 @@ python3 -m unittest -v test_netz_codec.py
 ```
 
 This is intentionally a protocol core plus a conformance carrier, not yet a
-high-level reconnecting application client. The session receiver is bounded,
-ordered and atomic; carrier framing, identities, signed publications and the
-secure capability handshake are pinned. Outbound synchronization orchestration,
-subscription repair, discovery policy, and reconnect/backoff remain explicit
-application-client work.
+high-level reconnecting application client. Both session roles are bounded;
+the receiver is ordered and atomic, and carrier framing, identities, signed
+publications and the secure capability handshake are pinned. Subscription
+repair, content exchange, discovery policy, and reconnect/backoff remain
+explicit application-client work.
 
 The experimental optional secure-client layer can be installed with:
 

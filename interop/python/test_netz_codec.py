@@ -3,7 +3,15 @@ import unittest
 from pathlib import Path
 
 from netz_codec import CBORError, MAX_STRING_BYTES, dumps, loads
-from netz_sync import JoinSetProfile, RootLogProfile, SyncError, SyncReceiver, open_frame
+from netz_sync import (
+    JoinSetProfile,
+    RootLogProfile,
+    SyncError,
+    SyncReceiver,
+    SyncResponse,
+    SyncSender,
+    open_frame,
+)
 from netz_protocol import dumps as package_dumps
 from netz_protocol.framing import (
     FramingError,
@@ -297,6 +305,84 @@ class CodecTest(unittest.TestCase):
         with self.assertRaises(SyncError):
             receiver.receive({"v": 1, "type": "sync/abort", "session": session,
                               "code": 7})
+
+    def test_sync_sender_and_receiver_complete_a_pull(self):
+        session = bytes(range(16))
+        topic = "demo/tasks"
+        profile = JoinSetProfile()
+        receiver = SyncReceiver(session, topic, profile, {"local"})
+        sender = SyncSender.from_open(
+            open_frame(session, topic, profile, receiver.value),
+            profile,
+            {"local", "remote"},
+            [],
+        )
+
+        frames = sender.start()
+        while frames:
+            replies = []
+            for frame in frames:
+                reply = receiver.receive(loads(dumps(frame)))
+                if reply is not None:
+                    replies.extend(sender.receive(loads(dumps(reply))))
+            frames = replies
+
+        self.assertEqual("synchronized", sender.status)
+        self.assertEqual("synchronized", receiver.status)
+        self.assertEqual({"local", "remote"}, receiver.value)
+
+        empty_sender = SyncSender.from_open(
+            open_frame(session, topic, profile, receiver.value),
+            profile,
+            set(receiver.value),
+            [],
+        )
+        self.assertEqual(["sync/done"],
+                         [frame["type"] for frame in empty_sender.start()])
+
+    def test_sync_sender_enforces_window_and_exact_acknowledgements(self):
+        class FiveChunkProfile(JoinSetProfile):
+            def respond(self, value, remote_summary):
+                return SyncResponse(
+                    tuple(dumps([str(index)]) for index in range(5)),
+                    dumps([str(index) for index in range(5)]),
+                )
+
+        session = bytes(range(16))
+        topic = "demo/tasks"
+        profile = FiveChunkProfile()
+        sender = SyncSender.from_open(
+            open_frame(session, topic, profile, set()),
+            profile,
+            {"0", "1", "2", "3", "4"},
+            [],
+            window=2,
+        )
+        self.assertEqual([0, 1], [frame["index"] for frame in sender.start()])
+        with self.assertRaises(SyncError):
+            sender.receive({"v": 1, "type": "sync/ack", "session": session,
+                            "through": 2})
+        self.assertEqual(
+            [2],
+            [frame["index"] for frame in sender.receive(
+                {"v": 1, "type": "sync/ack", "session": session,
+                 "through": 0})],
+        )
+        self.assertEqual(
+            [3, 4],
+            [frame["index"] for frame in sender.receive(
+                {"v": 1, "type": "sync/ack", "session": session,
+                 "through": 2})],
+        )
+        done = sender.receive({"v": 1, "type": "sync/ack", "session": session,
+                               "through": 4})
+        self.assertEqual(["sync/done"], [frame["type"] for frame in done])
+        self.assertEqual("synchronized", sender.status)
+
+        invalid_open = open_frame(session, topic, profile, set())
+        invalid_open["ignored"] = True
+        with self.assertRaises(SyncError):
+            SyncSender.from_open(invalid_open, profile, set(), [])
 
     def test_root_profile_rejects_wrong_writer_and_conflict(self):
         profile = RootLogProfile("urd/a")

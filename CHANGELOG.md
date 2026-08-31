@@ -16,6 +16,9 @@ may make incompatible protocol changes.
 - Added Python signed publication creation/verification and a bounded ordered
   receiver with duplicate suppression, gap reporting, and state-sync frontier
   recovery.
+- Added the Python synchronization sender, including exact open/ACK schemas,
+  bounded cumulative-ACK flow control, and sender/receiver round-trip tests;
+  the JVM sender now rejects ACKs for chunks it has not sent.
 - Added a real three-peer secure WebSocket offline/rejoin test that converges
   both fenced-root and multiwriter join-semilattice profiles.
 - Added an exact configured-`wss` public-gateway dial policy; dynamic dialing of

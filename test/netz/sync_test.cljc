@@ -165,8 +165,17 @@
                                           :summary #{}}}
                                {:now 0})
           chunks (filter #(= :sync/chunk (:type (nth % 2 nil)))
-                         (:actions result))]
-      (is (= 2 (count chunks)))))
+                         (:actions result))
+          invalid (sync/handler (:state result)
+                                {:type :message :from :client
+                                 :payload {:type :sync/ack :session :s
+                                           :through 2}}
+                                {:now 1})]
+      (is (= 2 (count chunks)))
+      (is (= :invalid-ack
+             (:code (nth (first (:actions invalid)) 2)))
+          "an ACK cannot bypass the bounded unacknowledged window")
+      (is (empty? (:sessions (:state invalid))))))
 
   (testing "chunks do not mutate committed state before done"
     (let [topic "doc"
