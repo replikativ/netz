@@ -120,7 +120,8 @@ The first control fixture is published in `fixtures/profile-1.json` and
 exercised by both the Clojure and dependency-free Python codecs.
 `fixtures/kabel-cbor-1.json` pins the same item's four-byte serializer-14
 carrier prefix. That prefix is not part of the decoded envelope or any
-signature transcript.
+signature transcript. `fixtures/malformed-profile-1.txt` is the shared negative
+corpus: every listed byte string MUST be rejected by a profile-1 decoder.
 
 ## 5. Resource limits
 

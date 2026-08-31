@@ -1,0 +1,15 @@
+# Netz wire profile 1 malformed CBOR corpus.
+#
+# Format: case-name SP lowercase-hex. Every non-comment line MUST be rejected
+# by a profile-1 decoder. Keeping this as a text corpus lets implementations
+# consume it without first needing a JSON or CBOR library.
+non-minimal-uint 1801
+trailing-item 0102
+float f93c00
+indefinite-array 9f01ff
+integer-map-key a10101
+duplicate-map-key a2616101616102
+unknown-semantic-tag c101
+uint-above-int64 1b8000000000000000
+invalid-utf8 61ff
+noncanonical-map-order a2616201616102

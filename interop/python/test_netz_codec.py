@@ -138,6 +138,17 @@ class CodecTest(unittest.TestCase):
         with self.assertRaises(CBORError):
             dumps(b"x" * (MAX_STRING_BYTES + 1))
 
+    def test_shared_malformed_cbor_corpus(self):
+        corpus = ROOT / "spec/fixtures/malformed-profile-1.txt"
+        for raw_line in corpus.read_text().splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            case_name, encoded_hex = line.split(maxsplit=1)
+            with self.subTest(case=case_name):
+                with self.assertRaises(CBORError):
+                    loads(bytes.fromhex(encoded_hex))
+
     def test_sync_receiver_is_ordered_and_atomic(self):
         session = bytes(range(16))
         profile = JoinSetProfile()
