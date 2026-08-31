@@ -125,12 +125,16 @@ This extension is not part of the alpha interoperability claim yet.
       state, obeys one-piece receiver backpressure, fences authenticated
       receipts by session/layout/attempt, and durably records a verified signed
       receipt before releasing it to quorum accounting.
+- [x] Define the portable asynchronous transfer-store API and implement the JVM
+      reference file store with independently verified content-addressed
+      staging, atomic/fsynced installation markers, bounded cryptographically
+      verified receipt replay, and restart-resume integration tests.
 - [x] Implement a journal-first lifecycle machine with monotone leases,
       same-revision equivocation evidence, expiry, deletion retry, absorbing
       tombstones, and persist-before-emit deletion receipts. Simulator tests
       cover crash recovery and bulk expiry without sockets.
-- [ ] Implement the real Kabel/Noise transfer runtime, durable piece staging,
-      scrubbing, inventory exchange and restart recovery against file stores.
+- [ ] Implement the real Kabel/Noise transfer runtime, Node/browser durable
+      storage, scrubbing, inventory exchange and operational restart recovery.
 - [ ] Decide transparent Konserve wrapper semantics for binary streams,
       multi-key root-last batches, nested updates and read repair.
 - [ ] Pass real three-device JVM/JavaScript/Python conformance and operational
