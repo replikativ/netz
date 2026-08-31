@@ -32,6 +32,25 @@
                       org.clojure/test.check {:mvn/version "1.1.1"}}
          :exec-fn cognitect.test-runner.api/test}
 
+  ;; Integration gate for the unreleased secure-transport stack.  Keep these
+  ;; Git overrides out of the runtime graph: consumers continue to resolve the
+  ;; last released Kabel/Geheimnis coordinates until their respective PRs are
+  ;; released, while this checkout tests the exact reviewed commits.
+  :secure-test
+  {:extra-paths ["test"]
+   :override-deps
+   {org.replikativ/kabel
+    {:git/url "https://github.com/replikativ/kabel.git"
+     :git/sha "47151edb1b5438c9d8050496e21dcab684e1ff28"}
+    org.replikativ/geheimnis
+    {:git/url "https://github.com/replikativ/geheimnis.git"
+     :git/sha "ed95baf100456ea09c3d6ae4dd089049363785d2"}}
+   :extra-deps
+   {io.github.cognitect-labs/test-runner
+    {:git/tag "v0.5.1" :git/sha "dfb30dd"}
+    org.clojure/test.check {:mvn/version "1.1.1"}}
+   :exec-fn cognitect.test-runner.api/test}
+
   ;; The konserve-backed PPeerStore (netz.store.konserve). konserve is the
   ;; consumer's to provide, exactly as kabel keeps storage optional, so the
   ;; test lives on its own path and the default suite never loads it.
