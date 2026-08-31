@@ -1,0 +1,315 @@
+# Resilient blob-store profile
+
+Status: design draft. This is a proposed optional profile, not a durability or
+data-protection claim of the current Netz release.
+
+## Scope
+
+The profile makes immutable blobs held by an ordinary local Konserve store
+durable across a configured set of Netz peers. It is deliberately narrower than
+distributed Konserve synchronization:
+
+- `konserve-sync` replicates logical keys, mutable database heads and selected
+  reachable state;
+- this profile places immutable opaque blobs, obtains durable receipts and
+  repairs missing or corrupt replicas;
+- Urd, a CRDT profile or an explicitly lossy register decides how a mutable
+  name advances.
+
+The optional `konserve-netz` adapter can combine a local file store with this
+profile. Konserve and Netz core must not depend on one another: the adapter
+depends on both and delegates non-immutable operations to the local store.
+
+The current alpha seam is the explicit asynchronous
+`netz.store.konserve-replication/assoc-immutable!`. It marks the local value
+immutable, awaits the local Konserve commit, and only then awaits a supplied
+Netz quorum operation. It is deliberately not yet a transparent `PStore`
+wrapper: nested updates, binary stream replay, multi-key root-last ordering and
+read repair need explicit semantics before ordinary Konserve calls acquire
+network effects.
+
+This is a useful experiment for three data-centre nodes, independently operated
+party replicas, and intermittently connected personal devices. A Raspberry Pi
+at home is especially interesting as a private custodian: several devices under
+independent physical and administrative control avoid both one cloud-account
+failure and one operator seeing plaintext. It is not intended to replace Ceph
+or claim arbitrary distributed-transaction semantics.
+
+## Terms
+
+- **Object**: immutable opaque bytes identified by a cryptographic address.
+- **Replica**: one independently identified storage node that has durably
+  installed and verified an object.
+- **Failure domain**: an operator-declared provider, region, host or party.
+- **Target replication** (`N`): desired eligible replica count.
+- **Write acknowledgements** (`W`): distinct durable replica receipts required
+  before a write reports the requested durability.
+- **Complete**: the manifest and every chunk are durably installed and verified.
+- **Retention lease**: the bounded interval for which a replica is authorized
+  and obligated to retain an object.
+
+## Non-goals for profile 1
+
+- mutable-key conflict resolution;
+- distributed deletion without retained deletion state;
+- erasure coding;
+- open-network or anonymous storage;
+- Byzantine availability;
+- a DHT;
+- copying a backend's private physical file format.
+
+## Store composition
+
+```text
+application / Datahike
+        |
+        v
+konserve-netz adapter
+        |-- mutable values --> local Konserve / konserve-sync
+        `-- immutable blobs -> local Konserve + Netz replica controller
+                                                   |
+                                     placement, receipts, repair
+```
+
+The adapter uses two stores. The application store holds application values.
+A separate control store holds staging objects, the durable outbox, receipts,
+layout epochs, retention leases and repair work. Keeping them separate prevents
+replication metadata from recursively triggering replication.
+
+Konserve write hooks are sufficient for best-effort asynchronous mirroring, but
+not for quorum durability: hooks run after local success and their errors do not
+fail the write. A store promising `W` durable copies must therefore implement
+the Konserve protocols as a wrapper and await replica receipts itself.
+
+## Object and manifest
+
+The wire object is the logical byte sequence supplied to the adapter, not the
+local backend's serialized or encrypted file. A receiver verifies the logical
+bytes and may encode or encrypt them differently at rest.
+
+Large values are a manifest plus independently addressed chunks. A profile-1
+manifest contains at least:
+
+```clojure
+{:profile "netz/blob/1"
+ :cluster-id <opaque id>
+ :privacy-domain <opaque id>
+ :object-id <bytes>
+ :address-profile :sha-256
+ :length <non-negative integer>
+ :chunks [{:id <bytes> :offset 0 :length <positive integer>} ...]
+ :retention {:not-after <instant>}
+ :created-by <authority id>
+ :signature <bytes>}
+```
+
+The standard profile uses a language-neutral cryptographic address. A
+`:hasch-v1` compatibility profile may address existing Clojure stack values,
+but must not be presented as the portable standard.
+
+## Write protocol
+
+1. Stream the input into staging while computing chunk and object addresses.
+2. Verify any caller-supplied content address.
+3. Persist a replication intent before making success externally visible.
+4. Atomically install the local object, or verify that an identical object is
+   already installed.
+5. Select targets from the signed layout epoch and failure-domain policy.
+6. Offer the manifest; transfer chunks the target does not already hold.
+7. The target verifies and durably installs the complete object.
+8. The target emits a receipt only after durable installation completes.
+9. Return when the requested `W` eligible receipts exist.
+10. Retain repair work until the target `N` copies exist.
+
+A timeout after local installation must report both facts. It must never turn a
+local success into a false quorum success:
+
+```clojure
+{:error :netz.replication/quorum-unavailable
+ :local-committed? true
+ :durable-replicas 1
+ :required 2}
+```
+
+Immutable retries are idempotent. A crash at any boundary leaves either an
+unacknowledged staging object or a resumable durable intent.
+
+## Read and repair protocol
+
+Reads prefer the local store. A local miss or integrity failure causes the
+adapter to contact the deterministic target set and then other known providers.
+The first verified complete value is installed locally and returned. Missing or
+corrupt target replicas are scheduled for repair.
+
+Background repair compares desired placement with durable receipts and
+inventory. Profile 1 may use sorted, paginated object identifiers; a bucketed
+Merkle inventory can replace that representation without changing object
+transfer. Scrubbing re-reads local bytes and verifies their address.
+
+Current `netz.content` remains discovery and bounded transfer state. Its working
+set is not a durability catalogue. The replica controller is a separate pure
+state machine which may use content and chunk transfer underneath it.
+
+## Placement
+
+For three storage nodes, place every object on all three. At larger scale,
+deterministic rendezvous placement selects `N` nodes from a signed layout. Each
+node has stable identity and declared domains such as:
+
+```clojure
+{:id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ :domains {"owner" "alice"
+           "site" "alice-home"
+           "provider" "residential"
+           "region" "de-home"}}
+```
+
+An acknowledgement policy can require counts across domains, not merely hosts:
+
+```clojure
+{:replicas 3
+ :write-acks 2
+ :minimum-domains {"owner" 2
+                   "site" 2}}
+```
+
+Requiring distinct devices only protects against hardware loss. Requiring
+distinct `site` values also protects against a home outage; requiring distinct
+`owner` values adds an administrative/party boundary. A private three-person
+deployment can use `N=3,W=2` across three homes, while a single person can use a
+laptop, home Pi and a privately controlled remote device and constrain sites
+without falsely claiming three independent owners. Storage-only custodians do
+not need plaintext keys.
+
+A changed layout has a new signed epoch. Receipts from an old epoch remain
+evidence that bytes existed, but do not by themselves satisfy placement under
+the current layout.
+
+## Failure guarantees
+
+With `N=3`, `W=2`, and two required failure domains:
+
+- a successful quorum result proves at least two eligible durable copies;
+- the object remains recoverable after any one replica failure;
+- the two-node side of a 2-1 partition can continue quorum writes;
+- the singleton cannot report quorum durability;
+- after repair reaches all three replicas, any two replicas may be lost while
+  the object remains readable from the third;
+- corruption is detected, not silently interpreted as another version.
+
+Two failures immediately after a `W=2` receipt are not tolerated: the survivor
+might be the third target which had not received the object. `W=3` removes that
+window but makes every write wait for all three sites. `W=1` permits local
+progress but offers no machine-failure durability before repair.
+
+These are crash-fault and integrity-detection guarantees. Authenticated peers
+can still delete data or refuse service. Durability also depends on the local
+backend actually providing the persistence level named in its receipt.
+
+## Privacy, retention and erasure
+
+Replication makes privacy governance more important, not impossible. The
+system must not equate content-addressed with permanently retained.
+
+### Privacy domains
+
+Plain hashes of guessable personal data leak equality and permit dictionary
+testing. Private deployments therefore SHOULD use randomized authenticated
+encryption before addressing, or a keyed address scoped to a privacy domain.
+Provider discovery must be restricted to authorized peers. Cluster, object and
+manifest metadata must be assessed independently because metadata can itself
+identify people or relationships.
+
+Encryption keys and replica authorization are separate from peer discovery.
+Per-object data-encryption keys wrapped to authorized recipients give the
+narrowest revocation boundary. Destroying all key wraps is useful defence in
+depth, but profile 1 must support actual replica deletion and must not treat
+cryptographic erasure alone as universally sufficient.
+
+### Retention leases
+
+Every privacy-sensitive placement has a finite retention lease. The controller
+renews it while the purpose and lawful retention period continue. On expiry a
+replica stops serving, deletes the object and records a deletion receipt.
+Long-lived public or non-personal objects may use a distinct archival policy;
+indefinite retention must never be the accidental default.
+
+An intermittently connected replica creates an unavoidable choice: it cannot
+both serve indefinitely while offline and guarantee prompt receipt of an
+erasure instruction. A stale replica must reconcile the control plane before
+serving after its lease expires. Deployments choose a maximum offline interval
+consistent with their availability and erasure obligations.
+
+### Deletion and resurrection prevention
+
+A signed deletion marker prevents an old replica from reintroducing an object.
+It must remain until every replica has either acknowledged deletion or been
+administratively retired from the trust domain. A returning node synchronizes
+deletions and layout membership before it may announce or serve objects.
+
+Profile 1 should initially expose explicit deletion and deletion receipts while
+remaining conservative about automatic garbage collection. Backups, staging
+files, logs and repair queues are part of the erasure inventory.
+
+### Application responsibility
+
+An opaque object store cannot discover which objects concern a data subject.
+The application needs a subject/retention index or another effective erasure
+workflow. Advancing a Datahike root to corrected state does not erase personal
+data from historical commits or unreachable blobs. Datahike history and GC
+policy must be composed explicitly with replica deletion.
+
+The parties operating replicas also need declared roles and instructions. A
+topology does not decide whether they are controllers, joint controllers or
+processors. Placement policy should record permitted jurisdictions and parties,
+but legal basis, contracts, subject rights and transfer safeguards remain a
+deployment responsibility.
+
+This section is privacy-engineering guidance, not a claim that enabling a
+configuration makes a deployment legally compliant.
+
+## Test model
+
+The deterministic simulator gains a durable disk per node, staging/outbox state
+and the following faults:
+
+- message loss, duplication, delay and partition;
+- process crash with disk retained;
+- complete disk loss;
+- write failure and full disk;
+- object or chunk corruption;
+- layout change, retirement and node replacement;
+- lease expiry and a stale replica returning after deletion.
+
+Required invariants include:
+
+1. no durability result before `W` distinct eligible persistence completions;
+2. no complete receipt for a partial manifest;
+3. no receiver installs or serves bytes that fail their address check;
+4. every crash boundary resumes or remains honestly unacknowledged;
+5. a healed cluster repairs toward `N` when capacity exists;
+6. placement satisfies configured failure domains;
+7. an expired replica does not serve before reconciliation;
+8. a deletion marker prevents resurrection;
+9. no automatic collection deletes an object with a live retention lease.
+
+Integration tests use three real file stores and real Netz/Kabel/Noise peers.
+The demonstration uploads an encrypted chunked blob with `N=3,W=2` to three
+private devices at independent sites, stops the uploader, retrieves from
+another node, wipes and rebuilds a replica, tests a 2-1 partition, and shows
+expiry/deletion reconciliation for an offline home node. It reports which
+owner/site constraints a receipt actually satisfies rather than implying that
+three process IDs represent three independent failure domains.
+
+## Implementation order
+
+1. Freeze `netz/blob/1`, receipt, layout and retention schemas with canonical
+   CBOR fixtures.
+2. Implement pure placement and replica-controller transitions.
+3. Add the simulator disk/fault model and property invariants.
+4. Implement acknowledged, resumable chunk transfer and durable outbox recovery.
+5. Publish the optional `konserve-netz` adapter.
+6. Add the three-node file-store demonstration and operational status API.
+7. Add JVM/Node/Python conformance for manifests and receipts.
+8. Design distributed deletion/GC from measured behaviour before enabling
+   automatic reclamation.

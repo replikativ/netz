@@ -17,6 +17,12 @@ profile-1 dissemination envelope. Its application payload is an opaque byte
 string: relays verify the exact bytes and never need to decode Boring, CBOR, or
 an application-specific format.
 
+`netz_protocol.replication` implements the transport-independent deterministic
+placement portion of the experimental durable-blob extension. It understands
+owner and physical-site failure domains and shares the
+`spec/fixtures/blob-placement-1.json` known-answer corpus with Clojure. Transfer
+receipts and the Konserve adapter are not yet part of the Python API.
+
 This does not replace a full CBOR implementation for application values.
 Application payloads are opaque bytes and may use Boring's registered tags;
 Python applications can decode those with `cbor2` and the small tag hooks in

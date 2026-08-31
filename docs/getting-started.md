@@ -79,10 +79,9 @@ reference while the API is alpha.
 
 ## Authenticated transport
 
-The public-network path uses Kabel CBOR inside Noise. Until the pending Kabel
-and Geheimnis releases land, resolve the commits pinned by Netz's
-`:secure-test` alias. Construct the peer with the same identity that starts the
-overlay:
+The public-network path uses Kabel CBOR inside Noise through the released Kabel
+and Geheimnis coordinates in `deps.edn`. Construct the peer with the same
+identity that starts the overlay:
 
 ```clojure
 (require '[kabel.middleware.cbor :refer [cbor]]

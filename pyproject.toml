@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "netz-protocol"
 version = "0.1.0a1"
-description = "Dependency-free CBOR and synchronization core for the Netz P2P protocol"
+description = "Dependency-free CBOR, synchronization, and replica-placement core for Netz"
 readme = "interop/python/README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"

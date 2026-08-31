@@ -27,6 +27,7 @@ outside the Clojure ecosystem.
 | Membership | Bounded peer exchange, dialing, backoff, and topology diversity |
 | Dissemination | Signed topic messages, deduplication, and bounded repair |
 | Content | Content-addressed block discovery and subtree transfer |
+| Durable blobs | Experimental private replica placement, receipts, and repair |
 | Synchronization | Pure acknowledged sessions with application-defined profiles |
 | Runtime | Kabel/WebSocket integration, limits, lifecycle, and persistence hooks |
 
@@ -47,6 +48,12 @@ node target/node-tests.js
 python3 -m unittest discover -s interop/python -v
 python3 -m pip wheel . --no-deps --wheel-dir /tmp/netz-python-dist
 clojure -T:build jar
+```
+
+The complete Python suite needs the optional secure client dependencies first:
+
+```sh
+python3 -m pip install '.[secure-client]'
 ```
 
 Maintainers with sibling checkouts can also run the real stack seams without
@@ -77,6 +84,15 @@ A Kademlia DHT is deliberately not required. Bounded peer exchange and
 two-hop provider discovery cover the current deployments; a DHT can later be
 added as another routing provider without changing application sync.
 
+The experimental durable-blob profile treats owner and physical site as
+explicit failure domains. Its small executable walkthrough models encrypted
+data held by three private home devices, quorum at two copies, and repair after
+one device is lost:
+
+```sh
+clojure -M:blob-demo
+```
+
 ## Documentation
 
 - [Getting started](docs/getting-started.md) — dependencies, lifecycle, and API
@@ -84,6 +100,8 @@ added as another routing provider without changing application sync.
 - [Synchronization](docs/synchronization.md) — live, repair, and state-sync paths
 - [Interoperability](docs/interoperability.md) — AT Protocol, libp2p, Willow, and DHT fit
 - [Protocol draft](spec/netz-draft-00.md) — portable API and CBOR wire profile
+- [Durable blob design](docs/resilient-blob-store.md) and
+  [extension draft](spec/blob-replication-draft-00.md) — optional private replicas
 - [Python interoperability core](interop/python/README.md) — CBOR and sync seed
 - [Release readiness](RELEASE.md), [security policy](SECURITY.md), and
   [changelog](CHANGELOG.md)

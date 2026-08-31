@@ -44,9 +44,27 @@ from .publication import (
     verify_publication,
 )
 from .dissemination import OrderedReceiver, Publisher, ReceiveResult
+from .replication import (
+    ReplicationError,
+    domain_counts,
+    place as place_replicas,
+    rank as rank_replicas,
+    score as replica_score,
+)
+from .blob import (
+    BlobError,
+    assemble as assemble_blob,
+    manifest_address as blob_manifest_address,
+    need_bitmap as blob_need_bitmap,
+    needed_indices as blob_needed_indices,
+    object_address as blob_object_address,
+    piece_address as blob_piece_address,
+    split_blob,
+)
 
 __all__ = [
     "CBORError",
+    "BlobError",
     "CommitReceipt",
     "FramingError",
     "IdentityError",
@@ -57,6 +75,7 @@ __all__ = [
     "PublicationError",
     "Publisher",
     "ReceiveResult",
+    "ReplicationError",
     "ROOT_PROFILE",
     "RootLogProfile",
     "SyncError",
@@ -65,6 +84,12 @@ __all__ = [
     "SyncResponse",
     "SyncSender",
     "authority_id",
+    "assemble_blob",
+    "blob_manifest_address",
+    "blob_need_bitmap",
+    "blob_needed_indices",
+    "blob_object_address",
+    "blob_piece_address",
     "dumps",
     "decode_kabel",
     "decode_websocket",
@@ -77,8 +102,13 @@ __all__ = [
     "identity_record_bytes",
     "loads",
     "open_frame",
+    "place_replicas",
     "publication_signing_bytes",
+    "rank_replicas",
+    "replica_score",
+    "domain_counts",
     "routing_id",
     "sign_publication",
+    "split_blob",
     "verify_publication",
 ]

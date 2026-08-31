@@ -43,6 +43,13 @@ Netz does not own:
 - storage layout or at-rest encryption;
 - UI reactivity and application orchestration.
 
+Optional profiles may compose these policies without moving them into Netz
+core. In particular, the [resilient blob-store profile](resilient-blob-store.md)
+adds replica placement, durable receipts and repair through a separate
+`konserve-netz` adapter. `konserve-sync` remains responsible for logical key and
+database synchronization; the blob profile does not infer mutable-value
+semantics.
+
 This separation is a security property. Peer exchange is useful discovery but
 cannot add a Raft voter, grant a write capability, or confer access to an
 encrypted store.

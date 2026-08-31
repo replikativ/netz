@@ -73,6 +73,9 @@
   :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.2"}}
          :main-opts ["-m" "cljfmt.main" "fix"]}
 
+  :blob-demo {:extra-paths ["examples"]
+              :main-opts ["-m" "netz.examples.private-blob"]}
+
   :build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.6"}
                  slipset/deps-deploy {:mvn/version "0.2.2"}}
           :ns-default build}}}

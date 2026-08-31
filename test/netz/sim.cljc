@@ -41,7 +41,7 @@
       [:timer      <delay-ms> <payload>]
       [:connect    <to-id> <address> <first-frame>]
       [:disconnect <to-id>]
-      [:persist    <key> <value>]
+      [:persist    <key> <value> [completion-payload]]
       [:deliver    <source-id> <topic> <payload> <publication>]
 
   `:connect` and `:disconnect` exist because opening a transport is not a
@@ -134,7 +134,9 @@
       :stats {:sent 0 :delivered 0 :dropped-partition 0
               :dropped-loss 0 :dropped-down 0 :dropped-overflow 0
               :dropped-bandwidth 0 :duplicated 0 :timers 0 :connects 0
-              :persist-attempts 0 :persisted 0}})))
+              :persist-attempts 0 :persisted 0
+              :persist-write-failed 0 :persist-full 0
+              :disk-losses 0 :corruptions 0}})))
 
 (def ^:private size-overhead 2)
 
@@ -202,7 +204,10 @@
                                              (fn [initial durable]
                                                (assoc initial :persisted durable)))
                                 :state (decorate init-state)})
-         (assoc-in [:storage id] {:durable {}})
+         (assoc-in [:storage id] {:durable {}
+                                  :generation 0
+                                  :writable? true
+                                  :capacity-bytes nil})
          (enqueue {:at (:now sim) :kind :init :to id})))))
 
 ;; =============================================================================
@@ -288,6 +293,48 @@
       (notify-disconnect id)
       (update :nodes dissoc id)
       (update :storage dissoc id)))
+
+(defn set-disk-writable
+  "Enable or disable durable writes for `id`. Reads and already durable values
+  remain available. Pending writes observe the setting when they complete."
+  [sim id writable?]
+  (assoc-in sim [:storage id :writable?] (boolean writable?)))
+
+(defn set-disk-capacity
+  "Set the notional byte capacity for `id`, or nil for unlimited capacity."
+  [sim id capacity]
+  (when-not (or (nil? capacity)
+                (and (int? capacity) (not (neg? capacity))))
+    (throw (ex-info "Invalid simulated disk capacity"
+                    {:type :netz.sim/invalid-disk-capacity
+                     :capacity capacity})))
+  (assoc-in sim [:storage id :capacity-bytes] capacity))
+
+(defn lose-disk
+  "Lose all durable values for `id` while leaving the process running.
+
+  Incrementing the disk generation prevents a write already queued against the
+  lost device from silently landing on its replacement. The node receives a
+  `:disk-lost` event so a protocol can invalidate volatile inventory."
+  [sim id]
+  (let [generation (inc (get-in sim [:storage id :generation] 0))]
+    (-> sim
+        (assoc-in [:storage id :durable] {})
+        (assoc-in [:storage id :generation] generation)
+        (update-in [:stats :disk-losses] inc)
+        (enqueue {:at (:now sim) :kind :disk-lost :to id}))))
+
+(defn corrupt-durable
+  "Replace one durable value without changing its key.
+
+  The explicit replacement keeps corruption deterministic and lets a protocol
+  prove that it verifies the content address rather than trusting the key."
+  [sim id key replacement]
+  (-> sim
+      (assoc-in [:storage id :durable key] replacement)
+      (update-in [:stats :corruptions] inc)
+      (enqueue {:at (:now sim) :kind :disk-corrupt
+                :to id :key key})))
 
 (defn partition-network
   "Split the network into groups: a map of `node-id -> group`.
@@ -452,16 +499,19 @@
     (update-in sim [:stats :sync-committed] (fnil inc 0))
 
     :persist
-    (let [[k v] args
-          generation (get-in sim [:nodes from :generation])]
+    (let [[k v completion] args
+          node-generation (get-in sim [:nodes from :generation])
+          disk-generation (get-in sim [:storage from :generation])]
       (-> sim
           (update-in [:stats :persist-attempts] inc)
           (enqueue {:at (+ (:now sim) (get-in sim [:opts :persist-latency-ms]))
                     :kind :persist-complete
                     :to from
-                    :generation generation
+                    :node-generation node-generation
+                    :disk-generation disk-generation
                     :key k
-                    :value v})))
+                    :value v
+                    :completion completion})))
 
     :disconnect
     (let [[to] args]
@@ -498,7 +548,13 @@
                  :init {:type :init}
                  :message {:type :message :from from :payload payload}
                  :timer {:type :timer :payload payload}
-                 :disconnected {:type :disconnected :peer from})
+                 :disconnected {:type :disconnected :peer from}
+                 :disk-lost {:type :disk-lost}
+                 :disk-corrupt {:type :disk-corrupt :key (:key event)}
+                 :persist-result {:type :persist-result
+                                  :key (:key event)
+                                  :result (:result event)
+                                  :payload payload})
             {new-state :state actions :actions}
             (handler state ev {:id to :now (:now sim)})
             sim (-> sim
@@ -509,14 +565,46 @@
                   sim)]
         (reduce (fn [s a] (apply-action s to a)) sim (or actions []))))))
 
+(defn- durable-size [durable]
+  (reduce-kv (fn [total key value]
+               (+ total (estimate-size key) (estimate-size value)))
+             0 durable))
+
+(defn- persist-result [sim event result]
+  (let [{:keys [to completion]} event]
+    (if (and completion (up? sim to))
+      (enqueue sim {:at (:now sim) :kind :persist-result :to to
+                    :key (:key event) :result result
+                    :payload completion})
+      sim)))
+
 (defn- complete-persist
-  [sim {:keys [to generation key value] :as event}]
-  (if (= generation (get-in sim [:nodes to :generation]))
-    (-> sim
-        (assoc-in [:storage to :durable key] value)
-        (update-in [:stats :persisted] inc)
-        (record event))
-    sim))
+  [sim {:keys [to node-generation disk-generation key value] :as event}]
+  (let [same-process? (= node-generation (get-in sim [:nodes to :generation]))
+        same-disk? (= disk-generation (get-in sim [:storage to :generation]))
+        writable? (get-in sim [:storage to :writable?])
+        durable (get-in sim [:storage to :durable])
+        proposed (assoc durable key value)
+        capacity (get-in sim [:storage to :capacity-bytes])]
+    (cond
+      (or (not same-process?) (not same-disk?)) sim
+
+      (not writable?)
+      (-> sim
+          (update-in [:stats :persist-write-failed] inc)
+          (persist-result event :write-failed))
+
+      (and capacity (> (durable-size proposed) capacity))
+      (-> sim
+          (update-in [:stats :persist-full] inc)
+          (persist-result event :full))
+
+      :else
+      (-> sim
+          (assoc-in [:storage to :durable key] value)
+          (update-in [:stats :persisted] inc)
+          (record event)
+          (persist-result event :ok)))))
 
 ;; =============================================================================
 ;; Running

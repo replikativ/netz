@@ -98,6 +98,31 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       rejected before negotiation, and the documentation makes no rotation
       interoperability claim.
 
+## Experimental durable-blob extension
+
+This extension is not part of the alpha interoperability claim yet.
+
+- [x] Separate immutable blob durability from `konserve-sync` logical-key and
+      database synchronization.
+- [x] Define deterministic rendezvous placement over verified full Authority
+      IDs with explicit owner/site constraints and shared Clojure/Python
+      fixtures.
+- [x] Enforce a durable-outbox transition before network stores, fence retries
+      by attempt, and simulate crash recovery, partitions, disk loss, full and
+      failed disks, corruption notification, and repair.
+- [x] Freeze portable object, piece and transfer-manifest addresses plus the
+      bounded resume bitmap in JVM/JavaScript/Python fixtures.
+- [x] Provide an explicit optional Konserve immutable-write seam and a runnable
+      three-private-device demonstration without claiming a transparent store.
+- [ ] Freeze authenticated offer/piece, retention-manifest, signed storage
+      receipt, lease, deletion-marker and deletion-receipt schemas.
+- [ ] Implement the real Kabel/Noise transfer runtime, durable piece staging,
+      scrubbing, inventory exchange and restart recovery against file stores.
+- [ ] Decide transparent Konserve wrapper semantics for binary streams,
+      multi-key root-last batches, nested updates and read repair.
+- [ ] Pass real three-device JVM/JavaScript/Python conformance and operational
+      lease/deletion tests before advertising the capability.
+
 ## Required before calling wire profile 1 interoperable
 
 - [x] Authority derivation and identity-record transcripts use the draft's

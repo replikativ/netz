@@ -58,7 +58,8 @@
    :stats {:connects 0 :dropped-loss 0 :dropped-partition 2
            :delivered 16 :sent 13 :timers 0 :persisted 0 :dropped-down 0
            :persist-attempts 0 :dropped-overflow 0 :duplicated 2
-           :dropped-bandwidth 0}
+           :dropped-bandwidth 0 :persist-write-failed 0 :persist-full 0
+           :disk-losses 0 :corruptions 0}
    :bytes-sent {:n0 114 :n1 54 :n2 54 :n3 82}
    :peak-time-bytes {:n0 52 :n1 28 :n2 28 :n3 56}
    :peak-inflight 3
