@@ -98,17 +98,26 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       full Authority ID, routing projection, and record-signing bytes.
 - [x] Authentication uses the full 32-byte Authority ID; the compact UUID is
       retained only as Kabel's routing projection.
-- [ ] Convert gossip signature bytes from host-native `hasch/edn-hash` to the
-      deterministic profile-1 envelope and publish a signature fixture.
-- [ ] Move publication values across the standards boundary as opaque bytes so
+- [x] Convert gossip signature bytes from host-native `hasch/edn-hash` to the
+      deterministic profile-1 envelope and publish a JVM/JS/Python signature
+      fixture. The native Kabel adapter remains an explicitly transitional
+      compatibility profile.
+- [x] Move publication values across the standards boundary as opaque bytes so
       registered Boring tags survive unchanged and relays never reconstruct
-      host-language values for signature verification.
+      host-language values for signature verification. Strict encode/decode,
+      self-verifying envelope, and bounded Python ordered receiver now exist.
 - [ ] Route handshake, dissemination, content, and sync runtime messages through
       `netz.wire` rather than native Clojure values. Strict sync-frame conversion
       exists, but is not enabled without capability negotiation.
-- [ ] Add canonical identity, signature and malformed-input fixtures.
-- [ ] Implement capability/version negotiation.
-- [ ] Complete a Python identity/handshake/dissemination/sync client.
+- [x] Add canonical identity, publication signature and malformed-input
+      fixtures.
+- [x] Implement cryptographically bound capability/version negotiation in the
+      Noise handshake. Runtime codec selection remains the separate item above;
+      `wire/netz-cbor/1` is not aliased to the transitional `netz/1` token.
+- [ ] Complete a Python identity/handshake/dissemination/sync client. The
+      identity, secure carrier, signed publisher, bounded ordered receiver, and
+      atomic sync receiver exist; outbound sync, subscription repair and
+      reconnect orchestration remain.
 - [x] The optional Python secure-client prototype signs and verifies identity
       records, binds Authority IDs to authenticated Noise statics, enforces the
       expected dial target, fragments bounded inner frames, and passes a real

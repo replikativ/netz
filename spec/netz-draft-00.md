@@ -299,6 +299,24 @@ Its Ed25519 signature covers the deterministic encoding of that map prefixed
 with `netz/gossip/v1\0`. Forwarding metadata (`hops`, previous transport peer)
 is outside the origin signature and MUST be locally bounded.
 
+The complete self-verifying envelope adds:
+
+~~~text
+{
+  "genesis": <Genesis>, "operational": <32 bytes>,
+  "signature": <64 bytes>, "hops": <uint64>,
+  "repair": true                         # optional
+}
+~~~
+
+The genesis MUST derive `origin`, `operational` MUST occur in its operational
+key set, and the signature MUST verify before authorization, deduplication, or
+forwarding. `repair` may only be the value `true`; absence means false. Relays
+may increment `hops` and set `repair`, but MUST NOT modify a signed field.
+`fixtures/publication-1.json` pins the signing bytes, Ed25519 signature, and
+complete deterministic envelope. JVM, JavaScript, and Python consume the same
+values.
+
 The topic's application profile defines `payload`. A CBOR application may use
 the full registered-tag vocabulary accepted by that profile; a non-CBOR
 application may use another deterministic or self-describing encoding. Relays
@@ -330,6 +348,12 @@ by the committed state; buffered values at or below those frontiers are
 subsumed and the contiguous suffix above them is released.
 Overflow MUST restart state synchronization; it MUST NOT be treated as a gap
 that recent-message repair can necessarily observe.
+
+An ordered WebSocket or Kabel connection does not remove this requirement. A
+publication can arrive through several relays, after reconnection, or from an
+asynchronous producer that completed work out of order before enqueueing it.
+Transport FIFO orders one connection only; publication sequence and the
+application commit lane define the end-to-end order.
 
 ## 9. State synchronization
 
@@ -437,6 +461,13 @@ policy.
 
 Future QUIC, WebTransport or libp2p bindings MUST preserve the same identified
 connection, bounded-send and ordered-sync semantics.
+
+The capability `wire/netz-cbor/1` selects the strict text-key profile in this
+document. It is distinct from the transport capability and MUST be negotiated
+before a Clojure implementation replaces its transitional native Kabel
+control values. Implementations MUST NOT reinterpret the older `netz/1`
+capability as this wire profile; doing so would make an existing connection
+appear compatible while changing every decoded message shape.
 
 ## 12. Conformance and stability gate
 

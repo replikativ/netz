@@ -20,6 +20,15 @@ from netz_protocol.identity import (
     identity_record_bytes,
     routing_id,
 )
+from netz_protocol.publication import (
+    PublicationError,
+    decode_publication,
+    encode_publication,
+    sign_publication,
+    signing_bytes as publication_signing_bytes,
+    verify_publication,
+)
+from netz_protocol.dissemination import OrderedReceiver, Publisher
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -82,6 +91,91 @@ class CodecTest(unittest.TestCase):
                 7,
             ).hex(),
         )
+
+    def test_shared_signed_publication(self):
+        fixture = json.loads(
+            (ROOT / "spec/fixtures/publication-1.json").read_text())
+        diagnostic = fixture["diagnostic"]
+        value = genesis(
+            [bytes.fromhex(diagnostic["rotation_public_hex"])], 1,
+            [bytes.fromhex(diagnostic["operational_public_hex"])],
+            bytes.fromhex(diagnostic["revoke_hex"]),
+        )
+        publication = sign_publication(
+            value, bytes.fromhex(diagnostic["operational_private_hex"]),
+            epoch=diagnostic["epoch"], sequence=diagnostic["seq"],
+            topic=diagnostic["topic"],
+            payload=bytes.fromhex(diagnostic["payload_hex"]),
+        )
+        self.assertEqual(fixture["authority_id_hex"], publication["origin"].hex())
+        self.assertEqual(fixture["signature_hex"], publication["signature"].hex())
+        self.assertEqual(
+            fixture["signing_bytes_hex"],
+            publication_signing_bytes(
+                publication["origin"], publication["epoch"], publication["seq"],
+                publication["topic"], publication["payload"],
+            ).hex(),
+        )
+        self.assertEqual(fixture["canonical_cbor_hex"],
+                         encode_publication(publication).hex())
+        self.assertEqual(publication, decode_publication(bytes.fromhex(
+            fixture["canonical_cbor_hex"])))
+
+        with self.assertRaises(PublicationError):
+            verify_publication({**publication, "payload": b"tampered"})
+        with self.assertRaises(PublicationError):
+            verify_publication({**publication, "extension": True})
+
+    def test_python_dissemination_orders_across_paths_and_repairs(self):
+        fixture = json.loads(
+            (ROOT / "spec/fixtures/publication-1.json").read_text())
+        diagnostic = fixture["diagnostic"]
+        value = genesis(
+            [bytes.fromhex(diagnostic["rotation_public_hex"])], 1,
+            [bytes.fromhex(diagnostic["operational_public_hex"])],
+            bytes.fromhex(diagnostic["revoke_hex"]),
+        )
+        publisher = Publisher(
+            value, bytes.fromhex(diagnostic["operational_private_hex"]), epoch=9
+        )
+        publications = [publisher.publish("demo/tasks", bytes([item]))
+                        for item in range(4)]
+        receiver = OrderedReceiver(max_pending_per_stream=3)
+
+        later = receiver.receive(publications[2])
+        self.assertEqual(((0, 1),), later.gaps)
+        self.assertEqual((), later.delivered)
+        first = receiver.receive(publications[0])
+        self.assertEqual([0], [item["seq"] for item in first.delivered])
+        repaired = receiver.receive(publications[1])
+        self.assertEqual([1, 2], [item["seq"] for item in repaired.delivered])
+        self.assertTrue(receiver.receive(publications[2]).duplicate)
+
+        other_topic = publisher.publish("demo/other", b"independent")
+        self.assertEqual((other_topic,), receiver.receive(other_topic).delivered)
+
+    def test_python_dissemination_overflow_requires_state_sync(self):
+        fixture = json.loads(
+            (ROOT / "spec/fixtures/publication-1.json").read_text())
+        diagnostic = fixture["diagnostic"]
+        value = genesis(
+            [bytes.fromhex(diagnostic["rotation_public_hex"])], 1,
+            [bytes.fromhex(diagnostic["operational_public_hex"])],
+            bytes.fromhex(diagnostic["revoke_hex"]),
+        )
+        publisher = Publisher(
+            value, bytes.fromhex(diagnostic["operational_private_hex"]), epoch=10
+        )
+        publications = [publisher.publish("demo/tasks", bytes([item]))
+                        for item in range(5)]
+        receiver = OrderedReceiver(max_pending_per_stream=2)
+        receiver.receive(publications[2])
+        receiver.receive(publications[3])
+        overflow = receiver.receive(publications[4])
+        self.assertTrue(overflow.state_sync_required)
+        stream = receiver.stream(publications[2])
+        committed = receiver.commit_frontiers({stream: 2})
+        self.assertEqual([3], [item["seq"] for item in committed.delivered])
 
     def test_shared_known_answer(self):
         fixture, value = self.fixture()

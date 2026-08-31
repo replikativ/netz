@@ -51,6 +51,7 @@
             [netz.content :as content]
             [netz.dissemination :as d]
             [netz.identity :as id]
+            [netz.publication :as publication]
             [netz.ratelimit :as rl]
             [netz.overlay :as overlay]
             [kabel.peer :as peer]
@@ -286,6 +287,9 @@
   (go-try S
           (let [{:keys [genesis operational]} identity
                 msg (assoc msg :origin-authority (id/authority-id genesis))
+                msg (cond-> msg
+                      (publication/portable? msg)
+                      (assoc :wire-version 1))
                 sig (<? S (id/sign (:private operational) (d/signing-bytes msg)))]
             (assoc msg
                    :origin-genesis genesis

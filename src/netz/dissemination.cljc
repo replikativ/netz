@@ -54,30 +54,31 @@
             [netz.topics :as topics]
             [netz.identity :as id]
             [netz.interval-set :as is*]
+            [netz.publication :as publication]
             [netz.sim.rng :as rng]))
 
 ;; =============================================================================
 ;; Authenticated publishes
 ;; =============================================================================
 
-(def signing-tag "netz/gossip/v1")
-
 (defn signing-bytes
-  "Canonical bytes a publisher signs, and every hop verifies.
+  "Language-neutral bytes a profile-1 publisher signs and every hop verifies.
 
   Covers the message *identity* as well as its content — `origin`, `epoch` and
   `seq` alongside `topic` and `payload` — so a signature cannot be lifted off
   one message and reattached to another position in the stream. Without
   `origin` a relay could re-attribute a publish; without `seq` it could replay
-  one as a later message.
-
-  Hashed with `hasch/edn-hash` rather than `pr-str` because the bytes must be
-  identical on both platforms: map key iteration order is not, and a signature
-  over `pr-str` output would verify on the JVM and fail in the browser for
-  payloads that happen to contain a map."
-  [{:keys [origin origin-authority epoch seq topic payload]}]
-  (id/seq->bytes
-   (edn-hash [signing-tag origin-authority origin epoch seq topic payload])))
+  one as a later message. The payload is signed as exact opaque bytes, so a
+  relay never reconstructs a host-language value."
+  [{:keys [origin origin-authority epoch seq topic payload] :as message}]
+  (if (= 1 (:wire-version message))
+    (publication/signing-bytes message)
+    ;; Transitional native Kabel profile. It remains available so the current
+    ;; Clojure stack can migrate one application profile at a time, but is not
+    ;; an interoperable Netz wire profile.
+    (id/seq->bytes
+     (edn-hash ["netz/gossip/v1" origin-authority origin epoch seq
+                topic payload]))))
 
 (defn signed?
   "Does this message carry publisher credentials?"

@@ -12,6 +12,11 @@ routing projection from the same deterministic genesis fixture as the JVM and
 JavaScript implementation. Only the full Authority ID is an authentication
 identifier.
 
+`netz_protocol.publication` constructs and verifies the complete signed
+profile-1 dissemination envelope. Its application payload is an opaque byte
+string: relays verify the exact bytes and never need to decode Boring, CBOR, or
+an application-specific format.
+
 This does not replace a full CBOR implementation for application values.
 Application payloads are opaque bytes and may use Boring's registered tags;
 Python applications can decode those with `cbor2` and the small tag hooks in
@@ -42,10 +47,12 @@ Run the shared fixture tests from this directory:
 python3 -m unittest -v test_netz_codec.py
 ```
 
-This is intentionally a protocol core, not yet a complete network client. The
-session receiver is bounded, ordered and atomic, and carrier framing is pinned,
-but a useful client also needs the final identity/signature fixtures, capability
-handshake, the outbound half of the sync window, and reconnect policy.
+This is intentionally a protocol core plus a conformance carrier, not yet a
+high-level reconnecting application client. The session receiver is bounded,
+ordered and atomic; carrier framing, identities, signed publications and the
+secure capability handshake are pinned. Outbound synchronization orchestration,
+subscription repair, discovery policy, and reconnect/backoff remain explicit
+application-client work.
 
 The experimental optional secure-client layer can be installed with:
 
