@@ -75,8 +75,9 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       remains supported and its writes await adapter completion.
 - [ ] Public deployments need DNS/private-address/redirect policy in addition
       to the socket frame limit.
-- [ ] Subtree disconnect handling should retry immediately rather than waiting
-      for the bounded deadline.
+- [x] Subtree disconnect handling retries an alternate provider immediately,
+      resets attempt-local counters after partial delivery, and leaves stale
+      deadlines unable to complete the replacement attempt.
 - [ ] Root records need an independently verifiable publisher/signature binding.
 - [ ] Rotation-chain and revocation distribution must be implemented or remain
       explicitly unsupported in every advertised protocol version.
