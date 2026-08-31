@@ -335,7 +335,8 @@
   [peer]
   (or (:netz.overlay/connections @peer)
       (-> (swap! peer update :netz.overlay/connections
-                 (fn [existing] (or existing (atom {:by-id {} :outbox {}}))))
+                 (fn [existing]
+                   (or existing (atom {:by-id {} :facts {} :outbox {}}))))
           :netz.overlay/connections)))
 
 (defn connections
@@ -351,21 +352,51 @@
   [peer peer-id]
   (get-in @(registry peer) [:by-id peer-id]))
 
+(defn connection-info
+  "Authenticated facts retained for the current connection to `peer-id`.
+
+  The map is deliberately transport-neutral:
+
+      :authenticated? true
+      :transport      :noise | :signed-hello
+      :routing-id     Kabel's compact routing projection
+      :authority-id   the full 32-byte Authority ID as lowercase hex
+      :capabilities   the cryptographically negotiated capability set
+      :identity-record the verified Netz identity record
+      :handshake-hash  the Noise transcript hash when Noise is used
+
+  A legacy signed-hello connection has an empty capability set.  Callers MUST
+  therefore check an exact capability here before changing a wire format; the
+  fact that a peer authenticated is not evidence that it understands the
+  portable profile.  Returns nil when there is no current connection."
+  [peer peer-id]
+  (get-in @(registry peer) [:facts peer-id]))
+
+(defn connection-supports?
+  "Whether the current authenticated connection negotiated `capability`."
+  [peer peer-id capability]
+  (boolean (contains? (:capabilities (connection-info peer peer-id)) capability)))
+
 (defn- register!
   "Bind `peer-id` to `out`, and flush anything queued for it.
 
   The outbox exists because a dial is issued before the remote's identity is
   known: `:connect` opens a socket to an *address*, and the frame can only be
   released once a peer presenting the expected *id* has proved it."
-  [S peer peer-id out]
-  (let [reg (registry peer)
-        pending (get-in @reg [:outbox peer-id])]
-    (swap! reg (fn [r] (-> r
-                           (assoc-in [:by-id peer-id] out)
-                           (update :outbox dissoc peer-id))))
-    (doseq [m pending]
-      (put? S out m))
-    peer-id))
+  ([S peer peer-id out]
+   (register! S peer peer-id out nil))
+  ([S peer peer-id out facts]
+   (let [reg (registry peer)
+         pending (get-in @reg [:outbox peer-id])]
+     (swap! reg (fn [r]
+                  (cond-> (-> r
+                              (assoc-in [:by-id peer-id] out)
+                              (update :outbox dissoc peer-id))
+                    facts (assoc-in [:facts peer-id] facts)
+                    (nil? facts) (update :facts dissoc peer-id))))
+     (doseq [m pending]
+       (put? S out m))
+     peer-id)))
 
 (defn- unregister!
   "Drop every binding pointing at `out`. Returns the peer ids removed.
@@ -379,8 +410,10 @@
         removed (->> (:by-id @reg)
                      (filter (fn [[_ o]] (= o out)))
                      (mapv key))]
-    (swap! reg update :by-id
-           (fn [m] (apply dissoc m removed)))
+    (swap! reg (fn [r]
+                 (-> r
+                     (update :by-id (fn [m] (apply dissoc m removed)))
+                     (update :facts (fn [m] (apply dissoc m removed))))))
     removed))
 
 (defn- log-rejected
@@ -641,7 +674,14 @@
                                                 local-authority-id our-nonce
                                                 signature)))
                                 (reset! conn-peer-id
-                                        (register! S peer (:netz/peer-id record) out))
+                                        (register!
+                                         S peer (:netz/peer-id record) out
+                                         {:authenticated? true
+                                          :transport :signed-hello
+                                          :routing-id (:netz/peer-id record)
+                                          :authority-id (:netz/authority-id record)
+                                          :capabilities #{}
+                                          :identity-record record}))
                                 (reset! handshake-state :complete)
                                 (doseq [app @pending-app]
                                   (>? S pass-in app))
@@ -663,7 +703,20 @@
                        (= routing-id (:netz/peer-id record))
                        (= authority (:netz/authority-id record)))
                   (do
-                    (reset! conn-peer-id (register! S peer routing-id out))
+                    (reset! conn-peer-id
+                            (register!
+                             S peer routing-id out
+                             {:authenticated? true
+                              :transport :noise
+                              :routing-id routing-id
+                              :authority-id authority
+                              :capabilities
+                              (set (or (:kabel.transport/negotiated-capabilities
+                                        facts)
+                                       #{}))
+                              :identity-record record
+                              :handshake-hash
+                              (:netz.transport.noise/handshake-hash facts)}))
                     (reset! handshake-state :complete)
                     (go-try S
                             (doseq [app @pending-app]
@@ -1132,7 +1185,7 @@
     (let [reg (registry peer)]
       (doseq [out (distinct (vals (:by-id @reg)))]
         (close! out))
-      (reset! reg {:by-id {} :outbox {}}))
+      (reset! reg {:by-id {} :facts {} :outbox {}}))
     (close! (:events ctx))
     true))
 

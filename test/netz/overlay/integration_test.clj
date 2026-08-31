@@ -167,6 +167,7 @@
           server-kp (<?? S (id/generate-identity))
           client-kp (<?? S (id/generate-identity))
           server-id (id/peer-id (:genesis server-kp))
+          server-authority (id/authority-id (:genesis server-kp))
           client-id (id/peer-id (:genesis client-kp))
 
           [server-mw install-server!] (rt/deferred-middleware)
@@ -196,6 +197,14 @@
                 "never connected, so the teardown proves nothing")
             (is (wait-for 5000 #(some #{server-id}
                                       (overlay/connections (rt/overlay-state client)))))
+            (is (= {:authenticated? true
+                    :transport :signed-hello
+                    :routing-id server-id
+                    :authority-id server-authority
+                    :capabilities #{}}
+                   (select-keys (rt/connection-info client-peer server-id)
+                                [:authenticated? :transport :routing-id
+                                 :authority-id :capabilities])))
 
             (<?? S (peer/stop server-peer))
 
@@ -203,7 +212,9 @@
               (is (wait-for 5000
                             #(not (contains? (rt/connections client-peer)
                                              server-id)))
-                  "the registry still holds a dead connection"))
+                  "the registry still holds a dead connection")
+              (is (nil? (rt/connection-info client-peer server-id))
+                  "the registry still holds dead authentication facts"))
 
             (testing "and so does membership"
               (is (wait-for 5000

@@ -14,6 +14,7 @@
             [netz.sync.root-log :as root-log]
             [netz.transport.noise :as secure]
             [netz.transport.secure :as secure-overlay]
+            [netz.wire :as wire]
             [superv.async :refer [<?? S]]))
 
 (def ^:private port-counter (atom 48700))
@@ -134,6 +135,25 @@
                         (concat (secure-contexts client-peer)
                                 (secure-contexts server-peer)))))
 
+          (testing "the overlay retains the negotiated facts by routing id"
+            (let [client-info (rt/connection-info client-peer server-id)
+                  server-info (rt/connection-info server-peer client-id)]
+              (is (= {:authenticated? true
+                      :transport :noise
+                      :routing-id server-id
+                      :authority-id server-authority
+                      :capabilities secure/default-capabilities}
+                     (select-keys client-info
+                                  [:authenticated? :transport :routing-id
+                                   :authority-id :capabilities])))
+              (is (= client-authority (:authority-id server-info)))
+              (is (= secure/default-capabilities (:capabilities server-info)))
+              (is (string? (:handshake-hash client-info)))
+              (is (= (:netz/peer-id (:identity-record client-info)) server-id))
+              (is (rt/connection-supports? client-peer server-id "netz/1"))
+              (is (not (rt/connection-supports?
+                        client-peer server-id wire/profile-capability)))))
+
           (testing "an ordinary overlay publication survives CBOR and Noise"
             (rt/publish! client :secure {:message "encrypted"})
             (is (wait-for 10000
@@ -189,6 +209,8 @@
           (stop-node! c)
           (is (wait-for 5000 #(not (contains? (rt/connections a-peer) (:id c))))
               "partitioned peer remained registered")
+          (is (nil? (rt/connection-info a-peer (:id c)))
+              "authenticated facts survived their physical connection")
 
           ;; The connected side converges both application profiles.
           (rt/start-sync! a-node (:id b) :doc join-profile-id)

@@ -1,7 +1,9 @@
 # Resilient blob-store profile
 
-Status: design draft. This is a proposed optional profile, not a durability or
-data-protection claim of the current Netz release.
+Status: experimental implementation draft. Portable placement, manifests,
+signed lifecycle statements, the receiver transfer machine and crash-safe
+lifecycle journal exist, but no released runtime advertises the capability.
+This is not yet a durability or data-protection claim of the Netz release.
 
 ## Scope
 
@@ -87,21 +89,22 @@ The wire object is the logical byte sequence supplied to the adapter, not the
 local backend's serialized or encrypted file. A receiver verifies the logical
 bytes and may encode or encrypt them differently at rest.
 
-Large values are a manifest plus independently addressed chunks. A profile-1
-manifest contains at least:
+Large values are a transfer manifest plus independently addressed pieces. The
+closed profile-1 transfer manifest is:
 
 ```clojure
-{:profile "netz/blob/1"
- :cluster-id <opaque id>
- :privacy-domain <opaque id>
- :object-id <bytes>
- :address-profile :sha-256
- :length <non-negative integer>
- :chunks [{:id <bytes> :offset 0 :length <positive integer>} ...]
- :retention {:not-after <instant>}
- :created-by <authority id>
- :signature <bytes>}
+{"v" 1
+ "type" "blob/manifest"
+ "object" <32-byte address>
+ "length" <non-negative safe integer>
+ "piece_size" <positive integer, at most 1 MiB>
+ "pieces" [<32-byte piece address> ...]}
 ```
+
+Cluster, privacy domain, retention deadline, placement policy and controller
+Authority belong to the separately signed `blob/retention` statement. Keeping
+them out of the transfer manifest means identical ciphertext has one immutable
+address while leases and layouts can advance without rechunking it.
 
 The standard profile uses a language-neutral cryptographic address. A
 `:hasch-v1` compatibility profile may address existing Clojure stack values,
@@ -230,7 +233,10 @@ cryptographic erasure alone as universally sufficient.
 
 Every privacy-sensitive placement has a finite retention lease. The controller
 renews it while the purpose and lawful retention period continue. On expiry a
-replica stops serving, deletes the object and records a deletion receipt.
+replica stops serving, deletes the object and durably records a local absorbing
+tombstone. An explicit signed controller deletion additionally produces a
+signed replica deletion receipt; an autonomous expiry cannot truthfully claim
+a controller deletion revision that does not exist.
 Long-lived public or non-personal objects may use a distinct archival policy;
 indefinite retention must never be the accidental default.
 
@@ -303,13 +309,16 @@ three process IDs represent three independent failure domains.
 
 ## Implementation order
 
-1. Freeze `netz/blob/1`, receipt, layout and retention schemas with canonical
-   CBOR fixtures.
-2. Implement pure placement and replica-controller transitions.
-3. Add the simulator disk/fault model and property invariants.
-4. Implement acknowledged, resumable chunk transfer and durable outbox recovery.
-5. Publish the optional `konserve-netz` adapter.
-6. Add the three-node file-store demonstration and operational status API.
-7. Add JVM/Node/Python conformance for manifests and receipts.
-8. Design distributed deletion/GC from measured behaviour before enabling
-   automatic reclamation.
+1. [done] Freeze object, receipt, retention and deletion schemas with canonical
+   CBOR fixtures; signed layout/reconfiguration remains open.
+2. [done] Implement pure placement, receipt-controller, receiver-transfer and
+   crash-safe lifecycle transitions.
+3. [done] Add simulated durable disks, faults, crash recovery, bulk expiry and
+   resurrection-prevention invariants.
+4. Implement the bounded sender, Kabel/Noise session binding and durable file
+   staging/install adapter.
+5. Add scrubbing, paginated inventory and repair scheduling.
+6. Publish the optional `konserve-netz` adapter only after its stream/batch
+   semantics are explicit.
+7. Add the real JVM/Node/Python three-device conformance campaign.
+8. Enable automatic reclamation only after operational deletion tests.
