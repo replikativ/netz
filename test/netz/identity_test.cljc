@@ -73,13 +73,16 @@
   sign; it exists so genesis construction has a stable input."
   (id/hex->bytes "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"))
 
+(defn- hex32 [byte-pair]
+  (apply str (repeat 32 byte-pair)))
+
 (def test-genesis
   "A fixed genesis record, so peer-id derivation has a stable input."
   (id/make-genesis
-   {:rotation-keys ["aa" "bb"]
+   {:rotation-keys [(hex32 "aa") (hex32 "bb")]
     :rotation-threshold 1
     :operational-keys [(id/bytes->hex test-public-key)]
-    :revocation-commit "cc"}))
+    :revocation-commit (hex32 "cc")}))
 
 (deftest peer-id-known-answer
   (testing "peer-id derivation is pinned"
@@ -87,13 +90,13 @@
     ;; deployment changed with it. That is the intended alarm, not a nuisance.
     ;; Both platforms must produce these exact values.
     ;;
-    ;; Re-pinned once, deliberately, when the overlay moved out of kabel into
-    ;; netz: the domain separator is hashed ("netz/peer-id/v2"), as are the
-    ;; record's keyword namespaces, so every id changed. Nothing had been
-    ;; released, so this was the moment it was free.
+    ;; Pinned to the language-neutral v1 genesis object and RFC 8949
+    ;; deterministic CBOR. Host keywords and hasch are not part of this value.
     (is (= 32 (id/buf-length (id/peer-id-bytes test-genesis))))
-    (is (= "ba975994dc3624224247648295e13ef6001b013c544f4f62f0a290818c0f5f74" (id/bytes->hex (id/peer-id-bytes test-genesis))))
-    (is (= #uuid "ba975994-dc36-2422-4247-648295e13ef6" (id/peer-id test-genesis)))))
+    (is (= "4340f550365ad8203e185319f5f11eaa55e5557213bce608b34c2ece5a91ad8f"
+           (id/bytes->hex (id/peer-id-bytes test-genesis))))
+    (is (= #uuid "4340f550-365a-d820-3e18-5319f5f11eaa"
+           (id/peer-id test-genesis)))))
 
 (deftest genesis-is-the-identity
   (testing "the id is the hash of a RECORD, not of a key"
@@ -101,11 +104,11 @@
     ;; with it: the identity IS the key, so the key can never change. Hashing a
     ;; record leaves room for rotation without a format change.
     (let [other (id/make-genesis
-                 {:rotation-keys ["aa" "bb"]
+                 {:rotation-keys [(hex32 "aa") (hex32 "bb")]
                   :rotation-threshold 1
                   :operational-keys [(id/bytes->hex test-public-key)]
                   ;; same operational key, different commitment
-                  :revocation-commit "dd"})]
+                  :revocation-commit (hex32 "dd")})]
       (is (not= (id/peer-id test-genesis) (id/peer-id other))
           "the id ignored part of the genesis")))
 
@@ -127,12 +130,12 @@
 (deftest genesis-authorises-only-operational-keys
   (testing "an operational key may sign for the identity"
     (is (id/genesis-authorises? test-genesis test-public-key
-                                (id/peer-id test-genesis))))
+                                (id/authority-id test-genesis))))
 
   (testing "a key that is not in the genesis may not"
     (is (not (id/genesis-authorises? test-genesis
                                      (id/hex->bytes (apply str (repeat 32 "11")))
-                                     (id/peer-id test-genesis)))))
+                                     (id/authority-id test-genesis)))))
 
   (testing "a rotation key is COLD and may not sign operationally"
     ;; The separation only means something if it is enforced. TUF's point is
@@ -141,17 +144,19 @@
     ;; decides who you are.
     (let [g (id/make-genesis {:rotation-keys [(id/bytes->hex test-public-key)]
                               :rotation-threshold 1
-                              :operational-keys ["ab"]
-                              :revocation-commit "cc"})]
-      (is (not (id/genesis-authorises? g test-public-key (id/peer-id g))))))
+                              :operational-keys [(hex32 "ab")]
+                              :revocation-commit (hex32 "cc")})]
+      (is (not (id/genesis-authorises? g test-public-key (id/authority-id g))))))
 
   (testing "a genesis that does not hash to the claimed id is refused"
     (is (not (id/genesis-authorises? test-genesis test-public-key
-                                     #uuid "00000000-0000-0000-0000-000000000000"))))
+                                     (hex32 "00")))))
 
   (testing "garbage is refused rather than thrown"
-    (is (not (id/genesis-authorises? nil test-public-key (id/peer-id test-genesis))))
-    (is (not (id/genesis-authorises? {} test-public-key (id/peer-id test-genesis))))))
+    (is (not (id/genesis-authorises? nil test-public-key
+                                     (id/authority-id test-genesis))))
+    (is (not (id/genesis-authorises? {} test-public-key
+                                     (id/authority-id test-genesis))))))
 
 (deftest revocation-commitment-survives-total-compromise
   ;; The only primitive in the reviewed corpus that works after every signing
@@ -159,9 +164,9 @@
   ;; pre-image. It MUST be in genesis — a commitment added later would be the
   ;; attacker's, not yours.
   (let [secret (id/random-bytes 32)
-        g (id/make-genesis {:rotation-keys ["aa"]
+        g (id/make-genesis {:rotation-keys [(hex32 "aa")]
                             :rotation-threshold 1
-                            :operational-keys ["bb"]
+                            :operational-keys [(hex32 "bb")]
                             :revocation-commit (id/revocation-commitment secret)})]
     (testing "the secret opens its own commitment"
       (is (id/revokes? g secret)))

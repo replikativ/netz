@@ -1,0 +1,7 @@
+{
+  "name": "kabel-cbor-serializer-14-draft-00",
+  "serializer_id": 14,
+  "prefix_hex": "0000000e",
+  "payload_fixture": "profile-1.json",
+  "frame_hex": "0000000ea561760164706565726d6e65747a312d6578616d706c6564747970656568656c6c6f656e6f6e63654400010203686665617475726573826673796e632f3169636f6e74656e742f31"
+}

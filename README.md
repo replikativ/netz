@@ -14,7 +14,8 @@ outside the Clojure ecosystem.
 > but not yet for an untrusted public network. Mixed direct/overlay live
 > delivery is rejected explicitly and the generation-fenced apply owner now
 > controls live/snapshot application. Bounded asynchronous WebSocket writes
-> and the remaining identity/deployment work are still release gates. See
+> are available in the released Kabel/http-kit stack; authenticated transport
+> sessions and the remaining identity/deployment work are still release gates. See
 > [release readiness](RELEASE.md) for the complete gate.
 
 ## What Netz owns

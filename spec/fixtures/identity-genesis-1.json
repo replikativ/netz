@@ -1,0 +1,19 @@
+{
+  "name": "identity-genesis-v1",
+  "diagnostic": {
+    "v": 1,
+    "rotation_hex": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ],
+    "threshold": 1,
+    "operational_hex": [
+      "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+    ],
+    "revoke_hex": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "canonical_cbor_hex": "a5617601667265766f6b655820cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc68726f746174696f6e825820aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa5820bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb697468726573686f6c64016b6f7065726174696f6e616c8158200102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+  "authority_id_hex": "4340f550365ad8203e185319f5f11eaa55e5557213bce608b34c2ece5a91ad8f",
+  "routing_id_hex": "4340f550365ad8203e185319f5f11eaa",
+  "identity_record_bytes_hex": "6e65747a2f6964656e746974792d7265636f72642f763100a561760163736571076767656e65736973a5617601667265766f6b655820cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc68726f746174696f6e825820aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa5820bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb697468726573686f6c64016b6f7065726174696f6e616c8158200102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f206961646472657373657382747773733a2f2f612e6578616d706c652f6e65747a747773733a2f2f622e6578616d706c652f6e65747a6b6f7065726174696f6e616c58200102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+}

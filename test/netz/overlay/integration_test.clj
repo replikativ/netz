@@ -207,6 +207,7 @@
           victim-kp (<?? S (id/generate-identity))
           honest-kp (<?? S (id/generate-identity))
           attacker-id (id/peer-id (:genesis attacker-kp))
+          honest-authority (id/authority-id (:genesis honest-kp))
           victim-id (id/peer-id (:genesis victim-kp))
 
           seen (atom [])
@@ -240,12 +241,15 @@
       ;; The attacker completes a perfectly valid identity handshake — it is a
       ;; real peer, not an outsider, and it holds its own key. That is the
       ;; point: the defence being tested is not "keep strangers out".
-      (>!! in {:type rt/hello-type
-               :record (id/record->wire
-                        (<?? S (id/sign-record attacker-kp [] 0)))
-               :nonce (id/new-nonce)})
-      (>!! in {:type rt/proof-type
-               :sig (<?? S (id/sign-challenge attacker-kp (:nonce our-hello)))})
+      (let [attacker-nonce (id/new-nonce)]
+        (>!! in {:type rt/hello-type
+                 :record (id/record->wire
+                          (<?? S (id/sign-record attacker-kp [] 0)))
+                 :nonce attacker-nonce})
+        (>!! in {:type rt/proof-type
+                 :sig (<?? S (id/sign-challenge attacker-kp attacker-nonce
+                                                honest-authority
+                                                (:nonce our-hello)))}))
       (is (wait-for 3000 #(contains? (rt/connections peer) attacker-id))
           "the attacker never connected, so the test proves nothing")
 
@@ -306,20 +310,25 @@
         victim-id (id/peer-id (:genesis victim-kp))
         victim-record (id/record->wire (<?? S (id/sign-record victim-kp [] 0)))
         our-kp (<?? S (id/generate-identity))
+        our-authority (id/authority-id (:genesis our-kp))
+        attacker-kp (<?? S (id/generate-identity))
+        attacker-id (id/peer-id (:genesis attacker-kp))
+        victim-nonce (id/new-nonce)
         peer (atom {})
         ctx (rt/make-runtime {:id :me :state (overlay/make-state :me {})
                               :effects {:send! (fn [_ _]) :connect! (fn [_ _ _])
                                         :disconnect! (fn [_]) :schedule! (fn [_ _])}})
         in (chan 16)
         out (chan 16)
-        _ ((rt/middleware {:ctx ctx :identity our-kp :addresses [] :seq-no 0})
+        _ ((rt/middleware {:ctx ctx :identity our-kp :addresses [] :seq-no 0
+                           :handshake-max-attempts 8})
            [S peer [in out]])
         our-hello (<?? S out)]
     (go-loop [] (when (<! out) (recur)))
 
     (testing "the victim's record alone does not register it"
       ;; This is the whole attack: the attacker HAS the record and nothing else.
-      (>!! in {:type rt/hello-type :record victim-record :nonce (id/new-nonce)})
+      (>!! in {:type rt/hello-type :record victim-record :nonce victim-nonce})
       (<?? S (timeout 400))
       (is (not (contains? (rt/connections peer) victim-id))
           "a replayed record must not bind the connection to that peer"))
@@ -327,7 +336,8 @@
     (testing "and a proof signed by the wrong key does not either"
       ;; The attacker answers our challenge with the only key it actually has.
       (>!! in {:type rt/proof-type
-               :sig (<?? S (id/sign-challenge our-kp (:nonce our-hello)))})
+               :sig (<?? S (id/sign-challenge attacker-kp victim-nonce
+                                              our-authority (:nonce our-hello)))})
       (<?? S (timeout 400))
       (is (not (contains? (rt/connections peer) victim-id))
           "the proof must be checked against the record's key, not any key"))
@@ -336,13 +346,30 @@
       ;; Even the real victim's proof, captured from another connection, is
       ;; worthless here — which is what makes the nonce load-bearing.
       (>!! in {:type rt/proof-type
-               :sig (<?? S (id/sign-challenge victim-kp (id/new-nonce)))})
+               :sig (<?? S (id/sign-challenge victim-kp (id/new-nonce)
+                                              our-authority (:nonce our-hello)))})
       (<?? S (timeout 400))
       (is (not (contains? (rt/connections peer) victim-id))
           "a proof is only valid for the challenge WE chose"))
 
+    (testing "a chosen-nonce signature from a different transcript does not register"
+      ;; The old proof covered only our challenge, so an attacker could ask the
+      ;; victim to sign that challenge on another socket and relay the result.
+      ;; Binding both roles and both challenges rejects that simpler oracle.
+      ;; A live relay can still splice the *whole* public transcript, so public
+      ;; transports additionally need channel binding and frame integrity.
+      (>!! in {:type rt/proof-type
+               :sig (<?? S (id/sign-challenge victim-kp (id/new-nonce)
+                                              (id/authority-id
+                                               (:genesis attacker-kp))
+                                              (:nonce our-hello)))})
+      (<?? S (timeout 400))
+      (is (not (contains? (rt/connections peer) victim-id))
+          "a proof obtained for another verifier must not authenticate this socket"))
+
     (testing "but the real holder of the key registers"
       (>!! in {:type rt/proof-type
-               :sig (<?? S (id/sign-challenge victim-kp (:nonce our-hello)))})
+               :sig (<?? S (id/sign-challenge victim-kp victim-nonce
+                                              our-authority (:nonce our-hello)))})
       (is (wait-for 3000 #(contains? (rt/connections peer) victim-id))
           "possession of the key on THIS connection is what registration means"))))

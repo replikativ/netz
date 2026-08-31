@@ -75,8 +75,9 @@
   identical on both platforms: map key iteration order is not, and a signature
   over `pr-str` output would verify on the JVM and fail in the browser for
   payloads that happen to contain a map."
-  [{:keys [origin epoch seq topic payload]}]
-  (id/seq->bytes (edn-hash [signing-tag origin epoch seq topic payload])))
+  [{:keys [origin origin-authority epoch seq topic payload]}]
+  (id/seq->bytes
+   (edn-hash [signing-tag origin-authority origin epoch seq topic payload])))
 
 (defn signed?
   "Does this message carry publisher credentials?"

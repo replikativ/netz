@@ -1,8 +1,9 @@
-"""Dependency-free codec for the Netz draft-00 portable CBOR subset.
+"""Dependency-free codec for the Netz draft-00 control-envelope CBOR subset.
 
 This is a conformance aid, not yet a network client. It deliberately rejects
-floats, tags, indefinite lengths and non-text map keys so the accepted surface
-matches spec/netz-draft-00.md rather than Python's entire object model.
+floats, tags, indefinite lengths and non-text map keys in protocol envelopes.
+Opaque application byte strings may contain richer CBOR; their application
+profile, not this control codec, defines how they are decoded.
 """
 
 from __future__ import annotations
@@ -37,8 +38,12 @@ def _head(major: int, value: int) -> bytes:
     raise CBORError("integer outside uint64 range")
 
 
-def dumps(value: Any) -> bytes:
-    """Encode one value using RFC 8949 deterministic CBOR."""
+def _dumps(value: Any, depth: int, items: list[int]) -> bytes:
+    if depth > MAX_DEPTH:
+        raise CBORError("maximum nesting exceeded")
+    items[0] += 1
+    if items[0] > MAX_ITEMS:
+        raise CBORError("maximum item count exceeded")
     if value is None:
         return b"\xf6"
     if value is False:
@@ -52,19 +57,38 @@ def dumps(value: Any) -> bytes:
             return _head(0, value)
         return _head(1, -1 - value)
     if isinstance(value, bytes):
+        if len(value) > MAX_STRING_BYTES:
+            raise CBORError("maximum string size exceeded")
         return _head(2, len(value)) + value
     if isinstance(value, str):
         encoded = value.encode("utf-8")
+        if len(encoded) > MAX_STRING_BYTES:
+            raise CBORError("maximum string size exceeded")
         return _head(3, len(encoded)) + encoded
     if isinstance(value, (list, tuple)):
-        return _head(4, len(value)) + b"".join(dumps(item) for item in value)
+        if len(value) > MAX_ITEMS - items[0]:
+            raise CBORError("maximum item count exceeded")
+        return _head(4, len(value)) + b"".join(
+            _dumps(item, depth + 1, items) for item in value)
     if isinstance(value, dict):
         if not all(isinstance(key, str) for key in value):
             raise CBORError("profile-1 map keys must be text")
-        pairs = [(dumps(key), dumps(item)) for key, item in value.items()]
+        if len(value) * 2 > MAX_ITEMS - items[0]:
+            raise CBORError("maximum item count exceeded")
+        pairs = [(_dumps(key, depth + 1, items),
+                  _dumps(item, depth + 1, items))
+                 for key, item in value.items()]
         pairs.sort(key=lambda pair: pair[0])
         return _head(5, len(pairs)) + b"".join(k + v for k, v in pairs)
     raise CBORError(f"unsupported profile-1 value: {type(value).__name__}")
+
+
+def dumps(value: Any) -> bytes:
+    """Encode one bounded value using RFC 8949 deterministic CBOR."""
+    encoded = _dumps(value, 0, [0])
+    if len(encoded) > MAX_FRAME_BYTES:
+        raise CBORError("maximum frame size exceeded")
+    return encoded
 
 
 @dataclass

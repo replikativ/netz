@@ -81,12 +81,14 @@
 
 (def frame-type :netz.overlay/frame)
 (def proof-type
-  "Second leg of the handshake: proof that the peer holds its key NOW.
+  "Second leg of the handshake: proof that the peer signed this transcript.
 
   A record alone is replayable -- see `netz.identity/challenge-bytes`. This
-  carries a signature over the nonce WE chose, so registration means \"this
-  connection is held by that identity\" rather than \"somebody showed me a
-  record that identity once published\"."
+  carries a signature over both identities and both fresh nonces. It rejects
+  stale proofs and the simple cross-connection signing oracle, but is not a
+  transport channel binding: a live adversary can still relay the complete
+  handshake. Untrusted transports require the additional session-integrity
+  mechanism tracked in RELEASE.md."
   :netz.overlay/hello-proof)
 
 (def hello-type :netz.overlay/hello)
@@ -283,6 +285,7 @@
   [S identity msg]
   (go-try S
           (let [{:keys [genesis operational]} identity
+                msg (assoc msg :origin-authority (id/authority-id genesis))
                 sig (<? S (id/sign (:private operational) (d/signing-bytes msg)))]
             (assoc msg
                    :origin-genesis genesis
@@ -297,7 +300,7 @@
   operational keys."
   [S msg]
   (go-try S
-          (let [{:keys [origin origin-genesis origin-key origin-sig]} msg]
+          (let [{:keys [origin origin-authority origin-genesis origin-key origin-sig]} msg]
             (if-not (and (string? origin-key) (string? origin-sig))
               false
               (try
@@ -308,7 +311,8 @@
                        ;; Genesis must hash to the claimed origin AND name this
                        ;; key as operational. Either check alone lets somebody
                        ;; publish under another peer's name.
-                       (id/genesis-authorises? origin-genesis pk origin)
+                       (id/genesis-authorises? origin-genesis pk origin-authority)
+                       (id/genesis-routes? origin-genesis origin)
                        (<? S (id/verify pk (d/signing-bytes msg) sig))))
                 (catch #?(:clj Exception :cljs js/Error) _ false))))))
 
@@ -482,7 +486,8 @@
         nodes? (fn [x] (and ((bounded-coll? 256) x)
                             (every? #(and (map? %) (contains? % :key)
                                           (contains? % :value)) x)))]
-    {:gossip {:required {:origin some? :epoch int? :seq int? :topic some?
+    {:gossip {:required {:origin some? :origin-authority string?
+                         :epoch int? :seq int? :topic some?
                          :hops int? :payload (constantly true)}}
      :have {:required {:summary summary? :horizon horizon?}}
      :want {:required {:ranges ranges?}}
@@ -587,6 +592,8 @@
   (fn [[S peer [in out]]]
     (let [pass-in (chan)
           pass-out (chan)
+          local-peer-id (id/peer-id (:genesis identity))
+          local-authority-id (id/authority-id (:genesis identity))
           ;; Kabel preserves channel order, so make the two Netz producers
           ;; establish that order explicitly: the inbound loop cannot enqueue
           ;; a proof until the startup loop has enqueued our hello.
@@ -600,6 +607,12 @@
           our-nonce (id/new-nonce)
           ;; Their record, verified but not yet proven live.
           pending-record (atom nil)
+          ;; Their challenge is part of the signed two-sided transcript. Keep
+          ;; it beside the verified record so an independently obtained proof
+          ;; cannot be substituted. A live full-transcript relay remains a
+          ;; release blocker until the session itself is cryptographically
+          ;; bound and subsequent frames have integrity.
+          pending-nonce (atom nil)
           handshake-state (atom :pending)
           handshake-attempts (atom 0)
           ;; Application messages may race the identity exchange on a fresh
@@ -612,11 +625,13 @@
                          (do (reset! handshake-state :failed)
                              (close! out)
                              false))))
-          complete! (fn [record signature]
+          complete! (fn [record prover-nonce signature]
                       (go-try S
                               (when (and (= :pending @handshake-state)
                                          (<? S (id/verify-challenge
-                                                record our-nonce signature)))
+                                                record prover-nonce
+                                                local-authority-id our-nonce
+                                                signature)))
                                 (reset! conn-peer-id
                                         (register! S peer (:netz/peer-id record) out))
                                 (reset! handshake-state :complete)
@@ -672,10 +687,13 @@
                                             (string? (:nonce m))
                                             (= 64 (count (:nonce m))))
                                    (reset! pending-record record)
+                                   (reset! pending-nonce (:nonce m))
                                    (<? S hello-sent)
                                    (>? S out {:type proof-type
-                                              :sig (<? S (id/sign-challenge identity
-                                                                            (:nonce m)))}))))
+                                              :sig (<? S (id/sign-challenge
+                                                          identity our-nonce
+                                                          (:netz/authority-id record)
+                                                          (:nonce m)))}))))
 
                              (= proof-type (:type m))
                              (if-not (and (= :pending @handshake-state)
@@ -683,7 +701,7 @@
                                           (bounded-value? m))
                                (close! out)
                                (when-let [record @pending-record]
-                                 (<? S (complete! record (:sig m)))))
+                                 (<? S (complete! record @pending-nonce (:sig m)))))
 
                              (= frame-type (:type m))
                              ;; The connection's own peer id, remembered when

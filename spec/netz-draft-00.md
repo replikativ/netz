@@ -73,10 +73,10 @@ stream frontiers that result actually represents, and their encoded byte size.
 no frontier unless its profile can validate that the checkpoint causally or
 cryptographically covers it; copying the claim into the receipt is invalid.
 
-## 4. Data model and canonical CBOR
+## 4. Control data model, payloads, and deterministic CBOR
 
-Wire profile 1 uses RFC 8949 CBOR. Signable objects use Core Deterministic
-Encoding. Maps use UTF-8 text keys. The portable value subset is:
+Wire profile 1 uses RFC 8949 CBOR. Signable control objects use Core
+Deterministic Encoding. Maps use UTF-8 text keys. The control value subset is:
 
 - null, booleans;
 - signed integers representable in 64 bits;
@@ -85,11 +85,26 @@ Encoding. Maps use UTF-8 text keys. The portable value subset is:
 - maps whose keys are text strings.
 
 Indefinite-length items, floats, duplicate map keys, sets, keywords, symbols,
-ratios, records, arbitrary tags and shared-reference extensions MUST NOT occur
-in a profile-1 signable object. A decoder MUST reject trailing bytes.
+ratios, records, semantic tags and shared-reference extensions MUST NOT occur
+in a profile-1 control object. A decoder MUST reject trailing bytes.
 
-Transport frames need not be deterministic when unsigned, but implementations
-SHOULD use the same encoder everywhere. The reference profile does so.
+This is a protocol-envelope rule, not a restriction on CBOR application data.
+Profile summaries, chunks, checkpoints, publications, and content blocks carry
+application encodings as byte strings. Their named application profile defines
+the enclosed bytes and MAY use registered CBOR tags, including identifiers,
+generic objects, sets, string references, CIDs, UUIDs, and typed arrays. A
+sender signs the byte string as received; intermediaries MUST NOT decode and
+re-encode an opaque payload before forwarding or verification.
+
+Boring's shaped-array tag `39649` is provisional until it has an IANA
+assignment. A profile using it MUST negotiate that capability explicitly and
+MUST NOT label the payload as a baseline interoperability profile. This does
+not affect Boring's registered tags or ordinary CBOR values.
+
+Every profile-1 control frame MUST use the same Core Deterministic Encoding,
+whether or not that particular envelope is signed. This keeps one closed
+decoder and one conformance corpus across transports; application payloads
+remain opaque and are not subject to this rule.
 
 Every protocol message is a map containing:
 
@@ -101,8 +116,11 @@ Unknown versions MUST be rejected. Unknown message types MUST be ignored only
 after capability negotiation establishes a compatible extension; otherwise
 they are malformed input.
 
-The first fixture is published in `fixtures/profile-1.json` and exercised by
-both the Clojure and dependency-free Python codecs.
+The first control fixture is published in `fixtures/profile-1.json` and
+exercised by both the Clojure and dependency-free Python codecs.
+`fixtures/kabel-cbor-1.json` pins the same item's four-byte serializer-14
+carrier prefix. That prefix is not part of the decoded envelope or any
+signature transcript.
 
 ## 5. Resource limits
 
@@ -186,13 +204,18 @@ A signed publication contains:
 {
   "v": 1, "type": "gossip", "topic": <text>,
   "origin": <32 bytes>, "epoch": <uint64>, "seq": <uint64>,
-  "payload": <portable value>
+  "payload": <bytes>
 }
 ~~~
 
 Its Ed25519 signature covers the deterministic encoding of that map prefixed
 with `netz/gossip/v1\0`. Forwarding metadata (`hops`, previous transport peer)
 is outside the origin signature and MUST be locally bounded.
+
+The topic's application profile defines `payload`. A CBOR application may use
+the full registered-tag vocabulary accepted by that profile; a non-CBOR
+application may use another deterministic or self-describing encoding. Relays
+handle the payload as bytes in either case.
 
 `seq` is monotonically increasing within `(origin, epoch, topic)`. Peers
 deduplicate and repair by that same stream key. They periodically exchange
@@ -307,11 +330,17 @@ routing provider, not part of the core protocol.
 
 ## 11. Transport binding
 
-The first binding is one CBOR message per binary WebSocket message. Both sides
-MUST cap the WebSocket message before CBOR decoding. WebSocket supplies reliable
-ordered delivery for handshake and sync sessions; dissemination remains
-deduplicated because peers may receive the same signed publication over
+The baseline binding is one CBOR message per binary WebSocket message. Both
+sides MUST cap the WebSocket message before CBOR decoding. WebSocket supplies
+reliable ordered delivery for handshake and sync sessions; dissemination
+remains deduplicated because peers may receive the same signed publication over
 multiple connections.
+
+The Kabel binding prepends its four-byte big-endian serialization identifier;
+CBOR is identifier `14`. Its capability name is `transport/kabel-cbor/1`,
+distinct from the prefix-free `transport/websocket-cbor/1`. The CBOR item after
+that prefix follows the same Netz envelope and limit rules. The prefix is a
+transport discriminator, not part of any signed object.
 
 Dial policies MUST restrict schemes and embedded credentials. Public services
 SHOULD reject loopback, link-local and private destinations learned from

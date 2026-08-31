@@ -98,6 +98,8 @@ class SyncReceiver:
             raise SyncError("frame is for an unknown session or profile version")
         frame_type = frame.get("type")
         if frame_type == "sync/chunk":
+            if set(frame) != {"v", "type", "session", "index", "data"}:
+                raise SyncError("invalid sync/chunk fields")
             index = frame.get("index")
             data = frame.get("data")
             if (type(index) is not int or not 0 <= index <= MAX_SAFE_INTEGER
@@ -115,6 +117,9 @@ class SyncReceiver:
             return {"v": 1, "type": "sync/ack", "session": self.session,
                     "through": index}
         if frame_type == "sync/done":
+            if set(frame) != {"v", "type", "session", "count", "topic",
+                              "checkpoint", "frontiers"}:
+                raise SyncError("invalid sync/done fields")
             count = frame.get("count")
             checkpoint = frame.get("checkpoint")
             frontiers = frame.get("frontiers")
@@ -146,6 +151,10 @@ class SyncReceiver:
             self.status = "synchronized"
             return None
         if frame_type == "sync/abort":
+            if (set(frame) != {"v", "type", "session", "code"}
+                    or not isinstance(frame.get("code"), str)
+                    or not frame["code"]):
+                raise SyncError("invalid sync/abort fields")
             self.status = "desynchronized"
             return None
         raise SyncError("unexpected synchronization frame")

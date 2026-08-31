@@ -78,3 +78,34 @@ conversion and the installable `netz-protocol` Python core emit the same
 `sync/open` and `sync/done` fixtures. This proves the CBOR and frontier shapes,
 not a network connection. Identity/handshake fixtures, capability negotiation,
 outbound Python sync, and two-peer tests remain prerequisites.
+
+## Boring and the CBOR data model
+
+Netz does not need a private tag-free dialect. Boring emits RFC 8949 CBOR and
+its normal semantic tags are registered: identifiers (`39`), generic objects
+(`27`), sets (`258`), string references (`25`/`256`), UUIDs (`37`), CIDs (`42`),
+and RFC 8746 typed arrays. Foreign implementations may preserve an unfamiliar
+registered tag as a tagged value or install a small application-level hook.
+
+The one provisional Boring tag is shaped arrays at `39649`. It is opt-in and
+off in Boring's interop and deterministic profiles. Netz application profiles
+may negotiate it, but the baseline profile must not emit it until the number is
+registered with IANA.
+
+The narrow `netz.wire` data model belongs to control and signature envelopes.
+Application CBOR is carried as opaque byte strings. This preserves unknown tags
+and exact signatures across relays and prevents a Python, Rust, or JavaScript
+runtime from having to recreate Clojure host types merely to forward a value.
+
+Boring's Python interoperability suite confirms that `cbor2` reads its fixture
+with small hooks for the host-specific interpretations. Two implementation
+details matter at signature boundaries:
+
+- `cbor2.dumps(..., canonical=True)` uses RFC 7049 length-first key ordering,
+  whereas Boring's `:canonical` uses RFC 8949 Core Deterministic bytewise
+  ordering. Text-only envelope keys avoid most differences, but a protocol must
+  still name one rule.
+- The current `cbor2` C encoder fails to choose binary16 for part of its exact
+  range. Boring and `cbor2`'s pure-Python encoder agree on the shorter encoding.
+  Netz control objects exclude floats, and opaque application payloads are
+  signed as bytes, so this does not affect protocol verification.

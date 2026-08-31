@@ -288,7 +288,9 @@
     (are [payload] (true? (rt/well-formed? payload))
       {:type :have :summary {:o {0 {:t [[0 5]]}}} :horizon {[:o 0 :t] 3}}
       {:type :want :ranges [{:topic :t :lo 0 :hi 5}]}
-      {:type :gossip :origin :o :epoch 0 :seq 1 :hops 2 :topic :t :payload "x"}
+      {:type :gossip :origin :o
+       :origin-authority (apply str (repeat 64 "0"))
+       :epoch 0 :seq 1 :hops 2 :topic :t :payload "x"}
       {:type :sync/open :session :s :topic :t
        :profile "netz/join-semilattice/1" :summary {}}
       {:type :sync/chunk :session :s :index 0 :data {}}

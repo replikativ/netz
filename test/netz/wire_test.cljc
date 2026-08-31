@@ -131,7 +131,10 @@
     (is (thrown? #?(:clj Throwable :cljs :default)
                  (wire/encode-canonical {:keyword :not-portable})))
     (is (thrown? #?(:clj Throwable :cljs :default)
-                 (wire/encode-canonical {"float" 1.5}))))
+                 (wire/encode-canonical {"float" 1.5})))
+    (is (thrown? #?(:clj Throwable :cljs :default)
+                 (wire/encode-canonical
+                  {"oversized" (id/byte-buf (inc (* 1024 1024)))}))))
 
   (testing "valid CBOR still has to be deterministic and consume the frame"
     (is (thrown? #?(:clj Throwable :cljs :default)

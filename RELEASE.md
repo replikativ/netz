@@ -29,6 +29,10 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 - [x] JVM, JavaScript and Python pin the same canonical `sync/open` and
       frontier-bearing `sync/done` bytes; Python also exercises ordered,
       atomic profile application and pre-commit claim validation.
+- [x] JVM and Python enforce the same deterministic control-envelope scalar,
+      depth, item and frame limits; Python requires exact sync frame schemas.
+- [x] The Python package pins both raw WebSocket-CBOR and Kabel serializer-14
+      carrier framing without folding the carrier prefix into signed objects.
 - [x] Clojure exposes a strict internal-map/profile-1 sync-frame boundary,
       validates sender frontier claims before profile code, and computes
       receipt sizes from locally encoded canonical bytes. The dependency-free
@@ -41,6 +45,13 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 
 ## Required before exposing to untrusted peers
 
+- [ ] Bind the identity proof to a cryptographic transport/session and
+      authenticate every subsequent Netz control frame. The two-identity,
+      two-nonce transcript rejects replay and a chosen-nonce signing oracle,
+      but a live adversary can splice the complete public handshake between two
+      sockets and then inject unsigned membership/content/sync frames. Candidate
+      profile: `Noise_XX_25519_AESGCM_SHA256` below Kabel serialization, with
+      serialized transport ownership and Netz identity/capability payloads.
 - [x] Publication sequence, deduplication, repair, and bounded ordered delivery
       are scoped per origin/topic stream.
 - [x] Kabel routes external and direct application through one peer/topic
@@ -58,11 +69,10 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       recovery, unsubscribe, and shutdown are serialized by the owner lane.
       Apply and sync completions are attempt-fenced, and only exact local
       application success advances a publication frontier.
-- [x] Kabel 0.3.118 supplies bounded 5 MiB frames/queues, and Netz consumes the
-      released coordinate. Jetty writes await adapter completion.
-- [ ] http-kit still requires upstream PR #619 (or an equivalent hard
-      queued-byte limit) because Ring 2.0 async send is optional. Until then,
-      public servers must use Jetty or a bounded replikativ http-kit build.
+- [x] Kabel 0.3.124 supplies bounded 5 MiB frames/queues and consumes
+      `org.replikativ/http-kit 2.9.0-beta4-replikativ.1`, whose server adapter
+      bounds queued bytes. Netz consumes the released Kabel coordinate; Jetty
+      remains supported and its writes await adapter completion.
 - [ ] Public deployments need DNS/private-address/redirect policy in addition
       to the socket frame limit.
 - [ ] Subtree disconnect handling should retry immediately rather than waiting
@@ -73,6 +83,16 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 
 ## Required before calling wire profile 1 interoperable
 
+- [x] Authority derivation and identity-record transcripts use the draft's
+      deterministic-CBOR v1 object. JVM/JS/Python pin the same genesis bytes,
+      full Authority ID, routing projection, and record-signing bytes.
+- [x] Authentication uses the full 32-byte Authority ID; the compact UUID is
+      retained only as Kabel's routing projection.
+- [ ] Convert gossip signature bytes from host-native `hasch/edn-hash` to the
+      deterministic profile-1 envelope and publish a signature fixture.
+- [ ] Move publication values across the standards boundary as opaque bytes so
+      registered Boring tags survive unchanged and relays never reconstruct
+      host-language values for signature verification.
 - [ ] Route handshake, dissemination, content, and sync runtime messages through
       `netz.wire` rather than native Clojure values. Strict sync-frame conversion
       exists, but is not enabled without capability negotiation.

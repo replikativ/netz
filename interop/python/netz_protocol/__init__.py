@@ -17,18 +17,46 @@ from netz_sync import (
     SyncReceiver,
     open_frame,
 )
+from .framing import (
+    FramingError,
+    KABEL_CBOR_SERIALIZER_ID,
+    decode_kabel,
+    decode_websocket,
+    encode_kabel,
+    encode_websocket,
+)
+from .identity import (
+    IdentityError,
+    authority_id,
+    genesis,
+    genesis_bytes,
+    identity_record_bytes,
+    routing_id,
+)
 
 __all__ = [
     "CBORError",
     "CommitReceipt",
+    "FramingError",
+    "IdentityError",
     "JOIN_PROFILE",
     "JoinSetProfile",
+    "KABEL_CBOR_SERIALIZER_ID",
     "ROOT_PROFILE",
     "RootLogProfile",
     "SyncError",
     "SyncProfile",
     "SyncReceiver",
+    "authority_id",
     "dumps",
+    "decode_kabel",
+    "decode_websocket",
+    "encode_kabel",
+    "encode_websocket",
+    "genesis",
+    "genesis_bytes",
+    "identity_record_bytes",
     "loads",
     "open_frame",
+    "routing_id",
 ]
