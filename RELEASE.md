@@ -114,8 +114,10 @@ This extension is not part of the alpha interoperability claim yet.
       bounded resume bitmap in JVM/JavaScript/Python fixtures.
 - [x] Provide an explicit optional Konserve immutable-write seam and a runnable
       three-private-device demonstration without claiming a transparent store.
-- [ ] Freeze authenticated offer/piece, retention-manifest, signed storage
-      receipt, lease, deletion-marker and deletion-receipt schemas.
+- [x] Freeze authenticated offer/piece, retention-manifest, signed storage
+      receipt, lease, deletion-marker and deletion-receipt schemas plus a
+      JVM/JavaScript/Python-compatible deterministic fixture. The capability
+      remains unadvertised until the runtime and lifecycle gates below pass.
 - [ ] Implement the real Kabel/Noise transfer runtime, durable piece staging,
       scrubbing, inventory exchange and restart recovery against file stores.
 - [ ] Decide transparent Konserve wrapper semantics for binary streams,

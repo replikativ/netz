@@ -1,5 +1,7 @@
 import json
 import unittest
+from hashlib import sha256
+from importlib.util import find_spec
 from pathlib import Path
 
 from netz_codec import dumps
@@ -10,6 +12,17 @@ from netz_protocol.blob import (
     split_blob,
 )
 from netz_protocol.replication import ReplicationError, place, rank, score
+from netz_protocol.identity import authority_id, genesis
+from netz_protocol.replication_wire import (
+    ReplicationWireError,
+    encode_frame,
+    make_envelope,
+    sign_statement,
+    signing_bytes,
+    validate_frame,
+    validate_statement,
+    verify_envelope,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -95,6 +108,88 @@ class PortableBlobTest(unittest.TestCase):
                              piece["index"]: piece["data"]
                              for piece in split["pieces"]
                          }))
+
+
+class SignedBlobProtocolTest(unittest.TestCase):
+    def values(self):
+        fixture = json.loads(
+            (ROOT / "spec/fixtures/blob-statements-1.json").read_text())
+        diagnostic = fixture["diagnostic"]
+        public_key = bytes.fromhex(diagnostic["public_key_hex"])
+        identity_genesis = genesis(
+            [bytes.fromhex(diagnostic["rotation_key_hex"])], 1,
+            [public_key], bytes.fromhex(diagnostic["revocation_commit_hex"]))
+        split = split_blob(bytes.fromhex(diagnostic["value_hex"]),
+                           diagnostic["piece_size"])
+        statement = {
+            "v": 1,
+            "type": "blob/retention",
+            "cluster": bytes.fromhex(diagnostic["cluster_hex"]),
+            "privacy_domain": bytes.fromhex(diagnostic["privacy_domain_hex"]),
+            "revision": 1,
+            "manifest": split["manifest_id"],
+            "object": split["object_id"],
+            "layout_epoch": 7,
+            "replicas": 3,
+            "write_acks": 2,
+            "minimum_domains": {"owner": 2, "site": 2},
+            "issued_at": 1000,
+            "retain_until": 2000,
+            "signer": authority_id(identity_genesis),
+        }
+        return fixture, diagnostic, identity_genesis, public_key, split, statement
+
+    def test_shared_statement_and_offer_fixture(self):
+        values = self.values()
+        fixture, diagnostic, identity_genesis, public_key, split, statement = values
+        self.assertIs(statement, validate_statement(statement))
+        self.assertEqual(fixture["signing_bytes_hex"], signing_bytes(statement).hex())
+        envelope = make_envelope(
+            identity_genesis, public_key, statement,
+            bytes.fromhex(fixture["signature_hex"]))
+        offer = {
+            "v": 1,
+            "type": "blob/offer",
+            "session": bytes.fromhex(diagnostic["session_hex"]),
+            "attempt": 0,
+            "replica": authority_id(identity_genesis),
+            "retention": envelope,
+            "manifest": split["manifest"],
+        }
+        self.assertIs(offer, validate_frame(offer))
+        self.assertEqual(fixture["offer_cbor_sha256_hex"],
+                         sha256(encode_frame(offer)).hexdigest())
+
+    def test_statement_and_frame_schemas_fail_closed(self):
+        values = self.values()
+        fixture, diagnostic, identity_genesis, public_key, split, statement = values
+        with self.assertRaises(ReplicationWireError):
+            validate_statement({**statement, "extension": True})
+        with self.assertRaises(ReplicationWireError):
+            validate_statement({**statement, "write_acks": 4})
+        envelope = make_envelope(identity_genesis, public_key, statement,
+                                 bytes.fromhex(fixture["signature_hex"]))
+        bad_manifest = {**split["manifest"], "object": b"\xff" * 32}
+        with self.assertRaises(ReplicationWireError):
+            validate_frame({
+                "v": 1, "type": "blob/offer",
+                "session": bytes.fromhex(diagnostic["session_hex"]),
+                "attempt": 0, "replica": authority_id(identity_genesis),
+                "retention": envelope, "manifest": bad_manifest,
+            })
+
+    @unittest.skipUnless(find_spec("cryptography"),
+                         "optional crypto dependency is not installed")
+    def test_shared_signature_and_tamper_rejection(self):
+        fixture, diagnostic, identity_genesis, _, _, statement = self.values()
+        signed = sign_statement(
+            identity_genesis, bytes.fromhex(diagnostic["private_key_hex"]),
+            statement)
+        self.assertEqual(fixture["signature_hex"], signed["signature"].hex())
+        self.assertTrue(verify_envelope(signed))
+        tampered = {**signed, "statement": {
+            **signed["statement"], "retain_until": 2001}}
+        self.assertFalse(verify_envelope(tampered))
 
 
 if __name__ == "__main__":

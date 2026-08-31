@@ -9,9 +9,10 @@ may make incompatible protocol changes.
 - Added an experimental private durable-blob extension: deterministic
   Authority-ID placement across owner/site failure domains, explicit durable
   outbox and receipt fencing, portable piece manifests/resume bitmaps with
-  JVM/JavaScript/Python fixtures, simulated disk/partition repair, an explicit
-  optional Konserve seam, and a three-device demonstration. Authenticated
-  transfer and retention/deletion frames remain gated in `RELEASE.md`.
+  JVM/JavaScript/Python fixtures, signed retention/lease/deletion and replica
+  receipt schemas, bounded transfer frames, simulated disk/partition repair,
+  an explicit optional Konserve seam, and a three-device demonstration. The
+  real transfer and lifecycle runtimes remain gated in `RELEASE.md`.
 - Added the exact `Noise_XX_25519_AESGCM_SHA256` direct Kabel carrier with
   full-Authority target binding, transcript-bound capability negotiation,
   authenticated serializer-14 envelopes, bounded fragmentation, and shared

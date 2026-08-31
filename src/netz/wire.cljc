@@ -11,6 +11,7 @@
             [netz.identity :as identity]))
 
 (def profile-version 1)
+(def profile-capability "wire/netz-cbor/1")
 
 (def ^:private canonical-options
   {:profile :canonical

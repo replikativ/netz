@@ -105,24 +105,16 @@ the JVM, JavaScript and Python implementations.
 
 ## 5. Manifest and address
 
-A portable manifest is a deterministic-CBOR control object containing at
-least:
+A transfer manifest is the following closed deterministic-CBOR control object:
 
 ~~~text
 {
   "v": 1,
   "type": "blob/manifest",
-  "cluster": <opaque bytes>,
-  "privacy_domain": <opaque bytes>,
   "object": <address bytes>,
-  "address_profile": <negotiated text>,
   "length": <unsigned integer>,
-  "chunks": [
-    {"id": <address bytes>, "offset": <uint>, "length": <positive uint>}, ...
-  ],
-  "retention_not_after": <Unix milliseconds>,
-  "created_by": <full Authority ID>,
-  "signature": <bytes>
+  "piece_size": <positive uint, at most 1 MiB>,
+  "pieces": [<32-byte piece address>, ...]
 }
 ~~~
 
@@ -142,14 +134,114 @@ the descriptor, addresses, piece data and resume bitmap across JVM, JavaScript
 and Python.
 
 Implementations MUST NOT substitute a host-language printer or hash a
-backend-private representation. The higher-level retention manifest and its
-signature transcript remain to be frozen before this extension can advertise
-an interoperable capability.
+backend-private representation.
 Randomized AEAD ciphertext SHOULD be produced before content addressing when
 plaintext is personal, secret or guessable; a plain hash otherwise reveals
 equality and enables dictionary testing.
 
-## 6. Transfer, attempt fencing and receipts
+## 6. Signed retention and lifecycle statements
+
+All durable statements use the ordinary Netz operational Ed25519 key model,
+not a second identity system. The exact signature transcript is:
+
+~~~text
+UTF8("netz/blob-statement/v1\0") || deterministic-CBOR(statement)
+~~~
+
+The self-contained envelope is:
+
+~~~text
+{
+  "v": 1,
+  "type": "blob/signed",
+  "statement": <one closed statement below>,
+  "genesis": <Netz profile-1 genesis object>,
+  "operational": <32-byte Ed25519 public key>,
+  "signature": <64-byte Ed25519 signature>
+}
+~~~
+
+The Authority ID derived from `genesis` MUST equal `statement.signer`, and
+`operational` MUST be authorized by that genesis. This is intentionally a
+domain-separated Netz envelope rather than COSE_Sign1 in draft-00. COSE would
+still require the Netz genesis-to-operational-key authorization proof and a
+second CBOR sub-profile. A future COSE binding can be negotiated as a distinct
+capability without changing the statements.
+
+`cluster` and `privacy_domain` are non-empty opaque byte strings of at most 64
+bytes. They prevent a valid statement from being replayed into another
+administrative or privacy namespace. `manifest`, `object`, `signer`, and
+`replica` are 32-byte values. Times are Unix milliseconds represented as safe
+unsigned integers. Counters and epochs are also limited to the exact integer
+range shared with JavaScript, `0..2^53-1`.
+
+The initial controller statement is:
+
+~~~text
+{
+  "v": 1, "type": "blob/retention",
+  "cluster": bytes, "privacy_domain": bytes,
+  "revision": positive_uint,
+  "manifest": bytes32, "object": bytes32,
+  "layout_epoch": uint,
+  "replicas": N, "write_acks": W,
+  "minimum_domains": {text: positive_uint, ...},
+  "issued_at": uint, "retain_until": uint,
+  "signer": controller_authority_bytes32
+}
+~~~
+
+The configured deployment policy MUST authorize the controller signer and the
+named layout epoch. The retention statement does not make a discovered peer a
+replica and does not replace verification of the signed/configured layout.
+
+A controller extends retention without retransmitting placement policy using
+`blob/lease`, which has the common namespace, manifest, object, layout epoch,
+time and signer fields plus `revision` and `retain_until`. It requests deletion
+using `blob/deletion`, replacing `retain_until` with `delete_after`. Revisions
+form one monotonically increasing controller stream per
+`(cluster, privacy_domain, object)`. A replica MUST reject stale revisions and
+retain evidence of same-revision conflicts. A lease may only extend the
+accepted retention time. An accepted deletion is absorbing for that tuple: a
+later lease cannot resurrect the same addressed object in the same privacy
+domain.
+
+A replica's successful installation statement is:
+
+~~~text
+{
+  "v": 1, "type": "blob/stored",
+  "cluster": bytes, "privacy_domain": bytes,
+  "retention_revision": positive_uint,
+  "manifest": bytes32, "object": bytes32, "layout_epoch": uint,
+  "replica": replica_authority_bytes32, "attempt": uint,
+  "persistence": <profile text>,
+  "stored_at": uint, "retain_until": uint,
+  "signer": replica_authority_bytes32
+}
+~~~
+
+`replica` MUST equal `signer`. A deletion receipt has type `blob/deleted`, the
+same namespace/address/layout/replica/persistence/signer fields,
+`deletion_revision`, and `deleted_at`. It MUST only be issued after the object,
+staging data and live repair work have been removed at the stated persistence
+level. Backups outside the replica protocol remain an operator obligation.
+
+The defined persistence profiles are:
+
+- `netz/store/volatile/1`: process-memory or otherwise non-crash-durable;
+- `netz/store/best-effort/1`: atomically installed after backend write
+  completion, without a forced stable-storage barrier; and
+- `netz/store/fsync/1`: content and installation metadata flushed using the
+  backend's stable-storage primitive. On a POSIX file store this includes the
+  file, atomic rename and containing directory metadata.
+
+A volatile receipt MUST NOT satisfy `W`. Best-effort receipts count only when
+the caller explicitly accepts that persistence profile. The durability policy
+SHOULD require fsync receipts. Storage hardware or a Byzantine operator lying
+about stable writes remains outside the crash-fault model.
+
+## 7. Transfer, attempt fencing and receipts
 
 The coordinator persists an outbox intent before reporting success. Each store
 offer binds `object`, `layout_epoch`, target replica and monotonically
@@ -157,9 +249,39 @@ increasing `attempt`. A retry increments the attempt. A completion for an older
 attempt MUST NOT satisfy the current operation, including after a connection or
 disk is replaced.
 
+The `netz/blob-replication/1` capability selects these transfer frames. It MUST
+only be used over a connection that authenticates both full Netz Authority IDs.
+Every frame is a closed map with `v: 1` and a 16-byte random `session`:
+
+~~~text
+blob/offer  {session, attempt, replica, retention, manifest}
+blob/need   {session, manifest, need}
+blob/piece  {session, manifest, index, data}
+blob/ack    {session, manifest, through}
+blob/commit {session, manifest, count}
+blob/stored {session, receipt}
+blob/abort  {session, code}
+~~~
+
+Here `retention` and `receipt` are signed envelopes, `manifest` in an offer is
+the complete transfer manifest, and other `manifest` fields are its 32-byte
+address. An offer's addresses MUST match its signed retention statement and
+its target `replica` MUST be the authenticated receiving Authority. A stored
+frame's receipt signer MUST be the authenticated sending Authority. Structural
+frame decoding alone is not signature verification.
+
 The receiver requests missing pieces with a bitset: bit index 0 is the most
 significant bit of byte 0, and a set bit means "needed". Unused trailing bits
 MUST be zero. This bounds a 16,384-piece resume summary to 2 KiB.
+
+Pieces are at most 1 MiB and MUST match the address and expected length at
+their manifest index. WebSocket delivery is ordered; `blob/ack.through` is the
+highest contiguous piece index durably staged for this session. An ACK MAY be
+cumulative but is only flow control, never a storage receipt. `blob/commit`
+names the expected piece count and asks the receiver to verify and install the
+complete object. Sessions, staged bytes, decoded maps, in-flight pieces and
+outbound queues MUST all be bounded. A reconnect uses a fresh session and
+`blob/need` to resume from verified pieces.
 
 The receiver verifies every piece and the complete
 object, atomically installs it, and flushes according to the persistence level
@@ -167,17 +289,15 @@ named in the deployment. Only then may it issue a signed storage receipt. Mere
 network delivery, an accepted offer, a queued write or a partially installed
 manifest is not an acknowledgement.
 
-The replica-receipt signature transcript and resumable chunk-frame schemas are
-intentionally still open in draft-00. Until they are frozen, receipts are
-implementation-local and this extension MUST NOT claim cross-language durable
-interoperability.
+`fixtures/blob-statements-1.json` pins the retention transcript, Ed25519
+signature and complete canonical-offer hash across JVM, JavaScript and Python.
 
 A coordinator may return quorum when it holds `W` current receipts satisfying
 all domain constraints. It retains repair work until all `N` targets have
 receipts. A completion timeout MUST distinguish a local commit from achieved
 quorum.
 
-## 7. Failure and privacy semantics
+## 8. Failure and privacy semantics
 
 With `N=3,W=2`, success proves two eligible durable installations at the stated
 persistence level. It tolerates loss of either acknowledged copy, but not every
@@ -196,14 +316,20 @@ staging, backups and repair queues.
 The application remains responsible for subject/retention indexing. Moving a
 Datahike root does not erase personal data from historical immutable values.
 
-## 8. Required conformance work
+Lease expiry depends on wall-clock time. Deployments MUST specify an allowed
+clock-skew bound and monitor it. A replica whose clock is outside policy MUST
+fail closed for serving and renewal rather than silently extending retention.
+Deletion markers and their highest accepted revision survive object deletion;
+otherwise an offline replica could resurrect bytes from a stale offer.
+
+## 9. Required conformance work
 
 Before advertising a durable-blob capability, implementations must additionally
 freeze and test:
 
-1. retention-manifest and signature transcripts;
-2. offer/piece and signed replica-receipt schemas (the need bitmap is frozen);
-3. bounded resumable transfers and durable outbox crash recovery;
-4. lease renewal, deletion markers and deletion receipts;
-5. independent JVM, JavaScript and Python end-to-end fixtures; and
+1. the signed/configured layout and reconfiguration transcript;
+2. bounded resumable transfer and durable piece-staging state machines;
+3. durable outbox and restart recovery against real file stores;
+4. lease renewal, expiry, clock-skew and absorbing deletion state machines;
+5. independent JVM, JavaScript and Python end-to-end tests; and
 6. real three-device tests in addition to deterministic fault simulation.
