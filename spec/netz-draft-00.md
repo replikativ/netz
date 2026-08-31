@@ -182,16 +182,13 @@ full Authority ID, and the record carries the genesis, operational key, and
 Ed25519 signature needed for verification without prior contact. Root and
 predecessor identifiers are opaque byte strings.
 
-Capability identifiers in signed or handshake data MUST match
-`[A-Za-z0-9][A-Za-z0-9._/-]{0,127}`. Signed addresses MUST be sorted by ASCII byte
-order and already be absolute, credential-free `ws` or `wss` URIs containing
-only visible ASCII. Their scheme and DNS host are lowercase, DNS hosts use IDNA
-A-labels, IPv6 literals use lowercase compressed form in brackets, an empty
-path is `/`, non-ASCII path and query characters are UTF-8 percent-encoded, and
-percent escapes use uppercase hex. Fragments and scoped IPv6 literals are not
-allowed. An explicitly supplied port is retained. Verifiers MUST reject a
-signed record whose address spelling is not canonical before accepting its
-signature.
+Capability identifiers in signed or handshake data MUST contain 1–128 visible
+ASCII octets (`0x21`–`0x7e`). Signed addresses MUST be sorted by ASCII byte
+order and be absolute, credential-free `ws` or `wss` URIs containing only
+visible ASCII, with no fragment. Producers SHOULD use lowercase IDNA A-labels,
+compressed IPv6, `/` for an empty path, and uppercase UTF-8 percent escapes.
+The exact URI spelling is signed; a verifier validates but does not normalize
+it, avoiding runtime-dependent URL rewriting at the trust boundary.
 
 ## 7. Connection handshake and capabilities
 
@@ -210,12 +207,10 @@ Noise message 1 carries the initiator's deterministic-CBOR offer:
 }
 ~~~
 
-Capability identifiers MUST match
-`[A-Za-z0-9][A-Za-z0-9._/-]{0,127}` and arrays are sorted by ascending byte
-value. The canonical address rules are defined in Section 6. These restrictions
-make ordering byte-identical in JVM, JavaScript and Unicode-codepoint-based
-foreign runtimes; implementations MUST NOT expose host-language string
-collation on this wire surface.
+Capability arrays are sorted by ascending byte value. The address rules are
+defined in Section 6. Visible ASCII makes ordering byte-identical in JVM,
+JavaScript and Unicode-codepoint-based foreign runtimes; implementations MUST
+NOT expose host-language string collation on this wire surface.
 
 Noise messages 2 and 3 carry the responder's and initiator's identity payloads
 respectively. An identity payload contains the signed identity record, the

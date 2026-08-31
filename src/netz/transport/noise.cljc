@@ -13,6 +13,7 @@
   channel, but encryption and nonces remain strictly serialized."
   (:require [clojure.core.async :as async :refer [chan close!]]
             [clojure.set :as set]
+            [clojure.string :as str]
             [kabel.binary.table :as binary-table]
             [kabel.transport :as transport]
             [netz.identity :as identity]
@@ -60,19 +61,35 @@
     (when-not (and (<= (count v) 64)
                    (= (count v) (count (distinct v)))
                    (every? #(and (string? %)
-                                 (boolean
-                                  (re-matches
-                                   #"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}" %)))
+                                 (boolean (re-matches #"[\x21-\x7e]{1,128}" %)))
                            v))
       (fail "invalid capability set" {:capabilities values}))
     v))
 
 (defn- portable-address? [value]
-  ;; IDNA and percent-encoding happen before the identity record is signed.
-  ;; Keeping the signed representation printable ASCII makes host `sort`
+  ;; IDNA and percent-encoding should happen before the identity record is
+  ;; signed. Keeping its exact spelling printable ASCII makes host `sort`
   ;; identical to Unicode-codepoint and UTF-8-byte order in foreign clients.
-  (and (string? value)
-       (boolean (re-matches #"[\x21-\x7e]{1,2048}" value))))
+  (boolean
+   (try
+     (and (string? value)
+          (boolean (re-matches #"[\x21-\x7e]{1,2048}" value))
+          #?(:clj
+             (let [u (java.net.URI. value)]
+               (and (contains? #{"ws" "wss"}
+                               (some-> (.getScheme u) str/lower-case))
+                    (some? (.getHost u))
+                    (nil? (.getRawUserInfo u))
+                    (nil? (.getRawFragment u))))
+             :cljs
+             (let [u (js/URL. value)]
+               (and (contains? #{"ws:" "wss:"}
+                               (str/lower-case (.-protocol u)))
+                    (seq (.-hostname u))
+                    (empty? (.-username u))
+                    (empty? (.-password u))
+                    (empty? (.-hash u))))))
+     (catch #?(:clj Exception :cljs :default) _ false))))
 
 (defn- checked-capabilities [values]
   (when-not (vector? values)

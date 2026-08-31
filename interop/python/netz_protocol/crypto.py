@@ -135,6 +135,23 @@ def normalize_websocket_uri(value: str) -> str:
     return normalized
 
 
+def _validate_signed_websocket_uri(value: str) -> None:
+    """Validate the interoperable signed form without rewriting its spelling."""
+    if (type(value) is not str or not value or len(value) > MAX_ADDRESS_CHARS
+            or not _visible_ascii(value)):
+        raise CryptoError("invalid signed WebSocket URI")
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except (TypeError, ValueError, UnicodeError) as error:
+        raise CryptoError("invalid signed WebSocket URI") from error
+    if (parsed.scheme.lower() not in {"ws", "wss"}
+            or not parsed.netloc or parsed.hostname is None
+            or parsed.username is not None or parsed.password is not None
+            or parsed.fragment):
+        raise CryptoError("invalid signed WebSocket URI")
+
+
 def canonical_capabilities(values: Iterable[str]) -> tuple[str, ...]:
     """Validate, sort, and return one canonical capability array."""
     values = list(values)
@@ -260,13 +277,16 @@ def verify_identity_record(record: Mapping[str, object]) -> bytes:
             or not isinstance(claimed_authority, bytes) or len(claimed_authority) != KEY_BYTES
             or not isinstance(operational, bytes) or len(operational) != KEY_BYTES
             or not isinstance(addresses, list) or len(addresses) > MAX_ADDRESSES
+            or any(type(address) is not str for address in addresses)
             or addresses != sorted(addresses)
-            or any(type(address) is not str
-                   or address != normalize_websocket_uri(address)
-                   for address in addresses)
             or type(sequence) is not int or not 0 <= sequence <= MAX_SAFE_INTEGER
             or not isinstance(signature, bytes) or len(signature) != SIGNATURE_BYTES):
         raise CryptoError("invalid identity record fields")
+    try:
+        for address in addresses:
+            _validate_signed_websocket_uri(address)
+    except CryptoError as error:
+        raise CryptoError("invalid identity record fields") from error
     try:
         genesis_bytes(genesis)
     except IdentityError as error:

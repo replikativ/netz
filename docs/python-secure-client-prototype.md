@@ -75,8 +75,9 @@ message 3. Each identity payload contains:
 Capability tokens are visible ASCII so lexical ordering is byte-identical in
 every runtime. Before signing, address helpers normalize `ws` and `wss` URIs to
 visible ASCII, including lowercase IDNA A-label hosts and UTF-8
-percent-encoded paths and queries. Verification rejects non-canonical address
-spellings before accepting a record signature.
+percent-encoded paths and queries. Verification accepts the exact signed
+visible-ASCII URI spelling after checking its scheme, authority, credentials
+and fragment; it does not repeat runtime-dependent URL normalization.
 
 The peer verifies the record, expected dial target, static-key signature, and
 equality with the static key authenticated by XX before exposing a peer

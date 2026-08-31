@@ -588,12 +588,14 @@
   connection under their peer id, and funnel overlay frames into the runtime.
   Everything else passes through."
   [{:keys [ctx identity addresses seq-no require-signed? handshake-max-attempts
-           handshake-timeout-ms]
+           handshake-timeout-ms authenticated-context-fn]
     :or {require-signed? true handshake-max-attempts 4
          handshake-timeout-ms 15000}}]
-  (fn [[S peer [in out]]]
+  (fn [[S peer [in out] :as connection]]
     (let [pass-in (chan)
           pass-out (chan)
+          authenticated-context (when authenticated-context-fn
+                                  (authenticated-context-fn connection))
           local-peer-id (id/peer-id (:genesis identity))
           local-authority-id (id/authority-id (:genesis identity))
           ;; Kabel preserves channel order, so make the two Netz producers
@@ -640,18 +642,52 @@
                                 (doseq [app @pending-app]
                                   (>? S pass-in app))
                                 (reset! pending-app [])
-                                true)))]
+                                true)))
+          complete-authenticated-transport!
+          (fn []
+            (when (and authenticated-context
+                       (= :pending @handshake-state))
+              (let [facts @authenticated-context
+                    record (:netz.transport.noise/authenticated-record facts)
+                    routing-id (:netz.transport.noise/authenticated-routing-id facts)
+                    authority (:kabel.transport/authenticated-authority facts)]
+                (cond
+                  (:netz.transport.noise/error facts)
+                  (do (reset! handshake-state :failed) (close! out) false)
+
+                  (and record routing-id authority
+                       (= routing-id (:netz/peer-id record))
+                       (= authority (:netz/authority-id record)))
+                  (do
+                    (reset! conn-peer-id (register! S peer routing-id out))
+                    (reset! handshake-state :complete)
+                    (go-try S
+                            (doseq [app @pending-app]
+                              (>? S pass-in app))
+                            (reset! pending-app []))
+                    true)
+
+                  :else false))))]
 
       ;; Announce ourselves immediately. Both ends do this unconditionally, so
       ;; the handshake needs no notion of who dialled whom.
-      (go-try S
-              (let [record (<? S (id/sign-record identity addresses (or seq-no 0)))]
-                ;; Hex-encoded: the default codec is pr-str/edn, which cannot
-                ;; round-trip a byte array. See `netz.identity/record->wire`.
-                (>? S out {:type hello-type
-                           :record (id/record->wire record)
-                           :nonce our-nonce})
-                (close! hello-sent)))
+      (if authenticated-context
+        ;; Noise already exchanged and verified the same identity record inside
+        ;; its transcript. Poll only until that lower middleware atomically
+        ;; publishes it; no second public challenge is put on the wire.
+        (go-loop-super S []
+                       (when (= :pending @handshake-state)
+                         (when-not (complete-authenticated-transport!)
+                           (<? S (timeout 5))
+                           (recur))))
+        (go-try S
+                (let [record (<? S (id/sign-record identity addresses (or seq-no 0)))]
+                  ;; Hex-encoded: the default codec is pr-str/edn, which cannot
+                  ;; round-trip a byte array. See `netz.identity/record->wire`.
+                  (>? S out {:type hello-type
+                             :record (id/record->wire record)
+                             :nonce our-nonce})
+                  (close! hello-sent))))
 
       ;; A peer that never finishes authentication must not retain a socket,
       ;; challenge, record and buffered application messages indefinitely.
@@ -672,38 +708,48 @@
                          ;; and `verify-gossip` both run on wholly unvalidated
                          ;; wire data.
                          (try
+                           ;; A decrypted application frame cannot arrive until
+                           ;; Noise has published the authenticated context. Do
+                           ;; the registration synchronously too, closing the
+                           ;; tiny scheduler race with the polling loop above.
+                           (when authenticated-context
+                             (complete-authenticated-transport!))
                            (cond
                              (= hello-type (:type m))
-                             (if-not (and (= :pending @handshake-state)
-                                          (attempt!)
-                                          (bounded-value? m))
+                             (if authenticated-context
                                (close! out)
-                               (let [record (id/wire->record (:record m))]
+                               (if-not (and (= :pending @handshake-state)
+                                            (attempt!)
+                                            (bounded-value? m))
+                                 (close! out)
+                                 (let [record (id/wire->record (:record m))]
                                ;; A verified record says who they CLAIM to be.
                                ;; It does not say they are here: it is signed
                                ;; over constants of the identity, so anyone who
                                ;; has seen it can replay it. Hold it, and
                                ;; answer their challenge; registration waits
                                ;; for them to answer ours.
-                                 (when (and record (<? S (id/verify-record record))
-                                            (string? (:nonce m))
-                                            (= 64 (count (:nonce m))))
-                                   (reset! pending-record record)
-                                   (reset! pending-nonce (:nonce m))
-                                   (<? S hello-sent)
-                                   (>? S out {:type proof-type
-                                              :sig (<? S (id/sign-challenge
-                                                          identity our-nonce
-                                                          (:netz/authority-id record)
-                                                          (:nonce m)))}))))
+                                   (when (and record (<? S (id/verify-record record))
+                                              (string? (:nonce m))
+                                              (= 64 (count (:nonce m))))
+                                     (reset! pending-record record)
+                                     (reset! pending-nonce (:nonce m))
+                                     (<? S hello-sent)
+                                     (>? S out {:type proof-type
+                                                :sig (<? S (id/sign-challenge
+                                                            identity our-nonce
+                                                            (:netz/authority-id record)
+                                                            (:nonce m)))})))))
 
                              (= proof-type (:type m))
-                             (if-not (and (= :pending @handshake-state)
-                                          (attempt!)
-                                          (bounded-value? m))
+                             (if authenticated-context
                                (close! out)
-                               (when-let [record @pending-record]
-                                 (<? S (complete! record @pending-nonce (:sig m)))))
+                               (if-not (and (= :pending @handshake-state)
+                                            (attempt!)
+                                            (bounded-value? m))
+                                 (close! out)
+                                 (when-let [record @pending-record]
+                                   (<? S (complete! record @pending-nonce (:sig m))))))
 
                              (= frame-type (:type m))
                              ;; The connection's own peer id, remembered when
@@ -962,13 +1008,17 @@
                         absolute credential-free ws/wss URLs
   - `:handshake-max-attempts` — signature-bearing hello/proof messages allowed
   - `:handshake-timeout-ms` — deadline for connection identity proof
+  - `:authenticated-context-fn` — secure transport context accessor; when set,
+                                  use its verified identity instead of the
+                                  transitional public hello/proof exchange
   - `:seed`      — rng seed; derived from the peer id when absent
 
   Returns a channel yielding a context map with `:ctx` (the runtime) and
   `:middleware` (to install on the peer)."
   [S peer {:keys [identity addresses seeds topics store recovery-store seed
                   overlay-opts require-signed? allow-address?
-                  handshake-max-attempts handshake-timeout-ms]}]
+                  handshake-max-attempts handshake-timeout-ms
+                  authenticated-context-fn]}]
   (go-try S
           (let [stored-identity (when (and (nil? identity) store)
                                   (<? S (store/-load store :identity)))
@@ -1027,6 +1077,8 @@
                                       :identity identity
                                       :addresses (vec addresses)
                                       :seq-no epoch
+                                      :authenticated-context-fn
+                                      authenticated-context-fn
                                       :handshake-max-attempts (or handshake-max-attempts 4)
                                       :handshake-timeout-ms (or handshake-timeout-ms 15000)
                                       :require-signed? (if (nil? require-signed?)

@@ -10,6 +10,7 @@
             [netz.overlay :as overlay]
             [netz.overlay.runtime :as rt]
             [netz.transport.noise :as secure]
+            [netz.transport.secure :as secure-overlay]
             [superv.async :refer [<?? S]]))
 
 (def ^:private port-counter (atom 48700))
@@ -40,15 +41,16 @@
          S (http-kit/create-http-kit-handler! S url server-id)
          server-id server-app cbor (atom {}) (atom {})
          {:transport-middleware
-          (secure/middleware {:identity server-identity
-                              :addresses [url]
-                              :seq-no 1})})
-        server (<?? S (rt/start! S server-peer
-                                 {:identity server-identity
-                                  :addresses [url]
-                                  :topics #{:secure}
-                                  :overlay-opts
-                                  {:membership {:require-authority? true}}}))]
+          (secure-overlay/middleware {:identity server-identity
+                                      :addresses [url]
+                                      :seq-no 1})})
+        server (<?? S (secure-overlay/start!
+                       S server-peer
+                       {:identity server-identity
+                        :addresses [url]
+                        :topics #{:secure}
+                        :overlay-opts
+                        {:membership {:require-authority? true}}}))]
     (install-server! (:middleware server))
     (<?? S (peer/start server-peer))
     (try
@@ -57,19 +59,20 @@
             (peer/client-peer
              S client-id client-app cbor (atom {}) (atom {})
              {:transport-middleware
-              (secure/middleware {:identity client-identity
-                                  :addresses []
-                                  :seq-no 1})})
-            client (<?? S (rt/start! S client-peer
-                                     {:identity client-identity
-                                      :topics #{:secure}
-                                      :seeds [{:peer-id server-id
-                                               :authority-id server-authority
-                                               :addresses [url]
-                                               :group "seed"}]
-                                      :overlay-opts
-                                      {:membership {:require-authority? true
-                                                    :dial-interval-ms 20}}}))]
+              (secure-overlay/middleware {:identity client-identity
+                                          :addresses []
+                                          :seq-no 1})})
+            client (<?? S (secure-overlay/start!
+                           S client-peer
+                           {:identity client-identity
+                            :topics #{:secure}
+                            :seeds [{:peer-id server-id
+                                     :authority-id server-authority
+                                     :addresses [url]
+                                     :group "seed"}]
+                            :overlay-opts
+                            {:membership {:require-authority? true
+                                          :dial-interval-ms 20}}}))]
         (install-client! (:middleware client))
         (try
           (testing "membership's dial carries the full expected Authority ID"

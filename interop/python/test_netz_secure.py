@@ -113,7 +113,7 @@ class SecureTest(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(CryptoError):
                 normalize_websocket_uri(invalid)
 
-    def test_verifier_rejects_noncanonical_signed_address(self):
+    def test_verifier_rejects_tampered_signed_address(self):
         private = bytes([10]) * 32
         public = raw_public(private)
         authority = genesis([public], 1, [public], bytes([42]) * 32)

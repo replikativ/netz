@@ -10,13 +10,12 @@ Clojure/ClojureScript sources. A language-neutral protocol draft and a small
 dependency-free Python CBOR/session core define the path to implementations
 outside the Clojure ecosystem.
 
-> **Release status: `0.1.0-alpha.1`.** Netz is suitable for controlled peers,
-> but not yet for an untrusted public network. Mixed direct/overlay live
-> delivery is rejected explicitly and the generation-fenced apply owner now
-> controls live/snapshot application. Bounded asynchronous WebSocket writes
-> are available in the released Kabel/http-kit stack; authenticated transport
-> sessions and the remaining identity/deployment work are still release gates. See
-> [release readiness](RELEASE.md) for the complete gate.
+> **Release status: `0.1.0-alpha.1`.** The JVM, JavaScript, and Python paths now
+> share deterministic CBOR and authenticated Noise/Kabel fixtures, and the
+> secure JVM overlay passes a real WebSocket test. Public deployment still
+> waits on the Kabel/Geheimnis dependency releases, address-resolution policy,
+> and the explicitly reserved identity-rotation protocol. See
+> [release readiness](RELEASE.md) for the exact gates.
 
 ## What Netz owns
 

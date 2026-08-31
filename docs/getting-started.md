@@ -77,6 +77,46 @@ For a client, construct `peer/client-peer`, pass a configured seed to
 socket examples in `test/netz/overlay/integration_test.clj` are the most direct
 reference while the API is alpha.
 
+## Authenticated transport
+
+The public-network path uses Kabel CBOR inside Noise. Until the pending Kabel
+and Geheimnis releases land, resolve the commits pinned by Netz's
+`:secure-test` alias. Construct the peer with the same identity that starts the
+overlay:
+
+```clojure
+(require '[kabel.middleware.cbor :refer [cbor]]
+         '[netz.transport.secure :as secure])
+
+(let [[application install!] (runtime/deferred-middleware)
+      socket-peer
+      (peer/client-peer
+       S peer-id application cbor (atom {}) (atom {})
+       {:transport-middleware
+        (secure/middleware {:identity keys
+                            :addresses []
+                            :seq-no 1})})
+      node
+      (<?? S
+           (secure/start!
+            S socket-peer
+            {:identity keys
+             :topics #{:example}
+             :seeds [{:peer-id seed-routing-id
+                      :authority-id seed-full-authority-id
+                      :addresses [seed-url]}]
+             :overlay-opts
+             {:membership {:require-authority? true}}}))]
+  (install! (:middleware node)))
+```
+
+`secure/start!` registers the identity already verified inside the Noise
+transcript and does not emit the transitional public hello/proof exchange. A
+secure seed therefore needs both the UUID-shaped routing ID and the full
+64-hex-character Authority ID. The runtime passes the latter as a per-dial
+Kabel context value, so connecting to the right URL with the wrong key fails
+closed.
+
 ## Public API
 
 | Operation | Meaning |

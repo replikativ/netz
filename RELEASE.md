@@ -53,10 +53,11 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       profile: `Noise_XX_25519_AESGCM_SHA256` below Kabel serialization, with
       serialized transport ownership and Netz identity/capability payloads.
       The direct middleware, exact capability intersection, full-Authority
-      binding, encrypted Kabel-envelope fragmentation and JVM/CLJS adversarial
-      tests now exist behind `:secure-test`. This remains unchecked until the
-      Kabel/Geheimnis PRs are released and the overlay's transitional
-      hello/proof middleware is removed from the default public path.
+      binding, encrypted Kabel-envelope fragmentation, JVM/CLJS adversarial
+      tests, and a real http-kit/Kabel/CBOR/Noise overlay test now exist behind
+      `:secure-test`. `netz.transport.secure/start!` consumes the authenticated
+      connection context without the transitional hello/proof exchange. This
+      remains unchecked until the Kabel/Geheimnis PRs are released.
 - [x] Publication sequence, deduplication, repair, and bounded ordered delivery
       are scoped per origin/topic stream.
 - [x] Kabel routes external and direct application through one peer/topic
@@ -114,6 +115,12 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       asyncio WebSocket round trip plus the same Cacophony vector as Geheimnis.
       Dissemination and outbound sync orchestration remain before calling it a
       complete application client.
+- [x] JVM and Python consume the same deterministic direct-binding fixture,
+      covering both identity records and binding signatures, the offer, all
+      three Noise messages, handshake hash, encrypted serializer-14 fragment,
+      and serializer-0 outer carrier. CLJS runs the same binding logic and
+      adversarial transport suite; consuming this JSON fixture there remains
+      part of the three-runtime gate below.
 - [ ] Pass independent JVM/JS/Python two-peer conformance tests.
 - [ ] Pass a real three-or-more-peer partition/rejoin test for both a fenced
       single-writer root and a multiwriter join-semilattice.

@@ -5,6 +5,7 @@
             [kabel.transport :as transport]
             [netz.identity :as identity]
             [netz.transport.noise :as secure]
+            [netz.transport.secure :as secure-overlay]
             [netz.wire :as wire]))
 
 (defn- error-value? [x]
@@ -68,6 +69,7 @@
    :kabel/payload (wire/encode-canonical {"v" 1 "type" "test" "n" n})})
 
 (deftest portable-text-profile-is-unambiguous
+  (is (fn? secure-overlay/start!))
   (testing "capability identifiers are ASCII protocol tokens"
     (is (thrown? #?(:clj Exception :cljs js/Error)
                  (secure/middleware
