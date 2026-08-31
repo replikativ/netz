@@ -100,6 +100,60 @@
       (is (= #{:a :b} (sync/application (sim/node-state healed :a) :doc)))
       (is (= #{:a :b} (sync/application (sim/node-state healed :b) :doc))))))
 
+(deftest three-peer-profiles-converge-after-partition-and-rejoin
+  (testing "multiwriter state joins contributions made on both sides"
+    (let [partitioned
+          (-> (sim/make-sim {:seed 71 :latency-min 1 :latency-max 8})
+              (sim/add-node :a sync/handler
+                            (sync-node :a join-profile-id join-profile :doc #{:a}))
+              (sim/add-node :b sync/handler
+                            (sync-node :b join-profile-id join-profile :doc #{:b}))
+              (sim/add-node :c sync/handler
+                            (sync-node :c join-profile-id join-profile :doc #{:c}))
+              (sim/partition-network {:a :left :b :left :c :right})
+              (pull :a :b :doc join-profile-id :left-ab)
+              (pull :b :a :doc join-profile-id :left-ba)
+              (sim/send-message :app :c
+                                {:type :sync/start :peer :a :topic :doc
+                                 :profile join-profile-id :session :cut})
+              (sim/run-until 25000))
+          healed (-> partitioned
+                     (sim/heal)
+                     (pull :a :c :doc join-profile-id :heal-ac)
+                     (pull :c :a :doc join-profile-id :heal-ca)
+                     (pull :b :a :doc join-profile-id :heal-ba))]
+      (is (= :desynchronized (sync/status (sim/node-state partitioned :c) :doc)))
+      (doseq [peer [:a :b :c]]
+        (is (= #{:a :b :c}
+               (sync/application (sim/node-state healed peer) :doc))
+            (str peer " missed a partition contribution")))))
+
+  (testing "a fenced single writer heals two readers without electing via discovery"
+    (let [old {:writer :writer :term 2 :index 4 :root :old}
+          current {:writer :writer :term 3 :index 8 :root :current}
+          partitioned
+          (-> (sim/make-sim {:seed 72 :latency-min 1 :latency-max 8})
+              (sim/add-node :writer sync/handler
+                            (sync-node :writer root-profile-id root-profile :db current))
+              (sim/add-node :near sync/handler
+                            (sync-node :near root-profile-id root-profile :db old))
+              (sim/add-node :far sync/handler
+                            (sync-node :far root-profile-id root-profile :db old))
+              (sim/partition-network {:writer :left :near :left :far :right})
+              (pull :near :writer :db root-profile-id :near-sync)
+              (sim/send-message :app :far
+                                {:type :sync/start :peer :writer :topic :db
+                                 :profile root-profile-id :session :far-cut})
+              (sim/run-until 25000))
+          healed (-> partitioned
+                     (sim/heal)
+                     (pull :far :writer :db root-profile-id :far-heal))]
+      (is (= current (sync/application (sim/node-state partitioned :near) :db)))
+      (is (= old (sync/application (sim/node-state partitioned :far) :db)))
+      (is (= :desynchronized (sync/status (sim/node-state partitioned :far) :db)))
+      (doseq [peer [:writer :near :far]]
+        (is (= current (sync/application (sim/node-state healed peer) :db)))))))
+
 (deftest chunks-are-windowed-ordered-and-staged
   (testing "the responder sends no more than the acknowledged window"
     (let [server (sync-node :server join-profile-id join-profile :doc

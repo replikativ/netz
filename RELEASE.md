@@ -112,6 +112,9 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 - [ ] Pass independent JVM/JS/Python two-peer conformance tests.
 - [ ] Pass a real three-or-more-peer partition/rejoin test for both a fenced
       single-writer root and a multiwriter join-semilattice.
+- [x] The deterministic production-state-machine simulator passes three-peer
+      partition/rejoin scenarios for both profiles; the remaining gate above
+      is specifically the WebSocket/secure-carrier runtime layer.
 
 ## Artifact commands
 
