@@ -78,7 +78,10 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 - [x] Subtree disconnect handling retries an alternate provider immediately,
       resets attempt-local counters after partial delivery, and leaves stale
       deadlines unable to complete the replacement attempt.
-- [ ] Root records need an independently verifiable publisher/signature binding.
+- [x] Portable root records have deterministic opaque-byte transcripts,
+      embedded self-certifying publisher material, and a verify-before-accept
+      API; tampered roots, versions, databases, and signatures cannot advance
+      the pure root-chain verifier.
 - [ ] Rotation-chain and revocation distribution must be implemented or remain
       explicitly unsupported in every advertised protocol version.
 

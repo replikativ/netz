@@ -176,6 +176,12 @@ preimage MUST be stored behind separate trust boundaries. Rotation-chain and
 revocation messages remain RESERVED in draft-00; an implementation MUST say
 that rotation is unsupported rather than accepting an unverified replacement.
 
+Signed root-log profiles use the independent `netz/root-record/v1\0`
+transcript pinned by `fixtures/root-record-1.json`. The publisher field is the
+full Authority ID, and the record carries the genesis, operational key, and
+Ed25519 signature needed for verification without prior contact. Root and
+predecessor identifiers are opaque byte strings.
+
 ## 7. Connection handshake and capabilities
 
 Each side sends a `hello` containing its genesis object, selected operational
