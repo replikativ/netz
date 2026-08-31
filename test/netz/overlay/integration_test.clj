@@ -72,26 +72,32 @@
                                         :seeds [{:peer-id server-id
                                                  :addresses [url]
                                                  :group "seed"}]}))]
-          (install-client! (:middleware client))
-          (<?? S (peer/connect S client-peer url))
+          (try
+            (install-client! (:middleware client))
+            (<?? S (peer/connect S client-peer url))
 
-          (testing "each side learns the other's peer id from the signed hello"
-            (is (wait-for 5000 #(contains? (rt/connections client-peer) server-id))
-                "client never registered the server")
-            (is (wait-for 5000 #(contains? (rt/connections server-peer) client-id))
-                "server never registered the client"))
+            (testing "each side learns the other's peer id from the signed hello"
+              (is (wait-for 5000 #(contains? (rt/connections client-peer) server-id))
+                  "client never registered the server")
+              (is (wait-for 5000 #(contains? (rt/connections server-peer) client-id))
+                  "server never registered the client"))
 
-          (testing "and the ids are the ones derived from the public keys"
-            ;; Not merely "some id" — the whole point of a self-certifying id
-            ;; is that it is derivable from the key and cannot be asserted.
-            (is (= #{server-id} (rt/connections client-peer)))
-            (is (= #{client-id} (rt/connections server-peer))))
+            (testing "and the ids are the ones derived from the public keys"
+              ;; Not merely "some id" — the whole point of a self-certifying id
+              ;; is that it is derivable from the key and cannot be asserted.
+              (is (= #{server-id} (rt/connections client-peer)))
+              (is (= #{client-id} (rt/connections server-peer))))
 
-          (testing "membership records the connection"
-            (is (wait-for 5000
-                          #(overlay/connections (rt/overlay-state client))))
-            (is (some #{server-id} (overlay/connections (rt/overlay-state client))))))
+            (testing "membership records the connection"
+              (is (wait-for 5000
+                            #(overlay/connections (rt/overlay-state client))))
+              (is (some #{server-id}
+                        (overlay/connections (rt/overlay-state client)))))
+            (finally
+              (rt/stop! client)
+              (<?? S (peer/stop client-peer)))))
         (finally
+          (rt/stop! server)
           (<?? S (peer/stop server-peer)))))))
 
 (deftest publish-crosses-a-real-socket
@@ -123,26 +129,31 @@
                                         :seeds [{:peer-id server-id
                                                  :addresses [url]
                                                  :group "seed"}]}))]
-          (install-client! (:middleware client))
-          (<?? S (peer/connect S client-peer url))
-          (is (wait-for 5000 #(contains? (rt/connections server-peer) client-id)))
+          (try
+            (install-client! (:middleware client))
+            (<?? S (peer/connect S client-peer url))
+            (is (wait-for 5000 #(contains? (rt/connections server-peer) client-id)))
 
-          (testing "client to server"
-            (rt/publish! client :t "from-client")
-            (is (wait-for 5000
-                          #(= ["from-client"]
-                              (overlay/delivered (rt/overlay-state server))))
-                (str "server delivered "
-                     (overlay/delivered (rt/overlay-state server)))))
+            (testing "client to server"
+              (rt/publish! client :t "from-client")
+              (is (wait-for 5000
+                            #(= ["from-client"]
+                                (overlay/delivered (rt/overlay-state server))))
+                  (str "server delivered "
+                       (overlay/delivered (rt/overlay-state server)))))
 
-          (testing "server to client"
-            (rt/publish! server :t "from-server")
-            (is (wait-for 5000
-                          #(some #{"from-server"}
-                                 (overlay/delivered (rt/overlay-state client))))
-                (str "client delivered "
-                     (overlay/delivered (rt/overlay-state client))))))
+            (testing "server to client"
+              (rt/publish! server :t "from-server")
+              (is (wait-for 5000
+                            #(some #{"from-server"}
+                                   (overlay/delivered (rt/overlay-state client))))
+                  (str "client delivered "
+                       (overlay/delivered (rt/overlay-state client)))))
+            (finally
+              (rt/stop! client)
+              (<?? S (peer/stop client-peer)))))
         (finally
+          (rt/stop! server)
           (<?? S (peer/stop server-peer)))))))
 
 (deftest closing-a-socket-reaches-the-state-machine
@@ -168,34 +179,44 @@
                                     :topics #{:t}}))]
       (install-server! (:middleware server))
       (<?? S (peer/start server-peer))
+      (try
+        (let [[client-mw install-client!] (rt/deferred-middleware)
+              client-peer (peer/client-peer S client-id client-mw identity)
+              client (<?? S (rt/start! S client-peer
+                                       {:identity client-kp
+                                        :addresses []
+                                        :topics #{:t}
+                                        :seeds [{:peer-id server-id
+                                                 :addresses [url]
+                                                 :group "seed"}]}))]
+          (try
+            (install-client! (:middleware client))
+            (<?? S (peer/connect S client-peer url))
+            (is (wait-for 5000 #(contains? (rt/connections client-peer) server-id))
+                "never connected, so the teardown proves nothing")
+            (is (wait-for 5000 #(some #{server-id}
+                                      (overlay/connections (rt/overlay-state client)))))
 
-      (let [[client-mw install-client!] (rt/deferred-middleware)
-            client-peer (peer/client-peer S client-id client-mw identity)
-            client (<?? S (rt/start! S client-peer
-                                     {:identity client-kp
-                                      :addresses []
-                                      :topics #{:t}
-                                      :seeds [{:peer-id server-id
-                                               :addresses [url]
-                                               :group "seed"}]}))]
-        (install-client! (:middleware client))
-        (<?? S (peer/connect S client-peer url))
-        (is (wait-for 5000 #(contains? (rt/connections client-peer) server-id))
-            "never connected, so the teardown proves nothing")
-        (is (wait-for 5000 #(some #{server-id}
-                                  (overlay/connections (rt/overlay-state client)))))
+            (<?? S (peer/stop server-peer))
 
-        (<?? S (peer/stop server-peer))
+            (testing "the transport registry drops it"
+              (is (wait-for 5000
+                            #(not (contains? (rt/connections client-peer)
+                                             server-id)))
+                  "the registry still holds a dead connection"))
 
-        (testing "the transport registry drops it"
-          (is (wait-for 5000 #(not (contains? (rt/connections client-peer) server-id)))
-              "the registry still holds a dead connection"))
-
-        (testing "and so does membership"
-          (is (wait-for 5000
-                        #(not (some #{server-id}
-                                    (overlay/connections (rt/overlay-state client)))))
-              "membership still believes in a dead connection"))))))
+            (testing "and so does membership"
+              (is (wait-for 5000
+                            #(not (some #{server-id}
+                                        (overlay/connections
+                                         (rt/overlay-state client)))))
+                  "membership still believes in a dead connection"))
+            (finally
+              (rt/stop! client)
+              (<?? S (peer/stop client-peer)))))
+        (finally
+          (rt/stop! server)
+          (<?? S (peer/stop server-peer)))))))
 
 (deftest forged-publishes-never-reach-the-state-machine
   (testing "a peer cannot publish under somebody else's identity"
