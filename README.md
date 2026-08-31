@@ -12,9 +12,10 @@ outside the Clojure ecosystem.
 
 > **Release status: `0.1.0-alpha.1`.** The JVM, JavaScript, and Python paths now
 > share deterministic CBOR and authenticated Noise/Kabel fixtures, and the
-> secure JVM overlay passes a real WebSocket test. Public deployment still
-> waits on the Kabel/Geheimnis dependency releases, address-resolution policy,
-> and the explicitly reserved identity-rotation protocol. See
+> secure JVM overlay passes a real three-peer rejoin test. Exact configured
+> `wss` gateways have a supported dial policy. Arbitrary public discovery still
+> waits on socket-level resolved-IP pinning, and secure artifacts wait on the
+> Kabel/Geheimnis dependency releases. Rotation remains explicitly reserved. See
 > [release readiness](RELEASE.md) for the exact gates.
 
 ## What Netz owns

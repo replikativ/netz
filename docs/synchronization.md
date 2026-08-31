@@ -164,7 +164,9 @@ including a failed session during partition and convergence after healing.
 profile summary at the byte level. Clojure/JVM, ClojureScript/Node and Python
 all assert the same deterministic CBOR. Python's `interop/python/netz_sync.py`
 implements the receiving session boundary and both reference profile shapes;
-it is not yet an identity/handshake/WebSocket implementation.
+the optional secure client now supplies identity and a Noise/Kabel WebSocket
+carrier. Outbound sync-window, repair, content, and reconnect orchestration are
+still required before it is a complete application client.
 
 ## Encryption
 

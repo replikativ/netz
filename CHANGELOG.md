@@ -6,6 +6,21 @@ may make incompatible protocol changes.
 
 ## 0.1.0-alpha.1 — unreleased
 
+- Added the exact `Noise_XX_25519_AESGCM_SHA256` direct Kabel carrier with
+  full-Authority target binding, transcript-bound capability negotiation,
+  authenticated serializer-14 envelopes, bounded fragmentation, and shared
+  JVM/JavaScript/Python fixtures.
+- Replaced the interoperable gossip transcript with deterministic profile-1
+  CBOR over exact opaque payload bytes, including a shared Ed25519 publication
+  fixture and strict self-verifying envelope codecs.
+- Added Python signed publication creation/verification and a bounded ordered
+  receiver with duplicate suppression, gap reporting, and state-sync frontier
+  recovery.
+- Added a real three-peer secure WebSocket offline/rejoin test that converges
+  both fenced-root and multiwriter join-semilattice profiles.
+- Added an exact configured-`wss` public-gateway dial policy; dynamic dialing of
+  untrusted hostnames remains unsupported until resolved IPs can be validated
+  and pinned by the socket adapter.
 - Added explicit runtime shutdown and adapter cleanup.
 - Separated hot identity persistence from cold rotation/revocation material.
 - Added strict known-message schemas and decoded-value resource bounds.
