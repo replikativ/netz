@@ -148,7 +148,7 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 
 ```sh
 clojure -X:test :dirs '["test"]'
-# Exact merged Kabel transport-context and unreleased Geheimnis Noise commits:
+# Exact merged Kabel transport/Python-carrier and unreleased Geheimnis Noise commits:
 clojure -X:deps prep :aliases '[:secure-test]'
 clojure -X:secure-test :dirs '["test" "test-secure"]'
 clojure -X:konserve:test :dirs '["test" "test-konserve"]'

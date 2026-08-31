@@ -35,14 +35,14 @@
   ;; Integration gate for the not-yet-released secure-transport stack. Keep
   ;; these Git overrides out of the runtime graph: consumers continue to
   ;; resolve the last released Kabel/Geheimnis coordinates while this checkout
-  ;; tests Kabel's merged transport-context commit and the reviewed Geheimnis
-  ;; Noise commit exactly.
+  ;; tests Kabel's merged transport-context/Python-carrier commit and the
+  ;; reviewed Geheimnis Noise commit exactly.
   :secure-test
   {:extra-paths ["test" "test-secure"]
    :override-deps
     {org.replikativ/kabel
     {:git/url "https://github.com/replikativ/kabel.git"
-     :git/sha "b7249a09ffd9d4ca20da6487e33b1cefa67e3a7c"}
+     :git/sha "4da3e07c72223566ee203ac519dd22014cfe2f62"}
     org.replikativ/geheimnis
     {:git/url "https://github.com/replikativ/geheimnis.git"
      :git/sha "ed95baf100456ea09c3d6ae4dd089049363785d2"}}
