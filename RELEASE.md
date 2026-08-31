@@ -103,6 +103,12 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 - [ ] Add canonical identity, signature and malformed-input fixtures.
 - [ ] Implement capability/version negotiation.
 - [ ] Complete a Python identity/handshake/dissemination/sync client.
+- [x] The optional Python secure-client prototype signs and verifies identity
+      records, binds Authority IDs to authenticated Noise statics, enforces the
+      expected dial target, fragments bounded inner frames, and passes a real
+      asyncio WebSocket round trip plus the same Cacophony vector as Geheimnis.
+      Dissemination and outbound sync orchestration remain before calling it a
+      complete application client.
 - [ ] Pass independent JVM/JS/Python two-peer conformance tests.
 - [ ] Pass a real three-or-more-peer partition/rejoin test for both a fenced
       single-writer root and a multiwriter join-semilattice.

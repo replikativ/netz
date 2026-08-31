@@ -99,6 +99,9 @@ jobs:
     steps:
       - checkout
       - run:
+          name: Install optional secure-client dependencies
+          command: python -m pip install '.[secure-client]'
+      - run:
           name: Run Python protocol tests
           command: python -m unittest discover -s interop/python -v
       - run:
