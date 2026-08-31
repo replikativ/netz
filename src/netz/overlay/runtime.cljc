@@ -828,6 +828,30 @@
                  (empty? (.-hash u))))))
      (catch #?(:clj Exception :cljs :default) _ false))))
 
+(defn configured-address-policy
+  "Build a strict dial policy from configured peer/address records.
+
+  The result has the `:allow-address?` shape accepted by `start!` and permits
+  only an exact `(peer-id, address)` pair present in `peers`. It is the safe
+  public-gateway policy when discovery is useful for routing information but
+  must not turn untrusted peer exchange into an SSRF primitive.
+
+  This intentionally does not resolve DNS. Operators accepting arbitrary
+  discovered hostnames still need resolver/IP pinning at the socket adapter;
+  a pre-dial hostname check cannot prevent DNS rebinding."
+  [peers]
+  (let [pairs (set (for [{:keys [peer-id addresses]} peers
+                         address addresses]
+                     [peer-id address]))]
+    (when (or (empty? pairs)
+              (some (fn [[peer-id address]]
+                      (or (nil? peer-id) (not (websocket-address? address))))
+                    pairs))
+      (throw (ex-info "configured dial policy requires valid peer/address pairs"
+                      {:type :netz.overlay/invalid-address-policy})))
+    (fn [{:keys [peer-id address]}]
+      (contains? pairs [peer-id address]))))
+
 (defn kabel-effects
   "Real effects: kabel connections, core.async timers, and — when a store is
   supplied — durable persistence of verified content."

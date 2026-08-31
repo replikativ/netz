@@ -86,6 +86,20 @@
     (is (not (rt/websocket-address? "ws://peer.example/netz#fragment")))
     (is (not (rt/websocket-address? "not a url")))))
 
+(deftest configured-addresses-cannot-be-rebound-by-peer-exchange
+  (let [alice :alice
+        bob :bob
+        allow? (rt/configured-address-policy
+                [{:peer-id alice :addresses ["wss://alice.example/netz"]}
+                 {:peer-id bob :addresses ["wss://bob.example/netz"]}])]
+    (is (allow? {:peer-id alice :address "wss://alice.example/netz"}))
+    (is (allow? {:peer-id bob :address "wss://bob.example/netz"}))
+    (is (not (allow? {:peer-id alice :address "wss://bob.example/netz"})))
+    (is (not (allow? {:peer-id alice :address "ws://127.0.0.1:8080/admin"})))
+    (is (thrown? #?(:clj Throwable :cljs :default)
+                 (rt/configured-address-policy
+                  [{:peer-id alice :addresses ["https://not-websocket.example"]}])))))
+
 (deftest stopping-a-runtime-is-idempotent-and-refuses-new-work
   (let [ctx (rt/make-runtime {:id :me :state {}
                               :handler (fn [s _ _] {:state s :actions []})
