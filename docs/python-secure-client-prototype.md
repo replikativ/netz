@@ -57,32 +57,48 @@ Before describing the Python client as production-ready:
 5. Seek upstream review. If the project remains inactive, publish a narrowly
    maintained replikativ fork instead of silently vendoring it into Netz.
 
-## Prototype wire choices requiring specification review
+## Normative direct Kabel binding
 
-The prototype uses prologue `netz/noise/v1`. XX message 1 has an empty payload;
+The adapter follows the JVM binding and draft-00 profile introduced in Netz
+commits `7385b8a` and `c8ff804`. Its prologue is
+`netz/kabel-noise/v1\0`. XX message 1 carries the initiator's canonical offer;
 the responder identity is encrypted in message 2 and the initiator identity in
 message 3. Each identity payload contains:
 
 - the signed deterministic-CBOR identity record;
 - the actual ephemeral-per-connection Noise static public key;
+- the full Authority ID and signed deterministic-CBOR identity record;
+- supported, required, and exactly selected capability arrays; and
 - an operational Ed25519 signature over authority, exact Noise protocol name,
-  and that static key; and
-- the sorted offered capability identifiers.
+  static key, role, and all three capability arrays.
+
+Capability tokens are visible ASCII so lexical ordering is byte-identical in
+every runtime. Before signing, address helpers normalize `ws` and `wss` URIs to
+visible ASCII, including lowercase IDNA A-label hosts and UTF-8
+percent-encoded paths and queries. Verification rejects non-canonical address
+spellings before accepting a record signature.
 
 The peer verifies the record, expected dial target, static-key signature, and
 equality with the static key authenticated by XX before exposing a peer
-context.
+context. `selected` must be the complete supported-set intersection and both
+required sets must be subsets. The responder also requires message 3 to repeat
+the initiator's message-1 offer exactly, preventing transcript downgrade.
 
 Noise messages are at most 65,535 bytes, while Netz currently permits a 5 MiB
-carrier frame. The prototype therefore treats decrypted Noise payloads as an
-ordered byte stream: a four-byte unsigned big-endian inner-frame length followed
-by the frame bytes, fragmented across as many 65,519-byte Noise plaintexts as
-needed. Concurrent sends are serialized. This framing needs to become normative
-before independent implementations depend on it.
+Kabel envelope. WebSocket bytes use serializer id `0`, then visible outer kind
+`1` for handshake or `2` for transport. Each decrypted transport message starts
+with fragment octet `0`, `1`, `2`, or `3`; the reassembled bytes are exactly the
+four-byte serializer id `14` followed by the CBOR payload. Fragment data is at
+most 65,518 bytes so the encrypted flag and data remain within Noise's limit.
+Concurrent sends are serialized and malformed fragment transitions close the
+carrier.
 
-The next shared fixture should pin the deterministic identity record, Noise
-static-binding transcript and signature, encrypted messages 2 and 3, negotiated
-capabilities, handshake hash, and first length-framed transport ciphertext.
+`spec/fixtures/netz-kabel-noise-binding-1.json` now pins the deterministic
+offer, identity records, static-binding transcripts and signatures, encrypted
+messages 1–3, negotiated capabilities, handshake hash, serializer envelopes,
+outer kinds, and first transport ciphertext. The Python test reproduces every
+field. The JVM/CLJS suite should consume the same fixture rather than maintain
+a separately transcribed copy.
 
 ## Dependency and license summary
 

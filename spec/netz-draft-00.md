@@ -182,6 +182,17 @@ full Authority ID, and the record carries the genesis, operational key, and
 Ed25519 signature needed for verification without prior contact. Root and
 predecessor identifiers are opaque byte strings.
 
+Capability identifiers in signed or handshake data MUST match
+`[A-Za-z0-9][A-Za-z0-9._/-]{0,127}`. Signed addresses MUST be sorted by ASCII byte
+order and already be absolute, credential-free `ws` or `wss` URIs containing
+only visible ASCII. Their scheme and DNS host are lowercase, DNS hosts use IDNA
+A-labels, IPv6 literals use lowercase compressed form in brackets, an empty
+path is `/`, non-ASCII path and query characters are UTF-8 percent-encoded, and
+percent escapes use uppercase hex. Fragments and scoped IPv6 literals are not
+allowed. An explicitly supplied port is retained. Verifiers MUST reject a
+signed record whose address spelling is not canonical before accepting its
+signature.
+
 ## 7. Connection handshake and capabilities
 
 The direct Kabel binding upgrades an anonymous ordered stream with
@@ -201,12 +212,10 @@ Noise message 1 carries the initiator's deterministic-CBOR offer:
 
 Capability identifiers MUST match
 `[A-Za-z0-9][A-Za-z0-9._/-]{0,127}` and arrays are sorted by ascending byte
-value. Signed addresses MUST be printable ASCII, at most 2,048 octets each,
-and sorted by the same order. Implementations MUST apply IDNA to host names and
-percent-encode non-ASCII URL components before signing. These restrictions make
-the ordering byte-identical in JVM, JavaScript and Unicode-codepoint-based
-foreign runtimes; implementations MUST NOT expose host-language string collation
-on this wire surface.
+value. The canonical address rules are defined in Section 6. These restrictions
+make ordering byte-identical in JVM, JavaScript and Unicode-codepoint-based
+foreign runtimes; implementations MUST NOT expose host-language string
+collation on this wire surface.
 
 Noise messages 2 and 3 carry the responder's and initiator's identity payloads
 respectively. An identity payload contains the signed identity record, the

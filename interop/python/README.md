@@ -55,7 +55,9 @@ python3 -m pip install 'netz-protocol[secure-client]'
 
 It provides Ed25519 identity helpers, an adapter for
 `Noise_XX_25519_AESGCM_SHA256`, and a minimal asyncio WebSocket carrier. The
-core package still has no required dependencies. The adapter pins
+identity helper canonicalizes signed WebSocket addresses to visible ASCII and
+requires visible-ASCII capability tokens, avoiding cross-runtime text ordering
+differences. The core package still has no required dependencies. The adapter pins
 `noiseprotocol==0.3.1`: that implementation passes the published Cacophony
 known-answer vector for this exact suite on current Python/cryptography, but its
 last release was in 2020 and its public API does not retain the authenticated
@@ -63,4 +65,6 @@ remote static key after an XX handshake. Netz currently uses a narrowly scoped
 compatibility hook for that missing API. Treat this as conformance and client
 prototyping code until the dependency is adopted, forked, or replaced. The
 Noise primitive already shares the exact Cacophony transcript fixture used by
-Geheimnis; the Netz identity-payload fixture remains to be pinned on both sides.
+Geheimnis. `spec/fixtures/netz-kabel-noise-binding-1.json` additionally pins the
+normative offer, identities, capability selection, authenticated handshake and
+fragmented serializer-14 carrier for the JVM/CLJS suite to consume.
