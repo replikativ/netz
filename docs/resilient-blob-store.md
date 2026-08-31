@@ -1,9 +1,10 @@
 # Resilient blob-store profile
 
 Status: experimental implementation draft. Portable placement, manifests,
-signed lifecycle statements, the receiver transfer machine and crash-safe
-lifecycle journal exist, but no released runtime advertises the capability.
-This is not yet a durability or data-protection claim of the Netz release.
+signed lifecycle statements, bounded sender/receiver transfer machines and a
+crash-safe lifecycle journal exist, but no released runtime advertises the
+capability. This is not yet a durability or data-protection claim of the Netz
+release.
 
 ## Scope
 
@@ -121,8 +122,17 @@ but must not be presented as the portable standard.
 6. Offer the manifest; transfer chunks the target does not already hold.
 7. The target verifies and durably installs the complete object.
 8. The target emits a receipt only after durable installation completes.
-9. Return when the requested `W` eligible receipts exist.
-10. Retain repair work until the target `N` copies exist.
+9. Verify and durably record the signed receipt locally.
+10. Return when the requested `W` eligible recorded receipts exist.
+11. Retain repair work until the target `N` copies exist.
+
+The profile-1 sender keeps one piece in flight per target. It reads a piece
+only when the receiver asks for its index, sends no next piece until durable
+staging advances the receiver's cumulative ACK, and does not keep object bytes
+in its pure control state. A timeout or disconnect releases the bounded
+session and reports the exact object, replica, layout epoch and attempt to the
+controller. Policy-driven retry uses a fresh session and incremented attempt;
+an old receipt cannot complete it.
 
 A timeout after local installation must report both facts. It must never turn a
 local success into a false quorum success:
@@ -315,10 +325,12 @@ three process IDs represent three independent failure domains.
    crash-safe lifecycle transitions.
 3. [done] Add simulated durable disks, faults, crash recovery, bulk expiry and
    resurrection-prevention invariants.
-4. Implement the bounded sender, Kabel/Noise session binding and durable file
-   staging/install adapter.
-5. Add scrubbing, paginated inventory and repair scheduling.
-6. Publish the optional `konserve-netz` adapter only after its stream/batch
+4. [done] Implement the bounded pure sender, including one-piece backpressure,
+   receipt fencing and persist-before-quorum handoff.
+5. Implement the Kabel/Noise session binding and durable file staging/install
+   adapter.
+6. Add scrubbing, paginated inventory and repair scheduling.
+7. Publish the optional `konserve-netz` adapter only after its stream/batch
    semantics are explicit.
-7. Add the real JVM/Node/Python three-device conformance campaign.
-8. Enable automatic reclamation only after operational deletion tests.
+8. Add the real JVM/Node/Python three-device conformance campaign.
+9. Enable automatic reclamation only after operational deletion tests.

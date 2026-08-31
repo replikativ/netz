@@ -279,9 +279,14 @@ their manifest index. WebSocket delivery is ordered; `blob/ack.through` is the
 highest contiguous piece index durably staged for this session. An ACK MAY be
 cumulative but is only flow control, never a storage receipt. `blob/commit`
 names the expected piece count and asks the receiver to verify and install the
-complete object. Sessions, staged bytes, decoded maps, in-flight pieces and
-outbound queues MUST all be bounded. A reconnect uses a fresh session and
-`blob/need` to resume from verified pieces.
+complete object. A profile-1 sender MUST keep at most one piece awaiting an ACK
+per session. It reads the next requested piece only after the cumulative ACK
+covers the current index; an ACK may therefore also eliminate later requested
+indices that the receiver satisfied through content-address deduplication.
+Piece data MUST NOT remain in sender control state after its send action.
+Sessions, staged bytes, decoded maps, in-flight pieces and outbound queues MUST
+all be bounded. A reconnect or retry uses a fresh session and `blob/need` to
+resume from verified pieces.
 
 The receiver verifies every piece and the complete
 object, atomically installs it, and flushes according to the persistence level
@@ -293,9 +298,13 @@ manifest is not an acknowledgement.
 signature and complete canonical-offer hash across JVM, JavaScript and Python.
 
 A coordinator may return quorum when it holds `W` current receipts satisfying
-all domain constraints. It retains repair work until all `N` targets have
-receipts. A completion timeout MUST distinguish a local commit from achieved
-quorum.
+all domain constraints. Signature verification and an authenticated replica
+connection are necessary but not yet a local crash boundary: the coordinator
+MUST durably record each accepted signed receipt before releasing it to quorum
+accounting. The receipt's object, manifest, layout epoch, replica, attempt,
+retention revision/deadline and accepted persistence profile MUST exactly match
+the current offer. It retains repair work until all `N` targets have receipts.
+A completion timeout MUST distinguish a local commit from achieved quorum.
 
 ## 8. Failure and privacy semantics
 
@@ -328,8 +337,8 @@ Before advertising a durable-blob capability, implementations must additionally
 freeze and test:
 
 1. the signed/configured layout and reconfiguration transcript;
-2. the bounded sender and durable piece-staging/file adapters (the pure
-   receiver transition machine is implemented);
+2. durable piece-staging/file adapters (the bounded pure sender and receiver
+   transition machines are implemented);
 3. durable outbox and restart recovery against real file stores;
 4. operational clock-skew and real-store deletion tests (the journal-first
    pure lease/expiry/deletion machine is implemented);
