@@ -57,7 +57,8 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       tests, and a real http-kit/Kabel/CBOR/Noise overlay test now exist behind
       `:secure-test`. `netz.transport.secure/start!` consumes the authenticated
       connection context without the transitional hello/proof exchange. This
-      remains unchecked until the Kabel/Geheimnis PRs are released.
+      remains unchecked until the Geheimnis PR is released. Kabel 0.3.126 now
+      contains the required transport context and Python carrier.
 - [x] Publication sequence, deduplication, repair, and bounded ordered delivery
       are scoped per origin/topic stream.
 - [x] Kabel routes external and direct application through one peer/topic
@@ -148,7 +149,7 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 
 ```sh
 clojure -X:test :dirs '["test"]'
-# Exact merged Kabel transport/Python-carrier and unreleased Geheimnis Noise commits:
+# Released Kabel 0.3.126 and exact unreleased Geheimnis Noise commit:
 clojure -X:deps prep :aliases '[:secure-test]'
 clojure -X:secure-test :dirs '["test" "test-secure"]'
 clojure -X:konserve:test :dirs '["test" "test-konserve"]'

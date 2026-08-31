@@ -2,13 +2,13 @@
 
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
         ;; kabel supplies the transport (peers, WebSocket, codec middleware)
-        ;; and the pub/sub layer netz plugs a transport into. 0.3.124 exposes
+        ;; and the pub/sub layer netz plugs a transport into. 0.3.126 exposes
         ;; the peer/topic apply serializer, selected-connection unsubscribe,
         ;; exclusive inbound live ownership, exact decoded frame-size metadata,
         ;; and bounded 5 MiB WebSocket frames/queues. Jetty provides
         ;; completion-driven server writes and the bounded replikativ http-kit
         ;; adapter. Everything netz needs from kabel is public API.
-        org.replikativ/kabel {:mvn/version "0.3.124"}
+        org.replikativ/kabel {:mvn/version "0.3.126"}
         ;; Ed25519, SHA-256, constant-time compare, CSPRNG — portable across
         ;; JVM and ClojureScript. Unlike kabel, netz cannot make crypto
         ;; optional: self-certifying identity is the bottom of the design.
@@ -32,18 +32,13 @@
                       org.clojure/test.check {:mvn/version "1.1.1"}}
          :exec-fn cognitect.test-runner.api/test}
 
-  ;; Integration gate for the not-yet-released secure-transport stack. Keep
-  ;; these Git overrides out of the runtime graph: consumers continue to
-  ;; resolve the last released Kabel/Geheimnis coordinates while this checkout
-  ;; tests Kabel's merged transport-context/Python-carrier commit and the
-  ;; reviewed Geheimnis Noise commit exactly.
+  ;; Integration gate for the not-yet-released Geheimnis Noise stack. Keep the
+  ;; Git override out of the runtime graph: consumers resolve released
+  ;; coordinates while this checkout tests the reviewed Noise commit exactly.
   :secure-test
   {:extra-paths ["test" "test-secure"]
    :override-deps
-    {org.replikativ/kabel
-    {:git/url "https://github.com/replikativ/kabel.git"
-     :git/sha "4da3e07c72223566ee203ac519dd22014cfe2f62"}
-    org.replikativ/geheimnis
+    {org.replikativ/geheimnis
     {:git/url "https://github.com/replikativ/geheimnis.git"
      :git/sha "ed95baf100456ea09c3d6ae4dd089049363785d2"}}
    :extra-deps
