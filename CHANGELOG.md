@@ -10,9 +10,11 @@ may make incompatible protocol changes.
   Authority-ID placement across owner/site failure domains, explicit durable
   outbox and receipt fencing, portable piece manifests/resume bitmaps with
   JVM/JavaScript/Python fixtures, signed retention/lease/deletion and replica
-  receipt schemas, bounded transfer frames, simulated disk/partition repair,
-  an explicit optional Konserve seam, and a three-device demonstration. The
-  real transfer and lifecycle runtimes remain gated in `RELEASE.md`.
+  receipt schemas, bounded transfer frames, a persistence-backpressured pure
+  receiver, a journal-first expiry/deletion machine, simulated
+  disk/partition/crash repair, an explicit optional Konserve seam, and a
+  three-device demonstration. The real sender, storage and network bindings
+  remain gated in `RELEASE.md`.
 - Added the exact `Noise_XX_25519_AESGCM_SHA256` direct Kabel carrier with
   full-Authority target binding, transcript-bound capability negotiation,
   authenticated serializer-14 envelopes, bounded fragmentation, and shared

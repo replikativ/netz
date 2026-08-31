@@ -328,8 +328,10 @@ Before advertising a durable-blob capability, implementations must additionally
 freeze and test:
 
 1. the signed/configured layout and reconfiguration transcript;
-2. bounded resumable transfer and durable piece-staging state machines;
+2. the bounded sender and durable piece-staging/file adapters (the pure
+   receiver transition machine is implemented);
 3. durable outbox and restart recovery against real file stores;
-4. lease renewal, expiry, clock-skew and absorbing deletion state machines;
+4. operational clock-skew and real-store deletion tests (the journal-first
+   pure lease/expiry/deletion machine is implemented);
 5. independent JVM, JavaScript and Python end-to-end tests; and
 6. real three-device tests in addition to deterministic fault simulation.
