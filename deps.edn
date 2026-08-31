@@ -32,16 +32,17 @@
                       org.clojure/test.check {:mvn/version "1.1.1"}}
          :exec-fn cognitect.test-runner.api/test}
 
-  ;; Integration gate for the unreleased secure-transport stack.  Keep these
-  ;; Git overrides out of the runtime graph: consumers continue to resolve the
-  ;; last released Kabel/Geheimnis coordinates until their respective PRs are
-  ;; released, while this checkout tests the exact reviewed commits.
+  ;; Integration gate for the not-yet-released secure-transport stack. Keep
+  ;; these Git overrides out of the runtime graph: consumers continue to
+  ;; resolve the last released Kabel/Geheimnis coordinates while this checkout
+  ;; tests Kabel's merged transport-context commit and the reviewed Geheimnis
+  ;; Noise commit exactly.
   :secure-test
   {:extra-paths ["test" "test-secure"]
    :override-deps
-   {org.replikativ/kabel
+    {org.replikativ/kabel
     {:git/url "https://github.com/replikativ/kabel.git"
-     :git/sha "4f2064cb84d654637356fbc0ef249570f0af2d61"}
+     :git/sha "b7249a09ffd9d4ca20da6487e33b1cefa67e3a7c"}
     org.replikativ/geheimnis
     {:git/url "https://github.com/replikativ/geheimnis.git"
      :git/sha "ed95baf100456ea09c3d6ae4dd089049363785d2"}}
