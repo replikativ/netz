@@ -39,6 +39,65 @@ application backpressure semantics. Mapping publications to GossipSub alone is
 insufficient because GossipSub does not define the application checkpoint and
 resynchronization contract.
 
+libp2p is not one Go library. It is a family of specifications and independent
+Go, Rust, JavaScript/TypeScript, Python, Nim, Kotlin/JVM and other
+implementations. `js-libp2p` supports Node and browsers; `jvm-libp2p` is Kotlin
+and produces ordinary JVM artifacts. Adopting a libp2p binding therefore does
+not imply shipping Go or a native library everywhere. It does imply selecting
+and testing a compatible subset: the implementation-status matrix differs by
+transport and protocol, particularly on the JVM.
+
+For Netz, the useful integration points are explicit:
+
+- a libp2p stream can carry the same profile-1 Netz control envelopes;
+- libp2p Identify, relay, rendezvous, Kademlia, WebRTC and WebTransport can
+  replace or augment discovery and reachability;
+- GossipSub can replace the eager flooding path if it preserves the signed
+  publication bytes and Netz repair/frontier semantics; and
+- Netz synchronization remains an application protocol above the stream.
+
+The first release should not make libp2p mandatory. Kabel already gives the
+stack a small functional middleware model, browser-friendly WebSockets, JVM/JS
+code sharing, and direct integration with the existing sync strategies. A
+mandatory libp2p dependency would enlarge the artifact and duplicate identity,
+negotiation and pub/sub machinery without supplying the state-commit contract
+that distinguishes Netz. The draft instead keeps the transport boundary open
+and treats a libp2p binding as a later interoperability profile.
+
+## Matrix
+
+[Matrix federation](https://spec.matrix.org/latest/server-server-api/) is a
+useful comparison for durable collaborative history. Homeservers exchange
+signed persistent events, backfill missing history, retrieve state, and apply a
+room-version-specific state-resolution algorithm when an event graph forks.
+It also separates persistent PDUs from ephemeral EDUs.
+
+The reusable lessons are explicit missing-event retrieval, signed events that
+can travel through third parties, versioned conflict semantics, and the split
+between durable and ephemeral traffic. Matrix is not a direct Netz carrier:
+its unit of authority is a federated homeserver and room event graph, its
+protocol surface includes the full room/auth/state model, and its federation
+uses HTTPS transactions rather than symmetric offline peer sessions. A Matrix
+room adapter could be a synchronization profile, but importing Matrix state
+resolution into the Netz core would conflict with application-defined CRDT and
+fenced-writer profiles.
+
+## Why the genesis record is retained
+
+A raw public key is a simpler identifier, but it makes key compromise terminal:
+changing the key changes the identity. Netz hashes a small genesis record that
+commits at creation time to separate cold rotation keys, hot operational keys,
+a threshold, and a revocation-secret commitment. The stable Authority ID can
+therefore survive a future verified rotation without a directory lookup or a
+wire-format migration.
+
+This design has a cost: every self-verifying publication currently carries the
+genesis and operational key. It is acceptable for draft-00 and makes relaying
+independent of prior contact. A negotiated connection may later cache verified
+identity material and carry a compact reference, but that optimization must not
+make a relay trust discovery as authority. Rotation and revocation messages are
+reserved and rejected until their chain and distribution rules are specified.
+
 ## Willow
 
 [Willow](https://willowprotocol.org/specs/index.html) is a stronger conceptual
@@ -73,11 +132,14 @@ signatures, rejects the shared malformed corpus, negotiates protocol versions,
 and completes identity, dissemination, repair, content, and state-sync tests
 against the JVM/JavaScript implementation.
 
-The first independent seam is now concrete: strict Clojure sync-frame
-conversion and the installable `netz-protocol` Python core emit the same
-`sync/open` and `sync/done` fixtures. This proves the CBOR and frontier shapes,
-not a network connection. Identity/handshake fixtures, capability negotiation,
-outbound Python sync, and two-peer tests remain prerequisites.
+The independent seam is now concrete: strict Clojure codecs and the installable
+`netz-protocol` Python core emit the same identity, Noise binding, signed
+publication, `sync/open`, and `sync/done` fixtures. The Python package also has
+a real secure WebSocket round trip and bounded ordered publication receiver.
+This proves the byte, signature, carrier, and receiving-session shapes. A
+complete portable runtime still needs negotiated codec routing, outbound Python
+sync/repair orchestration, content exchange, and independent JVM/Python
+application-session tests.
 
 ## Boring and the CBOR data model
 

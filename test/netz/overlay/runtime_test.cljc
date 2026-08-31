@@ -100,6 +100,18 @@
                  (rt/configured-address-policy
                   [{:peer-id alice :addresses ["https://not-websocket.example"]}])))))
 
+(deftest public-gateway-dials-only-configured-tls-peers
+  (let [alice :alice
+        allow? (rt/public-gateway-address-policy
+                [{:peer-id alice :addresses ["wss://alice.example/netz"]}])]
+    (is (allow? {:peer-id alice :address "wss://alice.example/netz"}))
+    (is (not (allow? {:peer-id alice :address "wss://elsewhere.example/netz"})))
+    (is (not (allow? {:peer-id :untrusted
+                      :address "wss://alice.example/netz"})))
+    (is (thrown? #?(:clj Throwable :cljs :default)
+                 (rt/public-gateway-address-policy
+                  [{:peer-id alice :addresses ["ws://alice.example/netz"]}])))))
+
 (deftest stopping-a-runtime-is-idempotent-and-refuses-new-work
   (let [ctx (rt/make-runtime {:id :me :state {}
                               :handler (fn [s _ _] {:state s :actions []})

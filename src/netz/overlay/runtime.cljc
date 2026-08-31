@@ -891,18 +891,37 @@
   This intentionally does not resolve DNS. Operators accepting arbitrary
   discovered hostnames still need resolver/IP pinning at the socket adapter;
   a pre-dial hostname check cannot prevent DNS rebinding."
+  ([peers] (configured-address-policy peers {}))
+  ([peers {:keys [require-tls?] :or {require-tls? false}}]
+   (let [pairs (set (for [{:keys [peer-id addresses]} peers
+                          address addresses]
+                      [peer-id address]))
+         secure? (fn [address]
+                   (if require-tls?
+                     (boolean (re-matches #"(?i)wss://.*" address))
+                     true))]
+     (when (or (empty? pairs)
+               (some (fn [[peer-id address]]
+                       (or (nil? peer-id)
+                           (not (websocket-address? address))
+                           (not (secure? address))))
+                     pairs))
+       (throw (ex-info "configured dial policy requires valid peer/address pairs"
+                       {:type :netz.overlay/invalid-address-policy
+                        :require-tls? require-tls?})))
+     (fn [{:keys [peer-id address]}]
+       (contains? pairs [peer-id address])))))
+
+(defn public-gateway-address-policy
+  "Exact operator-configured public dial policy.
+
+  Only listed `(Authority routing id, wss address)` pairs pass. In particular,
+  a signed peer-exchange record cannot make the gateway resolve or connect to
+  an attacker-selected hostname, private IP, or redirect target. The operator
+  remains responsible for the DNS of its own allowlist; dynamic public
+  discovery requires a socket adapter that validates and pins resolved IPs."
   [peers]
-  (let [pairs (set (for [{:keys [peer-id addresses]} peers
-                         address addresses]
-                     [peer-id address]))]
-    (when (or (empty? pairs)
-              (some (fn [[peer-id address]]
-                      (or (nil? peer-id) (not (websocket-address? address))))
-                    pairs))
-      (throw (ex-info "configured dial policy requires valid peer/address pairs"
-                      {:type :netz.overlay/invalid-address-policy})))
-    (fn [{:keys [peer-id address]}]
-      (contains? pairs [peer-id address]))))
+  (configured-address-policy peers {:require-tls? true}))
 
 (defn kabel-effects
   "Real effects: kabel connections, core.async timers, and — when a store is

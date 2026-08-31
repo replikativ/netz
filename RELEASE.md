@@ -79,8 +79,12 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       `org.replikativ/http-kit 2.9.0-beta4-replikativ.1`, whose server adapter
       bounds queued bytes. Netz consumes the released Kabel coordinate; Jetty
       remains supported and its writes await adapter completion.
-- [ ] Public deployments need DNS/private-address/redirect policy in addition
-      to the socket frame limit.
+- [x] Public gateways can use `public-gateway-address-policy`, which accepts
+      only exact operator-configured `(peer-id, wss-address)` pairs and cannot
+      be expanded by peer exchange. Dynamic dialing of discovered public
+      hostnames remains explicitly unsupported until a socket adapter validates
+      and pins resolved IPs; a pre-dial hostname check cannot prevent DNS
+      rebinding.
 - [x] Subtree disconnect handling retries an alternate provider immediately,
       resets attempt-local counters after partial delivery, and leaves stale
       deadlines unable to complete the replacement attempt.
@@ -88,8 +92,10 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       embedded self-certifying publisher material, and a verify-before-accept
       API; tampered roots, versions, databases, and signatures cannot advance
       the pure root-chain verifier.
-- [ ] Rotation-chain and revocation distribution must be implemented or remain
-      explicitly unsupported in every advertised protocol version.
+- [x] Rotation-chain and revocation distribution remain explicitly unsupported
+      in draft-00. Their message types are reserved, unknown frames are
+      rejected before negotiation, and the documentation makes no rotation
+      interoperability claim.
 
 ## Required before calling wire profile 1 interoperable
 
@@ -131,11 +137,12 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       adversarial transport suite; consuming this JSON fixture there remains
       part of the three-runtime gate below.
 - [ ] Pass independent JVM/JS/Python two-peer conformance tests.
-- [ ] Pass a real three-or-more-peer partition/rejoin test for both a fenced
-      single-writer root and a multiwriter join-semilattice.
+- [x] Pass a real three-peer offline/rejoin test over http-kit, Kabel CBOR and
+      authenticated Noise for both a fenced single-writer root and a
+      multiwriter join-semilattice.
 - [x] The deterministic production-state-machine simulator passes three-peer
-      partition/rejoin scenarios for both profiles; the remaining gate above
-      is specifically the WebSocket/secure-carrier runtime layer.
+      partition/rejoin scenarios for both profiles, and the secure WebSocket
+      test exercises the corresponding runtime layer.
 
 ## Artifact commands
 

@@ -45,6 +45,13 @@ reordered and aborted sync attempts, foreign-topic inputs, transport
 exclusivity, and 1,000 independent owners without sockets. Runtime tests then
 verify the async effect runner rather than trying to simulate threads.
 
+The secure integration suite supplies the complementary small real-network
+case: three peers communicate through http-kit, Kabel CBOR and authenticated
+Noise; one peer is stopped and recreated with its durable application state;
+then point-to-point synchronization converges both the fenced-root and
+join-semilattice profiles. This catches carrier, identity, reconnect and async
+ordering mistakes that the virtual network intentionally cannot model.
+
 ## Deliberate limits
 
 The pure simulator does not reproduce threads, `core.async` scheduling,

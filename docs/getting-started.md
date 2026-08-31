@@ -145,3 +145,26 @@ pass a separately protected `:recovery-store` or capture the one-time
 Konserve storage encryption is orthogonal to Netz. Encrypted blocks may be
 transferred as opaque bytes; key distribution and decryption authorization
 belong to an application synchronization profile.
+
+## Public gateways and address policy
+
+The default address predicate accepts absolute credential-free `ws` and `wss`
+URIs because private networks and local peers are normal deployments. It is not
+an SSRF boundary.
+
+A public gateway should pass an exact allowlist:
+
+```clojure
+{:allow-address?
+ (runtime/public-gateway-address-policy
+  [{:peer-id configured-routing-id
+    :addresses ["wss://peer.example/netz"]}])}
+```
+
+This permits only the operator-selected peer/address pair over TLS; peer
+exchange cannot add a dial target. The operator controls the DNS of that
+allowlist. Dynamically dialing discovered hostnames at a public boundary is
+unsupported until the WebSocket adapter can validate and pin the resolved IP
+used by the socket. Resolving first and checking separately is insufficient
+because DNS can change between the check and connection. WebSocket redirects
+must not be enabled to targets outside the same allowlist.
