@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "netz-protocol"
 version = "0.1.0a1"
-description = "Dependency-free CBOR and synchronization core for the Netz P2P protocol"
+description = "Dependency-free CBOR, synchronization, and replica-placement core for Netz"
 readme = "interop/python/README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -24,6 +24,18 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: System :: Distributed Computing",
+]
+
+[project.optional-dependencies]
+crypto = [
+  "cryptography>=43",
+]
+secure-client = [
+  "cryptography>=43",
+  # The adapter relies on the 0.3.1 state-machine API and pins it until the
+  # upstream project publishes a maintained release with remote-static access.
+  "noiseprotocol==0.3.1",
+  "websockets>=14,<16",
 ]
 
 [project.urls]

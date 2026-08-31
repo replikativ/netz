@@ -25,6 +25,7 @@
 
   Options:
   - `:addresses`     — our own addresses, announced to peers on connect
+  - `:authority-id`  — our full 256-bit Authority ID, announced with routing id
   - `:seeds`         — configured peers, `[{:peer-id … :addresses […] :group …}]`
   - `:topics`        — topics this node subscribes to
   - `:membership`    — options passed to `netz.membership/make-state`
@@ -34,7 +35,7 @@
   - `:sync`          — profiles, application values, and sync session limits
   - `:carries`       — topic RANGES we relay, `#{[]}` (everything) by default
   - `:relay?`        — legacy boolean; false means carry nothing but our own"
-  [id {:keys [addresses seeds topics membership dissemination content blocks sync
+  [id {:keys [authority-id addresses seeds topics membership dissemination content blocks sync
               relay? carries]
        :or {seeds [] topics #{} relay? true}}]
   {:id id
@@ -46,6 +47,7 @@
    ;; advertised `:carries []`. The whole "find your slice of the network
    ;; without a discovery protocol" story did nothing.
    :membership (m/make-state id seeds (assoc (or membership {})
+                                             :authority-id authority-id
                                              :addresses (vec addresses)
                                              :topics topics
                                              :carries (cond

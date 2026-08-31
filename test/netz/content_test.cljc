@@ -395,6 +395,34 @@
                               :root root :have []}] %)
               actions'))))
 
+(deftest subtree-disconnect-retries-without-waiting-for-the-deadline
+  (let [root :root
+        state (-> (content-state :me {} {:tree-timeout-ms 10000
+                                         :max-tree-tries 3})
+                  (assoc :peers #{:p1 :p2})
+                  (assoc :providers {root {:p1 20000 :p2 20000}}))
+        [state _] (c/fetch-tree state root [] 0)
+        ;; Model a partial response. Those verified blocks stay cached, but a
+        ;; new provider must start with clean attempt-local counters.
+        state (-> state
+                  (assoc-in [:tree-wants root :processed] 2)
+                  (assoc-in [:tree-wants root :received] 2)
+                  (assoc-in [:tree-wants root :done?] true)
+                  (assoc-in [:tree-wants root :expected] 5)
+                  (assoc :peers #{:p2}))
+        {state' :state actions :actions}
+        (c/handler state {:type :disconnected :peer :p1} {:now 25})]
+    (is (= :p2 (get-in state' [:tree-wants root :provider])))
+    (is (= 2 (get-in state' [:tree-wants root :tries])))
+    (is (zero? (get-in state' [:tree-wants root :processed])))
+    (is (zero? (get-in state' [:tree-wants root :received])))
+    (is (false? (get-in state' [:tree-wants root :done?])))
+    (is (nil? (get-in state' [:tree-wants root :expected])))
+    (is (= 1 (get-in state' [:stats :tree-disconnects])))
+    (is (some #(= [:send :p2 {:type :content/want-tree
+                              :root root :have []}] %)
+              actions))))
+
 (defn- tree-blocks
   "A content-addressed tree of `depth` levels with `branching` children each.
 

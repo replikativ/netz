@@ -6,6 +6,30 @@ may make incompatible protocol changes.
 
 ## 0.1.0-alpha.1 — unreleased
 
+- Added an experimental private durable-blob extension: deterministic
+  Authority-ID placement across owner/site failure domains, explicit durable
+  outbox and receipt fencing, portable piece manifests/resume bitmaps with
+  JVM/JavaScript/Python fixtures, simulated disk/partition repair, an explicit
+  optional Konserve seam, and a three-device demonstration. Authenticated
+  transfer and retention/deletion frames remain gated in `RELEASE.md`.
+- Added the exact `Noise_XX_25519_AESGCM_SHA256` direct Kabel carrier with
+  full-Authority target binding, transcript-bound capability negotiation,
+  authenticated serializer-14 envelopes, bounded fragmentation, and shared
+  JVM/JavaScript/Python fixtures.
+- Replaced the interoperable gossip transcript with deterministic profile-1
+  CBOR over exact opaque payload bytes, including a shared Ed25519 publication
+  fixture and strict self-verifying envelope codecs.
+- Added Python signed publication creation/verification and a bounded ordered
+  receiver with duplicate suppression, gap reporting, and state-sync frontier
+  recovery.
+- Added the Python synchronization sender, including exact open/ACK schemas,
+  bounded cumulative-ACK flow control, and sender/receiver round-trip tests;
+  the JVM sender now rejects ACKs for chunks it has not sent.
+- Added a real three-peer secure WebSocket offline/rejoin test that converges
+  both fenced-root and multiwriter join-semilattice profiles.
+- Added an exact configured-`wss` public-gateway dial policy; dynamic dialing of
+  untrusted hostnames remains unsupported until resolved IPs can be validated
+  and pinned by the socket adapter.
 - Added explicit runtime shutdown and adapter cleanup.
 - Separated hot identity persistence from cold rotation/revocation material.
 - Added strict known-message schemas and decoded-value resource bounds.
@@ -59,7 +83,8 @@ may make incompatible protocol changes.
   of sender frontier claims, and local canonical receipt-size accounting.
 - Added an installable, typed, dependency-free `netz-protocol` Python alpha
   wheel with Apache-2.0 package metadata and a CI build gate.
-- Updated to Kabel 0.3.118 for bounded WebSocket frames and transport queues.
+- Updated to Kabel 0.3.124 for bounded WebSocket frames and transport queues,
+  backed by the released bounded replikativ http-kit adapter.
 - Added an optional stack gate composing Urd/Raft, Datahike, Netz,
   Spindel, and durable Yggdrasil G-Sets across partition and recovery.
 - Replaced ignored internal-design references with public release and

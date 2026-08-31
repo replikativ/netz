@@ -163,8 +163,10 @@ including a failed session during partition and convergence after healing.
 `spec/fixtures/sync-open-1.json` fixes one complete outer frame and one opaque
 profile summary at the byte level. Clojure/JVM, ClojureScript/Node and Python
 all assert the same deterministic CBOR. Python's `interop/python/netz_sync.py`
-implements the receiving session boundary and both reference profile shapes;
-it is not yet an identity/handshake/WebSocket implementation.
+implements both sides of the bounded cumulative-ACK session and both reference
+profile shapes; the optional secure client supplies identity and a Noise/Kabel
+WebSocket carrier. Repair, content, discovery, and reconnect orchestration are
+still required before it is a complete application client.
 
 ## Encryption
 

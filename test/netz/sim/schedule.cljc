@@ -17,6 +17,10 @@
     :resume (sim/resume s (first args))
     :crash (sim/crash s (first args))
     :restart (sim/restart s (first args))
+    :disk-loss (sim/lose-disk s (first args))
+    :disk-writable (sim/set-disk-writable s (first args) (second args))
+    :disk-capacity (sim/set-disk-capacity s (first args) (second args))
+    :disk-corrupt (sim/corrupt-durable s (first args) (second args) (nth args 2))
     :partition (sim/partition-network s (first args))
     :isolate (let [id (first args)]
                (sim/partition-network
@@ -44,6 +48,10 @@
             :resume (str "  resume " (first args))
             :crash (str "  CRASH " (first args))
             :restart (str "  restart " (first args))
+            :disk-loss (str "  DISK-LOSS " (first args))
+            :disk-writable (str "  disk-writable " (first args) " " (second args))
+            :disk-capacity (str "  disk-capacity " (first args) " " (second args))
+            :disk-corrupt (str "  DISK-CORRUPT " (first args) " " (second args))
             :isolate (str "  isolate " (first args))
             :heal "  heal"
             (str "  " (name op) " " (pr-str args))))

@@ -86,6 +86,32 @@
     (is (not (rt/websocket-address? "ws://peer.example/netz#fragment")))
     (is (not (rt/websocket-address? "not a url")))))
 
+(deftest configured-addresses-cannot-be-rebound-by-peer-exchange
+  (let [alice :alice
+        bob :bob
+        allow? (rt/configured-address-policy
+                [{:peer-id alice :addresses ["wss://alice.example/netz"]}
+                 {:peer-id bob :addresses ["wss://bob.example/netz"]}])]
+    (is (allow? {:peer-id alice :address "wss://alice.example/netz"}))
+    (is (allow? {:peer-id bob :address "wss://bob.example/netz"}))
+    (is (not (allow? {:peer-id alice :address "wss://bob.example/netz"})))
+    (is (not (allow? {:peer-id alice :address "ws://127.0.0.1:8080/admin"})))
+    (is (thrown? #?(:clj Throwable :cljs :default)
+                 (rt/configured-address-policy
+                  [{:peer-id alice :addresses ["https://not-websocket.example"]}])))))
+
+(deftest public-gateway-dials-only-configured-tls-peers
+  (let [alice :alice
+        allow? (rt/public-gateway-address-policy
+                [{:peer-id alice :addresses ["wss://alice.example/netz"]}])]
+    (is (allow? {:peer-id alice :address "wss://alice.example/netz"}))
+    (is (not (allow? {:peer-id alice :address "wss://elsewhere.example/netz"})))
+    (is (not (allow? {:peer-id :untrusted
+                      :address "wss://alice.example/netz"})))
+    (is (thrown? #?(:clj Throwable :cljs :default)
+                 (rt/public-gateway-address-policy
+                  [{:peer-id alice :addresses ["ws://alice.example/netz"]}])))))
+
 (deftest stopping-a-runtime-is-idempotent-and-refuses-new-work
   (let [ctx (rt/make-runtime {:id :me :state {}
                               :handler (fn [s _ _] {:state s :actions []})
@@ -279,6 +305,7 @@
       {:type :sync/open :session :s :topic :t :summary {}}
       {:type :sync/chunk :session :s :index "0" :data {}}
       {:type :dial :addresses 42}
+      {:type :dial :addresses [] :authority-id "truncated"}
       {:type :dial-refused :peers 42}
       {:type :peers :peers []}
       {:type :peers :entries 42}
@@ -288,7 +315,9 @@
     (are [payload] (true? (rt/well-formed? payload))
       {:type :have :summary {:o {0 {:t [[0 5]]}}} :horizon {[:o 0 :t] 3}}
       {:type :want :ranges [{:topic :t :lo 0 :hi 5}]}
-      {:type :gossip :origin :o :epoch 0 :seq 1 :hops 2 :topic :t :payload "x"}
+      {:type :gossip :origin :o
+       :origin-authority (apply str (repeat 64 "0"))
+       :epoch 0 :seq 1 :hops 2 :topic :t :payload "x"}
       {:type :sync/open :session :s :topic :t
        :profile "netz/join-semilattice/1" :summary {}}
       {:type :sync/chunk :session :s :index 0 :data {}}
@@ -297,6 +326,8 @@
        :checkpoint {} :frontiers {[:o 0 :t] 3}}
       {:type :sync/abort :session :s :code :timeout}
       {:type :interests :topics #{:t} :carries #{}}
+      {:type :dial :addresses ["wss://peer.example/netz"]
+       :authority-id (apply str (repeat 64 "a"))}
       {:type :peers :entries []}))
 
   (testing "required fields must be present"

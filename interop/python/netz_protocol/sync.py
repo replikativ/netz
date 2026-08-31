@@ -9,6 +9,8 @@ from netz_sync import (
     SyncError,
     SyncProfile,
     SyncReceiver,
+    SyncResponse,
+    SyncSender,
     open_frame,
 )
 
@@ -21,5 +23,7 @@ __all__ = [
     "SyncError",
     "SyncProfile",
     "SyncReceiver",
+    "SyncResponse",
+    "SyncSender",
     "open_frame",
 ]

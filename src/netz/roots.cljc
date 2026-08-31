@@ -54,9 +54,13 @@
   every node is checked against its own content address (`netz.content`).
   Accepting a root says \"this is the publisher's current version\", not
   \"I have it\" and not \"it is well-formed\"."
-  (:require [netz.topics :as topics]))
+  (:require [clojure.core.async :as async :refer [chan put! close!]]
+            [netz.identity :as identity]
+            [netz.topics :as topics]
+            [netz.wire :as wire]))
 
 (def ^:const record-version "netz/root/v1")
+(def ^:const signing-domain "netz/root-record/v1\u0000")
 
 (defn make-record
   "A root announcement.
@@ -83,6 +87,88 @@
        (some? (:netz/root r))
        (some? (:netz/publisher r))))
 
+(defn- signable-record?
+  [record]
+  (and (root-record? record)
+       (string? (:netz/database record))
+       (<= 0 (:netz/version record) wire/max-safe-integer)
+       (wire/byte-buffer? (:netz/root record))
+       (or (nil? (:netz/prev record))
+           (wire/byte-buffer? (:netz/prev record)))
+       (string? (:netz/publisher record))
+       (boolean (re-matches #"(?i)[0-9a-f]{64}" (:netz/publisher record)))))
+
+(defn record-signing-bytes
+  "Language-neutral bytes signed by a portable root record.
+
+  Roots and predecessor addresses are opaque bytes. The application profile
+  decides whether they contain a CID, hash, Konserve key, or another content
+  identifier; the root verifier never reconstructs a host-language value."
+  [record]
+  (when-not (signable-record? record)
+    (throw (ex-info "root record is outside the portable signing profile"
+                    {:type :netz.roots/non-portable-record})))
+  (identity/concat-bufs
+   (identity/utf8-bytes signing-domain)
+   (wire/encode-canonical
+    {"v" 1
+     "database" (:netz/database record)
+     "version" (:netz/version record)
+     "root" (:netz/root record)
+     "prev" (:netz/prev record)
+     "publisher" (identity/hex->bytes (:netz/publisher record))})))
+
+(defn sign-record
+  "Create an independently verifiable portable root record.
+
+  Returns a channel. The embedded genesis lets an offline or relaying peer
+  derive the full Authority ID, authorize the operational key, and verify the
+  signature without a directory lookup."
+  [{:keys [genesis operational]} fields]
+  (let [record (make-record (assoc fields :publisher
+                                   (identity/authority-id genesis)))
+        ch (chan 1)]
+    (async/go
+      (try
+        (let [signature (async/<! (identity/sign (:private operational)
+                                                 (record-signing-bytes record)))]
+          (put! ch (if (instance? #?(:clj Exception :cljs js/Error) signature)
+                     signature
+                     (assoc record
+                            :netz/publisher-genesis genesis
+                            :netz/publisher-key (:public operational)
+                            :netz/signature signature))))
+        (catch #?(:clj Exception :cljs js/Error) e
+          (put! ch e)))
+      (close! ch))
+    ch))
+
+(defn verify-record
+  "Verify a signed root record without prior contact with its publisher.
+
+  Returns a channel containing true or false; malformed peer input never
+  escapes as an exception."
+  [record]
+  (let [ch (chan 1)]
+    (async/go
+      (put!
+       ch
+       (boolean
+        (try
+          (let [genesis (:netz/publisher-genesis record)
+                public-key (:netz/publisher-key record)
+                signature (:netz/signature record)
+                publisher (:netz/publisher record)]
+            (and (= identity/key-size (identity/buf-length public-key))
+                 (= identity/signature-size (identity/buf-length signature))
+                 (identity/genesis-authorises? genesis public-key publisher)
+                 (async/<! (identity/verify public-key
+                                            (record-signing-bytes record)
+                                            signature))))
+          (catch #?(:clj Exception :cljs js/Error) _ false))))
+      (close! ch))
+    ch))
+
 (defn make-state
   "Verifier state: one entry per database, plus retained equivocation proofs."
   ([] (make-state {}))
@@ -101,7 +187,7 @@
     ;; database -> [record record] — two roots at one version, kept as evidence
     :equivocations {}
     :stats {:accepted 0 :stale 0 :forks 0 :gaps 0
-            :wrong-publisher 0 :malformed 0}}))
+            :wrong-publisher 0 :invalid-signature 0 :malformed 0}}))
 
 (defn head
   "What we currently believe about `database`, or nil."
@@ -148,7 +234,10 @@
   - `:malformed`       — not a root record
 
   Nothing here consults a clock. All three defences are local, which is what
-  makes them work for a peer that has been offline for a month."
+  makes them work for a peer that has been offline for a month.
+
+  This pure transition assumes the caller already established authenticity.
+  Untrusted network records MUST enter through `accept-verified`."
   [state record]
   (if-not (root-record? record)
     [(update-in state [:stats :malformed] inc) :malformed]
@@ -195,6 +284,21 @@
              (assoc-in [:heads db] {:version v :root r :publisher pub})
              (update-in [:stats :accepted] inc))
          :accepted]))))
+
+(defn accept-verified
+  "Verify an untrusted signed record, then apply the pure chain transition.
+
+  Returns a channel containing `[state outcome]`. Invalid signatures leave the
+  head unchanged and return `:invalid-signature`."
+  [state record]
+  (let [ch (chan 1)]
+    (async/go
+      (if (async/<! (verify-record record))
+        (put! ch (accept state record))
+        (put! ch [(update-in state [:stats :invalid-signature] inc)
+                  :invalid-signature]))
+      (close! ch))
+    ch))
 
 (defn missing-versions
   "Which versions we would need to close a `:gap` for `database` up to

@@ -211,9 +211,16 @@
           (abort state session from :profile-rejected))))))
 
 (defn- on-ack [state from {:keys [session through]}]
-  (let [{:keys [role peer] :as sender} (get-in state [:sessions session])]
-    (if (or (not= role :sender) (not= peer from))
+  (let [{:keys [role peer next-to-send] :as sender}
+        (get-in state [:sessions session])]
+    (cond
+      (or (not= role :sender) (not= peer from))
       (abort state session from :unknown-session)
+
+      (or (not (safe-uint? through)) (>= through next-to-send))
+      (abort state session from :invalid-ack)
+
+      :else
       (let [sender (assoc sender :acked (max (:acked sender) through))
             [sender actions] (sender-actions state session sender)
             done? (some #(= :sync/done (:type (nth % 2 nil))) actions)

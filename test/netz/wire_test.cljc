@@ -1,5 +1,6 @@
 (ns netz.wire-test
   (:require [clojure.test :refer [deftest is testing]]
+            #?(:clj [clojure.string])
             [netz.identity :as id]
             [netz.wire :as wire]))
 
@@ -131,10 +132,25 @@
     (is (thrown? #?(:clj Throwable :cljs :default)
                  (wire/encode-canonical {:keyword :not-portable})))
     (is (thrown? #?(:clj Throwable :cljs :default)
-                 (wire/encode-canonical {"float" 1.5}))))
+                 (wire/encode-canonical {"float" 1.5})))
+    (is (thrown? #?(:clj Throwable :cljs :default)
+                 (wire/encode-canonical
+                  {"oversized" (id/byte-buf (inc (* 1024 1024)))}))))
 
   (testing "valid CBOR still has to be deterministic and consume the frame"
     (is (thrown? #?(:clj Throwable :cljs :default)
                  (wire/decode (id/hex->bytes "1801"))))
     (is (thrown? #?(:clj Throwable :cljs :default)
                  (wire/decode (id/hex->bytes "0102"))))))
+
+#?(:clj
+   (deftest shared-malformed-cbor-corpus
+     (testing "every published negative fixture is rejected"
+       (let [lines (->> (clojure.string/split-lines
+                         (slurp "spec/fixtures/malformed-profile-1.txt"))
+                        (remove #(or (clojure.string/blank? %)
+                                     (clojure.string/starts-with? % "#"))))]
+         (doseq [line lines
+                 :let [[case-name hex] (clojure.string/split line #"\\s+" 2)]]
+           (is (thrown? Throwable (wire/decode (id/hex->bytes hex)))
+               case-name))))))

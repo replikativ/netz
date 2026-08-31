@@ -1,5 +1,7 @@
 (ns netz.roots-test
   (:require [clojure.test :refer [deftest testing is]]
+            #?(:clj [clojure.core.async :refer [<!!]])
+            [netz.identity :as identity]
             [netz.roots :as roots]
             [netz.topics :as tp]))
 
@@ -15,6 +17,17 @@
               [st' (conj outs o)]))
           [state []]
           records))
+
+(deftest portable-root-signing-known-answer
+  (let [publisher "dadc6166b57499e9a4934c894f012a4acd29d851521f5be9dc04def7937467ca"
+        record (roots/make-record
+                {:database "example/db"
+                 :version 7
+                 :root (identity/hex->bytes (apply str (repeat 32 "11")))
+                 :prev (identity/hex->bytes (apply str (repeat 32 "22")))
+                 :publisher publisher})]
+    (is (= "6e65747a2f726f6f742d7265636f72642f763100a661760164707265765820222222222222222222222222222222222222222222222222222222222222222264726f6f74582011111111111111111111111111111111111111111111111111111111111111116776657273696f6e076864617461626173656a6578616d706c652f6462697075626c69736865725820dadc6166b57499e9a4934c894f012a4acd29d851521f5be9dc04def7937467ca"
+           (identity/bytes->hex (roots/record-signing-bytes record))))))
 
 ;; =============================================================================
 ;; The chain
@@ -157,6 +170,38 @@
                (dissoc (rec 0 "r0" nil) :netz/root)]]
     (let [[_ o] (roots/accept (roots/make-state) bad)]
       (is (= :malformed o) (str "accepted " (pr-str bad))))))
+
+#?(:clj
+   (deftest portable-root-records-bind-the-publisher-signature
+     (let [identity (<!! (identity/generate-identity))
+           root (identity/hex->bytes (apply str (repeat 32 "11")))
+           signed (<!! (roots/sign-record identity
+                                          {:database "db"
+                                           :version 0
+                                           :root root
+                                           :prev nil}))]
+       (is (true? (<!! (roots/verify-record signed))))
+       (let [[state outcome] (<!! (roots/accept-verified
+                                   (roots/make-state) signed))]
+         (is (= :first outcome))
+         (is (= (identity/authority-id (:genesis identity))
+                (:publisher (roots/head state "db")))))
+
+       (testing "all chain fields are covered"
+         (doseq [tampered [(assoc signed :netz/version 1)
+                           (assoc signed :netz/root
+                                  (identity/hex->bytes (apply str (repeat 32 "22"))))
+                           (assoc signed :netz/database "other")]]
+           (is (false? (<!! (roots/verify-record tampered))))))
+
+       (testing "an invalid record cannot advance the pure verifier"
+         (let [[state outcome]
+               (<!! (roots/accept-verified
+                     (roots/make-state)
+                     (assoc signed :netz/signature (identity/byte-buf 64))))]
+           (is (= :invalid-signature outcome))
+           (is (nil? (roots/head state "db")))
+           (is (= 1 (get-in state [:stats :invalid-signature]))))))))
 
 ;; =============================================================================
 ;; Topics

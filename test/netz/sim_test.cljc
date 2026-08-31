@@ -71,6 +71,32 @@
 
 (defn received [s id] (set (:received (sim/node-state s id))))
 
+(defn disk-handler [state event _ctx]
+  (case (:type event)
+    :message
+    (let [{:keys [key value token]} (:payload event)]
+      {:state state
+       :actions [[:persist key value {:token token}]]})
+
+    :persist-result
+    {:state (update state :results conj
+                    {:key (:key event)
+                     :result (:result event)
+                     :token (get-in event [:payload :token])})
+     :actions []}
+
+    :disk-lost
+    {:state (update state :disk-losses inc) :actions []}
+
+    :disk-corrupt
+    {:state (update state :corruptions conj (:key event)) :actions []}
+
+    {:state state :actions []}))
+
+(defn disk-node [opts]
+  (sim/add-node (sim/make-sim opts) :disk disk-handler
+                {:results [] :disk-losses 0 :corruptions []}))
+
 ;; =============================================================================
 ;; Determinism
 ;; =============================================================================
@@ -217,8 +243,62 @@
                 (sim/resume :n1)
                 (sim/run-until 4000))]
       (is (= #{"first"} (received s :n1)) "state was lost across restart")
-      (is (sim/up? s :n1))))
+      (is (sim/up? s :n1)))))
 
+(deftest persistence-completion-is-an-acknowledged-durable-boundary
+  (let [stored (-> (disk-node {:persist-latency-ms 5})
+                   (sim/send-message :client :disk
+                                     {:key :blob :value "bytes" :token 7})
+                   (sim/run-until 20))]
+    (is (= "bytes" (get (sim/durable-state stored :disk) :blob)))
+    (is (= [{:key :blob :result :ok :token 7}]
+           (:results (sim/node-state stored :disk))))
+
+    (testing "a process crash cancels a write which has not landed"
+      (let [crashed (-> (disk-node {:persist-latency-ms 10})
+                        (sim/send-message :client :disk
+                                          {:key :blob :value "bytes" :token 1})
+                        (sim/run-until 0)
+                        (sim/crash :disk)
+                        (sim/run-until 20))]
+        (is (empty? (sim/durable-state crashed :disk)))))
+
+    (testing "losing the disk also cancels writes aimed at the old device"
+      (let [lost (-> (disk-node {:persist-latency-ms 10})
+                     (sim/send-message :client :disk
+                                       {:key :blob :value "bytes" :token 2})
+                     (sim/run-until 0)
+                     (sim/lose-disk :disk)
+                     (sim/run-until 20))]
+        (is (empty? (sim/durable-state lost :disk)))
+        (is (= 1 (:disk-losses (sim/node-state lost :disk))))))))
+
+(deftest persistence-model-exposes-full-failed-and-corrupt-disks
+  (let [failed (-> (disk-node {})
+                   (sim/set-disk-writable :disk false)
+                   (sim/send-message :client :disk
+                                     {:key :a :value "value" :token :failed})
+                   (sim/run-until 10))
+        full (-> (disk-node {})
+                 (sim/set-disk-capacity :disk 1)
+                 (sim/send-message :client :disk
+                                   {:key :a :value "value" :token :full})
+                 (sim/run-until 10))
+        corrupt (-> (disk-node {})
+                    (sim/send-message :client :disk
+                                      {:key :a :value "good" :token :stored})
+                    (sim/run-until 10)
+                    (sim/corrupt-durable :disk :a "bad")
+                    (sim/run-until 10))]
+    (is (= :write-failed (get-in (sim/node-state failed :disk)
+                                 [:results 0 :result])))
+    (is (empty? (sim/durable-state failed :disk)))
+    (is (= :full (get-in (sim/node-state full :disk) [:results 0 :result])))
+    (is (empty? (sim/durable-state full :disk)))
+    (is (= "bad" (get (sim/durable-state corrupt :disk) :a)))
+    (is (= [:a] (:corruptions (sim/node-state corrupt :disk))))))
+
+(deftest forgetting-a-node-is-amnesia
   (testing "forget is amnesia"
     (let [s (-> (line-network {:seed 9} 3)
                 (sim/send-message :ext :n0 {:mid 1 :body "first"})

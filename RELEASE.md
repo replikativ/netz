@@ -29,6 +29,10 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 - [x] JVM, JavaScript and Python pin the same canonical `sync/open` and
       frontier-bearing `sync/done` bytes; Python also exercises ordered,
       atomic profile application and pre-commit claim validation.
+- [x] JVM and Python enforce the same deterministic control-envelope scalar,
+      depth, item and frame limits; Python requires exact sync frame schemas.
+- [x] The Python package pins both raw WebSocket-CBOR and Kabel serializer-14
+      carrier framing without folding the carrier prefix into signed objects.
 - [x] Clojure exposes a strict internal-map/profile-1 sync-frame boundary,
       validates sender frontier claims before profile code, and computes
       receipt sizes from locally encoded canonical bytes. The dependency-free
@@ -41,6 +45,20 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 
 ## Required before exposing to untrusted peers
 
+- [x] Bind the identity proof to a cryptographic transport/session and
+      authenticate every subsequent Netz control frame. The two-identity,
+      two-nonce transcript rejects replay and a chosen-nonce signing oracle,
+      but a live adversary can splice the complete public handshake between two
+      sockets and then inject unsigned membership/content/sync frames. Candidate
+      profile: `Noise_XX_25519_AESGCM_SHA256` below Kabel serialization, with
+      serialized transport ownership and Netz identity/capability payloads.
+      The direct middleware, exact capability intersection, full-Authority
+      binding, encrypted Kabel-envelope fragmentation, JVM/CLJS adversarial
+      tests, and a real http-kit/Kabel/CBOR/Noise overlay test now exist behind
+      `:secure-test`. `netz.transport.secure/start!` consumes the authenticated
+      connection context without the transitional hello/proof exchange. This
+      Kabel 0.3.126 contains the required transport context and Python carrier;
+      Geheimnis 0.2.39 contains the Noise binding.
 - [x] Publication sequence, deduplication, repair, and bounded ordered delivery
       are scoped per origin/topic stream.
 - [x] Kabel routes external and direct application through one peer/topic
@@ -58,35 +76,106 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       recovery, unsubscribe, and shutdown are serialized by the owner lane.
       Apply and sync completions are attempt-fenced, and only exact local
       application success advances a publication frontier.
-- [x] Kabel 0.3.118 supplies bounded 5 MiB frames/queues, and Netz consumes the
-      released coordinate. Jetty writes await adapter completion.
-- [ ] http-kit still requires upstream PR #619 (or an equivalent hard
-      queued-byte limit) because Ring 2.0 async send is optional. Until then,
-      public servers must use Jetty or a bounded replikativ http-kit build.
-- [ ] Public deployments need DNS/private-address/redirect policy in addition
-      to the socket frame limit.
-- [ ] Subtree disconnect handling should retry immediately rather than waiting
-      for the bounded deadline.
-- [ ] Root records need an independently verifiable publisher/signature binding.
-- [ ] Rotation-chain and revocation distribution must be implemented or remain
-      explicitly unsupported in every advertised protocol version.
+- [x] Kabel 0.3.124 supplies bounded 5 MiB frames/queues and consumes
+      `org.replikativ/http-kit 2.9.0-beta4-replikativ.1`, whose server adapter
+      bounds queued bytes. Netz consumes the released Kabel coordinate; Jetty
+      remains supported and its writes await adapter completion.
+- [x] Public gateways can use `public-gateway-address-policy`, which accepts
+      only exact operator-configured `(peer-id, wss-address)` pairs and cannot
+      be expanded by peer exchange. Dynamic dialing of discovered public
+      hostnames remains explicitly unsupported until a socket adapter validates
+      and pins resolved IPs; a pre-dial hostname check cannot prevent DNS
+      rebinding.
+- [x] Subtree disconnect handling retries an alternate provider immediately,
+      resets attempt-local counters after partial delivery, and leaves stale
+      deadlines unable to complete the replacement attempt.
+- [x] Portable root records have deterministic opaque-byte transcripts,
+      embedded self-certifying publisher material, and a verify-before-accept
+      API; tampered roots, versions, databases, and signatures cannot advance
+      the pure root-chain verifier.
+- [x] Rotation-chain and revocation distribution remain explicitly unsupported
+      in draft-00. Their message types are reserved, unknown frames are
+      rejected before negotiation, and the documentation makes no rotation
+      interoperability claim.
+
+## Experimental durable-blob extension
+
+This extension is not part of the alpha interoperability claim yet.
+
+- [x] Separate immutable blob durability from `konserve-sync` logical-key and
+      database synchronization.
+- [x] Define deterministic rendezvous placement over verified full Authority
+      IDs with explicit owner/site constraints and shared Clojure/Python
+      fixtures.
+- [x] Enforce a durable-outbox transition before network stores, fence retries
+      by attempt, and simulate crash recovery, partitions, disk loss, full and
+      failed disks, corruption notification, and repair.
+- [x] Freeze portable object, piece and transfer-manifest addresses plus the
+      bounded resume bitmap in JVM/JavaScript/Python fixtures.
+- [x] Provide an explicit optional Konserve immutable-write seam and a runnable
+      three-private-device demonstration without claiming a transparent store.
+- [ ] Freeze authenticated offer/piece, retention-manifest, signed storage
+      receipt, lease, deletion-marker and deletion-receipt schemas.
+- [ ] Implement the real Kabel/Noise transfer runtime, durable piece staging,
+      scrubbing, inventory exchange and restart recovery against file stores.
+- [ ] Decide transparent Konserve wrapper semantics for binary streams,
+      multi-key root-last batches, nested updates and read repair.
+- [ ] Pass real three-device JVM/JavaScript/Python conformance and operational
+      lease/deletion tests before advertising the capability.
 
 ## Required before calling wire profile 1 interoperable
 
+- [x] Authority derivation and identity-record transcripts use the draft's
+      deterministic-CBOR v1 object. JVM/JS/Python pin the same genesis bytes,
+      full Authority ID, routing projection, and record-signing bytes.
+- [x] Authentication uses the full 32-byte Authority ID; the compact UUID is
+      retained only as Kabel's routing projection.
+- [x] Convert gossip signature bytes from host-native `hasch/edn-hash` to the
+      deterministic profile-1 envelope and publish a JVM/JS/Python signature
+      fixture. The native Kabel adapter remains an explicitly transitional
+      compatibility profile.
+- [x] Move publication values across the standards boundary as opaque bytes so
+      registered Boring tags survive unchanged and relays never reconstruct
+      host-language values for signature verification. Strict encode/decode,
+      self-verifying envelope, and bounded Python ordered receiver now exist.
 - [ ] Route handshake, dissemination, content, and sync runtime messages through
       `netz.wire` rather than native Clojure values. Strict sync-frame conversion
       exists, but is not enabled without capability negotiation.
-- [ ] Add canonical identity, signature and malformed-input fixtures.
-- [ ] Implement capability/version negotiation.
-- [ ] Complete a Python identity/handshake/dissemination/sync client.
+- [x] Add canonical identity, publication signature and malformed-input
+      fixtures.
+- [x] Implement cryptographically bound capability/version negotiation in the
+      Noise handshake. Runtime codec selection remains the separate item above;
+      `wire/netz-cbor/1` is not aliased to the transitional `netz/1` token.
+- [ ] Complete a Python identity/handshake/dissemination/sync client. The
+      identity, secure carrier, signed publisher, bounded ordered receiver, and
+      bounded cumulative-ACK sync sender/atomic receiver exist; subscription
+      repair, content exchange and reconnect orchestration remain.
+- [x] The optional Python secure-client prototype signs and verifies identity
+      records, binds Authority IDs to authenticated Noise statics, enforces the
+      expected dial target, fragments bounded inner frames, and passes a real
+      asyncio WebSocket round trip plus the same Cacophony vector as Geheimnis.
+      Dissemination and outbound sync orchestration remain before calling it a
+      complete application client.
+- [x] JVM and Python consume the same deterministic direct-binding fixture,
+      covering both identity records and binding signatures, the offer, all
+      three Noise messages, handshake hash, encrypted serializer-14 fragment,
+      and serializer-0 outer carrier. CLJS runs the same binding logic and
+      adversarial transport suite; consuming this JSON fixture there remains
+      part of the three-runtime gate below.
 - [ ] Pass independent JVM/JS/Python two-peer conformance tests.
-- [ ] Pass a real three-or-more-peer partition/rejoin test for both a fenced
-      single-writer root and a multiwriter join-semilattice.
+- [x] Pass a real three-peer offline/rejoin test over http-kit, Kabel CBOR and
+      authenticated Noise for both a fenced single-writer root and a
+      multiwriter join-semilattice.
+- [x] The deterministic production-state-machine simulator passes three-peer
+      partition/rejoin scenarios for both profiles, and the secure WebSocket
+      test exercises the corresponding runtime layer.
 
 ## Artifact commands
 
 ```sh
 clojure -X:test :dirs '["test"]'
+# Released Kabel 0.3.126 and Geheimnis 0.2.39:
+clojure -X:secure-test :dirs '["test" "test-secure"]'
 clojure -X:konserve:test :dirs '["test" "test-konserve"]'
 # With ../urd, ../datahike, ../yggdrasil, and ../spindel checked out:
 clojure -X:stack :dirs '["test-stack"]'

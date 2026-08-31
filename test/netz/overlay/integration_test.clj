@@ -72,26 +72,32 @@
                                         :seeds [{:peer-id server-id
                                                  :addresses [url]
                                                  :group "seed"}]}))]
-          (install-client! (:middleware client))
-          (<?? S (peer/connect S client-peer url))
+          (try
+            (install-client! (:middleware client))
+            (<?? S (peer/connect S client-peer url))
 
-          (testing "each side learns the other's peer id from the signed hello"
-            (is (wait-for 5000 #(contains? (rt/connections client-peer) server-id))
-                "client never registered the server")
-            (is (wait-for 5000 #(contains? (rt/connections server-peer) client-id))
-                "server never registered the client"))
+            (testing "each side learns the other's peer id from the signed hello"
+              (is (wait-for 5000 #(contains? (rt/connections client-peer) server-id))
+                  "client never registered the server")
+              (is (wait-for 5000 #(contains? (rt/connections server-peer) client-id))
+                  "server never registered the client"))
 
-          (testing "and the ids are the ones derived from the public keys"
-            ;; Not merely "some id" — the whole point of a self-certifying id
-            ;; is that it is derivable from the key and cannot be asserted.
-            (is (= #{server-id} (rt/connections client-peer)))
-            (is (= #{client-id} (rt/connections server-peer))))
+            (testing "and the ids are the ones derived from the public keys"
+              ;; Not merely "some id" — the whole point of a self-certifying id
+              ;; is that it is derivable from the key and cannot be asserted.
+              (is (= #{server-id} (rt/connections client-peer)))
+              (is (= #{client-id} (rt/connections server-peer))))
 
-          (testing "membership records the connection"
-            (is (wait-for 5000
-                          #(overlay/connections (rt/overlay-state client))))
-            (is (some #{server-id} (overlay/connections (rt/overlay-state client))))))
+            (testing "membership records the connection"
+              (is (wait-for 5000
+                            #(overlay/connections (rt/overlay-state client))))
+              (is (some #{server-id}
+                        (overlay/connections (rt/overlay-state client)))))
+            (finally
+              (rt/stop! client)
+              (<?? S (peer/stop client-peer)))))
         (finally
+          (rt/stop! server)
           (<?? S (peer/stop server-peer)))))))
 
 (deftest publish-crosses-a-real-socket
@@ -123,26 +129,31 @@
                                         :seeds [{:peer-id server-id
                                                  :addresses [url]
                                                  :group "seed"}]}))]
-          (install-client! (:middleware client))
-          (<?? S (peer/connect S client-peer url))
-          (is (wait-for 5000 #(contains? (rt/connections server-peer) client-id)))
+          (try
+            (install-client! (:middleware client))
+            (<?? S (peer/connect S client-peer url))
+            (is (wait-for 5000 #(contains? (rt/connections server-peer) client-id)))
 
-          (testing "client to server"
-            (rt/publish! client :t "from-client")
-            (is (wait-for 5000
-                          #(= ["from-client"]
-                              (overlay/delivered (rt/overlay-state server))))
-                (str "server delivered "
-                     (overlay/delivered (rt/overlay-state server)))))
+            (testing "client to server"
+              (rt/publish! client :t "from-client")
+              (is (wait-for 5000
+                            #(= ["from-client"]
+                                (overlay/delivered (rt/overlay-state server))))
+                  (str "server delivered "
+                       (overlay/delivered (rt/overlay-state server)))))
 
-          (testing "server to client"
-            (rt/publish! server :t "from-server")
-            (is (wait-for 5000
-                          #(some #{"from-server"}
-                                 (overlay/delivered (rt/overlay-state client))))
-                (str "client delivered "
-                     (overlay/delivered (rt/overlay-state client))))))
+            (testing "server to client"
+              (rt/publish! server :t "from-server")
+              (is (wait-for 5000
+                            #(some #{"from-server"}
+                                   (overlay/delivered (rt/overlay-state client))))
+                  (str "client delivered "
+                       (overlay/delivered (rt/overlay-state client)))))
+            (finally
+              (rt/stop! client)
+              (<?? S (peer/stop client-peer)))))
         (finally
+          (rt/stop! server)
           (<?? S (peer/stop server-peer)))))))
 
 (deftest closing-a-socket-reaches-the-state-machine
@@ -168,34 +179,44 @@
                                     :topics #{:t}}))]
       (install-server! (:middleware server))
       (<?? S (peer/start server-peer))
+      (try
+        (let [[client-mw install-client!] (rt/deferred-middleware)
+              client-peer (peer/client-peer S client-id client-mw identity)
+              client (<?? S (rt/start! S client-peer
+                                       {:identity client-kp
+                                        :addresses []
+                                        :topics #{:t}
+                                        :seeds [{:peer-id server-id
+                                                 :addresses [url]
+                                                 :group "seed"}]}))]
+          (try
+            (install-client! (:middleware client))
+            (<?? S (peer/connect S client-peer url))
+            (is (wait-for 5000 #(contains? (rt/connections client-peer) server-id))
+                "never connected, so the teardown proves nothing")
+            (is (wait-for 5000 #(some #{server-id}
+                                      (overlay/connections (rt/overlay-state client)))))
 
-      (let [[client-mw install-client!] (rt/deferred-middleware)
-            client-peer (peer/client-peer S client-id client-mw identity)
-            client (<?? S (rt/start! S client-peer
-                                     {:identity client-kp
-                                      :addresses []
-                                      :topics #{:t}
-                                      :seeds [{:peer-id server-id
-                                               :addresses [url]
-                                               :group "seed"}]}))]
-        (install-client! (:middleware client))
-        (<?? S (peer/connect S client-peer url))
-        (is (wait-for 5000 #(contains? (rt/connections client-peer) server-id))
-            "never connected, so the teardown proves nothing")
-        (is (wait-for 5000 #(some #{server-id}
-                                  (overlay/connections (rt/overlay-state client)))))
+            (<?? S (peer/stop server-peer))
 
-        (<?? S (peer/stop server-peer))
+            (testing "the transport registry drops it"
+              (is (wait-for 5000
+                            #(not (contains? (rt/connections client-peer)
+                                             server-id)))
+                  "the registry still holds a dead connection"))
 
-        (testing "the transport registry drops it"
-          (is (wait-for 5000 #(not (contains? (rt/connections client-peer) server-id)))
-              "the registry still holds a dead connection"))
-
-        (testing "and so does membership"
-          (is (wait-for 5000
-                        #(not (some #{server-id}
-                                    (overlay/connections (rt/overlay-state client)))))
-              "membership still believes in a dead connection"))))))
+            (testing "and so does membership"
+              (is (wait-for 5000
+                            #(not (some #{server-id}
+                                        (overlay/connections
+                                         (rt/overlay-state client)))))
+                  "membership still believes in a dead connection"))
+            (finally
+              (rt/stop! client)
+              (<?? S (peer/stop client-peer)))))
+        (finally
+          (rt/stop! server)
+          (<?? S (peer/stop server-peer)))))))
 
 (deftest forged-publishes-never-reach-the-state-machine
   (testing "a peer cannot publish under somebody else's identity"
@@ -207,6 +228,7 @@
           victim-kp (<?? S (id/generate-identity))
           honest-kp (<?? S (id/generate-identity))
           attacker-id (id/peer-id (:genesis attacker-kp))
+          honest-authority (id/authority-id (:genesis honest-kp))
           victim-id (id/peer-id (:genesis victim-kp))
 
           seen (atom [])
@@ -240,12 +262,15 @@
       ;; The attacker completes a perfectly valid identity handshake — it is a
       ;; real peer, not an outsider, and it holds its own key. That is the
       ;; point: the defence being tested is not "keep strangers out".
-      (>!! in {:type rt/hello-type
-               :record (id/record->wire
-                        (<?? S (id/sign-record attacker-kp [] 0)))
-               :nonce (id/new-nonce)})
-      (>!! in {:type rt/proof-type
-               :sig (<?? S (id/sign-challenge attacker-kp (:nonce our-hello)))})
+      (let [attacker-nonce (id/new-nonce)]
+        (>!! in {:type rt/hello-type
+                 :record (id/record->wire
+                          (<?? S (id/sign-record attacker-kp [] 0)))
+                 :nonce attacker-nonce})
+        (>!! in {:type rt/proof-type
+                 :sig (<?? S (id/sign-challenge attacker-kp attacker-nonce
+                                                honest-authority
+                                                (:nonce our-hello)))}))
       (is (wait-for 3000 #(contains? (rt/connections peer) attacker-id))
           "the attacker never connected, so the test proves nothing")
 
@@ -306,20 +331,25 @@
         victim-id (id/peer-id (:genesis victim-kp))
         victim-record (id/record->wire (<?? S (id/sign-record victim-kp [] 0)))
         our-kp (<?? S (id/generate-identity))
+        our-authority (id/authority-id (:genesis our-kp))
+        attacker-kp (<?? S (id/generate-identity))
+        attacker-id (id/peer-id (:genesis attacker-kp))
+        victim-nonce (id/new-nonce)
         peer (atom {})
         ctx (rt/make-runtime {:id :me :state (overlay/make-state :me {})
                               :effects {:send! (fn [_ _]) :connect! (fn [_ _ _])
                                         :disconnect! (fn [_]) :schedule! (fn [_ _])}})
         in (chan 16)
         out (chan 16)
-        _ ((rt/middleware {:ctx ctx :identity our-kp :addresses [] :seq-no 0})
+        _ ((rt/middleware {:ctx ctx :identity our-kp :addresses [] :seq-no 0
+                           :handshake-max-attempts 8})
            [S peer [in out]])
         our-hello (<?? S out)]
     (go-loop [] (when (<! out) (recur)))
 
     (testing "the victim's record alone does not register it"
       ;; This is the whole attack: the attacker HAS the record and nothing else.
-      (>!! in {:type rt/hello-type :record victim-record :nonce (id/new-nonce)})
+      (>!! in {:type rt/hello-type :record victim-record :nonce victim-nonce})
       (<?? S (timeout 400))
       (is (not (contains? (rt/connections peer) victim-id))
           "a replayed record must not bind the connection to that peer"))
@@ -327,7 +357,8 @@
     (testing "and a proof signed by the wrong key does not either"
       ;; The attacker answers our challenge with the only key it actually has.
       (>!! in {:type rt/proof-type
-               :sig (<?? S (id/sign-challenge our-kp (:nonce our-hello)))})
+               :sig (<?? S (id/sign-challenge attacker-kp victim-nonce
+                                              our-authority (:nonce our-hello)))})
       (<?? S (timeout 400))
       (is (not (contains? (rt/connections peer) victim-id))
           "the proof must be checked against the record's key, not any key"))
@@ -336,13 +367,30 @@
       ;; Even the real victim's proof, captured from another connection, is
       ;; worthless here — which is what makes the nonce load-bearing.
       (>!! in {:type rt/proof-type
-               :sig (<?? S (id/sign-challenge victim-kp (id/new-nonce)))})
+               :sig (<?? S (id/sign-challenge victim-kp (id/new-nonce)
+                                              our-authority (:nonce our-hello)))})
       (<?? S (timeout 400))
       (is (not (contains? (rt/connections peer) victim-id))
           "a proof is only valid for the challenge WE chose"))
 
+    (testing "a chosen-nonce signature from a different transcript does not register"
+      ;; The old proof covered only our challenge, so an attacker could ask the
+      ;; victim to sign that challenge on another socket and relay the result.
+      ;; Binding both roles and both challenges rejects that simpler oracle.
+      ;; A live relay can still splice the *whole* public transcript, so public
+      ;; transports additionally need channel binding and frame integrity.
+      (>!! in {:type rt/proof-type
+               :sig (<?? S (id/sign-challenge victim-kp (id/new-nonce)
+                                              (id/authority-id
+                                               (:genesis attacker-kp))
+                                              (:nonce our-hello)))})
+      (<?? S (timeout 400))
+      (is (not (contains? (rt/connections peer) victim-id))
+          "a proof obtained for another verifier must not authenticate this socket"))
+
     (testing "but the real holder of the key registers"
       (>!! in {:type rt/proof-type
-               :sig (<?? S (id/sign-challenge victim-kp (:nonce our-hello)))})
+               :sig (<?? S (id/sign-challenge victim-kp victim-nonce
+                                              our-authority (:nonce our-hello)))})
       (is (wait-for 3000 #(contains? (rt/connections peer) victim-id))
           "possession of the key on THIS connection is what registration means"))))

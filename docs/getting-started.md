@@ -77,6 +77,45 @@ For a client, construct `peer/client-peer`, pass a configured seed to
 socket examples in `test/netz/overlay/integration_test.clj` are the most direct
 reference while the API is alpha.
 
+## Authenticated transport
+
+The public-network path uses Kabel CBOR inside Noise through the released Kabel
+and Geheimnis coordinates in `deps.edn`. Construct the peer with the same
+identity that starts the overlay:
+
+```clojure
+(require '[kabel.middleware.cbor :refer [cbor]]
+         '[netz.transport.secure :as secure])
+
+(let [[application install!] (runtime/deferred-middleware)
+      socket-peer
+      (peer/client-peer
+       S peer-id application cbor (atom {}) (atom {})
+       {:transport-middleware
+        (secure/middleware {:identity keys
+                            :addresses []
+                            :seq-no 1})})
+      node
+      (<?? S
+           (secure/start!
+            S socket-peer
+            {:identity keys
+             :topics #{:example}
+             :seeds [{:peer-id seed-routing-id
+                      :authority-id seed-full-authority-id
+                      :addresses [seed-url]}]
+             :overlay-opts
+             {:membership {:require-authority? true}}}))]
+  (install! (:middleware node)))
+```
+
+`secure/start!` registers the identity already verified inside the Noise
+transcript and does not emit the transitional public hello/proof exchange. A
+secure seed therefore needs both the UUID-shaped routing ID and the full
+64-hex-character Authority ID. The runtime passes the latter as a per-dial
+Kabel context value, so connecting to the right URL with the wrong key fails
+closed.
+
 ## Public API
 
 | Operation | Meaning |
@@ -105,3 +144,26 @@ pass a separately protected `:recovery-store` or capture the one-time
 Konserve storage encryption is orthogonal to Netz. Encrypted blocks may be
 transferred as opaque bytes; key distribution and decryption authorization
 belong to an application synchronization profile.
+
+## Public gateways and address policy
+
+The default address predicate accepts absolute credential-free `ws` and `wss`
+URIs because private networks and local peers are normal deployments. It is not
+an SSRF boundary.
+
+A public gateway should pass an exact allowlist:
+
+```clojure
+{:allow-address?
+ (runtime/public-gateway-address-policy
+  [{:peer-id configured-routing-id
+    :addresses ["wss://peer.example/netz"]}])}
+```
+
+This permits only the operator-selected peer/address pair over TLS; peer
+exchange cannot add a dial target. The operator controls the DNS of that
+allowlist. Dynamically dialing discovered hostnames at a public boundary is
+unsupported until the WebSocket adapter can validate and pin the resolved IP
+used by the socket. Resolving first and checking separately is insufficient
+because DNS can change between the check and connection. WebSocket redirects
+must not be enabled to targets outside the same allowlist.

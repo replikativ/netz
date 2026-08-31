@@ -2,17 +2,17 @@
 
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
         ;; kabel supplies the transport (peers, WebSocket, codec middleware)
-        ;; and the pub/sub layer netz plugs a transport into. 0.3.118 exposes
+        ;; and the pub/sub layer netz plugs a transport into. 0.3.126 exposes
         ;; the peer/topic apply serializer, selected-connection unsubscribe,
         ;; exclusive inbound live ownership, exact decoded frame-size metadata,
         ;; and bounded 5 MiB WebSocket frames/queues. Jetty provides
-        ;; completion-driven server writes; http-kit still needs its upstream
-        ;; queued-byte ceiling. Everything netz needs from kabel is public API.
-        org.replikativ/kabel {:mvn/version "0.3.118"}
+        ;; completion-driven server writes and the bounded replikativ http-kit
+        ;; adapter. Everything netz needs from kabel is public API.
+        org.replikativ/kabel {:mvn/version "0.3.126"}
         ;; Ed25519, SHA-256, constant-time compare, CSPRNG — portable across
         ;; JVM and ClojureScript. Unlike kabel, netz cannot make crypto
         ;; optional: self-certifying identity is the bottom of the design.
-        org.replikativ/geheimnis {:mvn/version "0.2.38"}
+        org.replikativ/geheimnis {:mvn/version "0.2.39"}
         org.replikativ/superv.async {:mvn/version "0.3.50"}
         org.replikativ/hasch {:mvn/version "0.4.100"}
         ;; RFC 8949 deterministic CBOR for the language-neutral wire profile.
@@ -31,6 +31,17 @@
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}
                       org.clojure/test.check {:mvn/version "1.1.1"}}
          :exec-fn cognitect.test-runner.api/test}
+
+  ;; Full authenticated-transport integration gate. Both Kabel and Geheimnis
+  ;; are released coordinates, so this exercises exactly what consumers get.
+  :secure-test
+  {:extra-paths ["test" "test-secure"]
+   :extra-deps
+   {io.github.cognitect-labs/test-runner
+    {:git/tag "v0.5.1" :git/sha "dfb30dd"}
+    org.clojure/data.json {:mvn/version "2.5.1"}
+    org.clojure/test.check {:mvn/version "1.1.1"}}
+   :exec-fn cognitect.test-runner.api/test}
 
   ;; The konserve-backed PPeerStore (netz.store.konserve). konserve is the
   ;; consumer's to provide, exactly as kabel keeps storage optional, so the
@@ -62,6 +73,9 @@
   :ffix {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.2"}}
          :main-opts ["-m" "cljfmt.main" "fix"]}
 
+  :blob-demo {:extra-paths ["examples"]
+              :main-opts ["-m" "netz.examples.private-blob"]}
+
   :build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.6"}
-                  slipset/deps-deploy {:mvn/version "0.2.2"}}
+                 slipset/deps-deploy {:mvn/version "0.2.2"}}
           :ns-default build}}}

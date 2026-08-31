@@ -1,10 +1,12 @@
 (ns netz.wire
   "Language-neutral bytes for Netz wire profile 1.
 
-  Protocol state remains ordinary Clojure data internally. Values crossing a
-  standards-compatible boundary use maps with TEXT keys and the portable CBOR
-  subset documented in `spec/netz-draft-00.md`; no keywords, sets, ratios,
-  records or implementation-specific tags are accepted by that profile."
+  Protocol state remains ordinary Clojure data internally. Control envelopes
+  crossing a standards-compatible boundary use maps with TEXT keys and the
+  deterministic subset documented in `spec/netz-draft-00.md`; no keywords,
+  sets, ratios, records or semantic tags are accepted in the envelope.
+  Application CBOR remains opaque bytes and may use its profile's registered
+  tags without being decoded or rewritten here."
   (:require [boring.core :as boring]
             [netz.identity :as identity]))
 
@@ -23,6 +25,7 @@
    :on-unknown-record :error})
 
 (def ^:private max-frame-bytes (* 5 1024 1024))
+(def ^:private max-string-bytes (* 1024 1024))
 
 #?(:clj (def ^:private byte-array-class (Class/forName "[B")))
 
@@ -40,14 +43,21 @@
                     (<= (js/BigInt "-9223372036854775808") value)
                     (<= value (js/BigInt "9223372036854775807"))))))
 
+(defn- bounded-string?
+  [value]
+  (and (string? value)
+       (<= (identity/buf-length (identity/utf8-bytes value)) max-string-bytes)))
+
 (defn- portable-value?
   [value]
   (cond
-    (or (nil? value) (boolean? value) (string? value) (byte-buffer? value)) true
+    (or (nil? value) (boolean? value)) true
+    (bounded-string? value) true
+    (byte-buffer? value) (<= (identity/buf-length value) max-string-bytes)
     (int64? value) true
     (sequential? value) (every? portable-value? value)
     (map? value) (every? (fn [[k v]]
-                           (and (string? k) (portable-value? v)))
+                           (and (bounded-string? k) (portable-value? v)))
                          value)
     :else false))
 

@@ -146,7 +146,8 @@
             :finds 0 :wants-sent 0 :blocks-served 0 :blocks-received 0
             :verify-failed 0 :expired 0 :queued 0 :fetch-refused 0
             :tree-requests 0 :tree-nodes-sent 0 :tree-nodes-received 0
-            :tree-truncated 0 :tree-timeouts 0 :tree-failed 0}}))
+            :tree-truncated 0 :tree-timeouts 0 :tree-disconnects 0
+            :tree-failed 0}}))
 
 ;; =============================================================================
 ;; Local holdings
@@ -437,7 +438,15 @@
          (assoc-in [:tree-wants root :provider] provider)
          (assoc-in [:tree-wants root :deadline] (+ now timeout-ms))
          (update-in [:tree-wants root :tries] (fnil inc 0))
-         (update-in [:tree-wants root] dissoc :pending?)
+         ;; Attempt-local counters must not leak across providers. A provider
+         ;; may disconnect after a partial batch; retaining its `:processed`
+         ;; or `:done?` would let the replacement complete against a mixed
+         ;; count. Verified blocks already live in `:blocks` and remain safe.
+         (assoc-in [:tree-wants root :received] 0)
+         (assoc-in [:tree-wants root :processed] 0)
+         (assoc-in [:tree-wants root :frontier] [])
+         (assoc-in [:tree-wants root :done?] false)
+         (update-in [:tree-wants root] dissoc :pending? :expected)
          (update-in [:stats :tree-requests] inc))
      [[:send provider {:type :content/want-tree
                        :root root
@@ -474,6 +483,35 @@
          (conj (vec (for [p (sort (:peers state))]
                       [:send p {:type :content/find :key root}]))
                [:timer timeout-ms [:tree-timeout root]])]))))
+
+(defn- retry-tree
+  "Retry an incomplete subtree immediately, preferring an untried provider."
+  [state root now]
+  (let [want (get-in state [:tree-wants root])
+        candidates (sort (remove (:asked want) (providers-for state root now)))
+        max-tries (get-in state [:opts :max-tree-tries])
+        timeout-ms (get-in state [:opts :tree-timeout-ms])]
+    (cond
+      (nil? want) [state []]
+
+      (seq candidates)
+      (request-tree-from state root (first candidates) now)
+
+      (>= (:tries want 0) max-tries)
+      [(-> state
+           (update :tree-wants dissoc root)
+           (update-in [:stats :tree-failed] inc))
+       []]
+
+      :else
+      [(-> state
+           (assoc-in [:tree-wants root :pending?] true)
+           (assoc-in [:tree-wants root :provider] nil)
+           (assoc-in [:tree-wants root :deadline] (+ now timeout-ms))
+           (update-in [:tree-wants root :tries] (fnil inc 0)))
+       (conj (vec (for [p (sort (:peers state))]
+                    [:send p {:type :content/find :key root}]))
+             [:timer timeout-ms [:tree-timeout root]])])))
 
 (defn drain-pending
   "Start as many queued fetches as there are free slots. Returns `[state actions]`.
@@ -546,12 +584,23 @@
      :actions [[:timer (get-in state [:opts :maintenance-ms]) :content/maintenance]]}
 
     :disconnected
-    ;; Kept as a no-op rather than removed: `sync-peers` runs first on the same
-    ;; event (see `netz.overlay/handler`) against a connection set membership
-    ;; has already updated, so the peer is gone before this branch is reached.
-    ;; Deleting it would fall through to `:else`, which is the same thing said
-    ;; less clearly.
-    {:state state :actions []}
+    ;; `sync-peers` has already removed the transport peer. A subtree has one
+    ;; active provider, so waiting for its old deadline after the socket close
+    ;; only adds deterministic downtime. Retry all roots owned by that peer;
+    ;; stale timers are harmless because the new attempt has a later deadline.
+    (let [peer (:peer event)
+          roots (sort (for [[root want] (:tree-wants state)
+                            :when (= peer (:provider want))]
+                        root))
+          [state actions]
+          (reduce (fn [[state actions] root]
+                    (let [[state retry-actions]
+                          (retry-tree (update-in state [:stats :tree-disconnects] inc)
+                                      root now)]
+                      [state (into actions retry-actions)]))
+                  [state []]
+                  roots)]
+      {:state state :actions actions})
 
     :timer
     (let [payload (:payload event)]
@@ -579,33 +628,13 @@
         (and (vector? payload) (= :tree-timeout (first payload)))
         (let [root (second payload)
               want (get-in state [:tree-wants root])]
-          (if-not (and want (not (:done? want)) (:deadline want)
+          (if-not (and want (:deadline want)
                        (<= (:deadline want) now))
             {:state state :actions []}
-            (let [state (update-in state [:stats :tree-timeouts] inc)
-                  candidates (remove (:asked want) (providers-for state root now))
-                  max-tries (get-in state [:opts :max-tree-tries])
-                  timeout-ms (get-in state [:opts :tree-timeout-ms])]
-              (cond
-                (seq candidates)
-                (let [[state actions] (request-tree-from state root (first candidates) now)]
-                  {:state state :actions actions})
-
-                (>= (:tries want 0) max-tries)
-                {:state (-> state
-                            (update :tree-wants dissoc root)
-                            (update-in [:stats :tree-failed] inc))
-                 :actions []}
-
-                :else
-                {:state (-> state
-                            (assoc-in [:tree-wants root :pending?] true)
-                            (assoc-in [:tree-wants root :provider] nil)
-                            (assoc-in [:tree-wants root :deadline] (+ now timeout-ms))
-                            (update-in [:tree-wants root :tries] (fnil inc 0)))
-                 :actions (conj (vec (for [p (sort (:peers state))]
-                                       [:send p {:type :content/find :key root}]))
-                                [:timer timeout-ms [:tree-timeout root]])}))))
+            (let [[state actions]
+                  (retry-tree (update-in state [:stats :tree-timeouts] inc)
+                              root now)]
+              {:state state :actions actions})))
 
         :else {:state state :actions []}))
 

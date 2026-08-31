@@ -22,13 +22,17 @@
 
   ## The identity
 
-      peer-id = SHA-256(\"netz/peer-id/v2\" ‖ hasch(genesis))
+      authority-id = SHA-256(\"netz/peer-id/v1\\0\" ‖ deterministic-CBOR(genesis))
 
   Hashing a *record* rather than a key is the decision the whole design rests
   on. SSB, did:key and UCAN all hash a key directly and none can undo it: the
   identity IS the key, so the key can never change and a compromise is
   terminal. A genesis names a SET of keys, so rotation is possible later
   without a format change.
+
+  The full 32-byte Authority ID authenticates signatures and ownership. Its
+  first 16 bytes remain a UUID-shaped Routing ID for Kabel's existing index;
+  that projection is never an authority decision.
 
   ## Async
 
@@ -42,7 +46,7 @@
   Byte operations work on byte arrays / `Uint8Array`, never on numbers.
   ClojureScript coerces bit operations to 32-bit signed integers, so a 256-bit
   identifier manipulated as numbers is silently wrong on exactly one platform."
-  (:require [hasch.core :refer [edn-hash]]
+  (:require [boring.core :as boring]
             [org.replikativ.geheimnis.codec :as codec]
             [org.replikativ.geheimnis.core :as gcore]
             [org.replikativ.geheimnis.hash :as ghash]
@@ -97,9 +101,8 @@
 (defn seq->bytes
   "Byte buffer from a sequence of byte values.
 
-  `hasch/edn-hash` yields signed bytes on the JVM and unsigned numbers in
-  ClojureScript; masking to `0xff` makes both produce the same buffer, which is
-  the point — a signature over these bytes has to verify on the other platform."
+  Masking to `0xff` makes signed JVM byte sequences and unsigned JavaScript
+  byte sequences produce the same buffer."
   [s]
   (let [v (vec s)
         out (byte-buf (count v))]
@@ -130,8 +133,11 @@
 ;; would add *their own* — a commitment only means something if it predates the
 ;; compromise.
 
-(def ^:const genesis-version "netz/identity/v2")
-(def ^:const peer-id-tag "netz/peer-id/v2")
+(def ^:const genesis-version "netz/identity/v1")
+(def ^:const peer-id-tag "netz/peer-id/v1\u0000")
+
+(def ^:private canonical-options
+  {:profile :canonical :stringref false :max-depth 64})
 
 (defn make-genesis
   "Build a genesis record.
@@ -155,6 +161,11 @@
    :netz/operational-keys (vec operational-keys)
    :netz/revocation-commit revocation-commit})
 
+(defn- hex32?
+  [value]
+  (and (string? value)
+       (boolean (re-matches #"(?i)[0-9a-f]{64}" value))))
+
 (defn genesis?
   [g]
   (and (map? g)
@@ -166,24 +177,53 @@
        (integer? (:netz/rotation-threshold g))
        (pos? (:netz/rotation-threshold g))
        (<= (:netz/rotation-threshold g) (count (:netz/rotation-keys g)))
-       (string? (:netz/revocation-commit g))))
+       (string? (:netz/revocation-commit g))
+       (every? hex32?
+               (concat (:netz/operational-keys g)
+                       (:netz/rotation-keys g)
+                       [(:netz/revocation-commit g)]))))
 
-(defn peer-id-bytes
-  "Full 32-byte peer id: the authority anchor.
+(defn genesis->wire
+  "The language-neutral profile-1 genesis object.
 
-  Canonicalised with `hasch/edn-hash` rather than `pr-str`, because map key
-  iteration order differs between platforms and an id that depends on it would
-  differ between a JVM peer and a browser peer.
+  The implementation stores keys as hex so hot identity material survives all
+  legacy Kabel codecs. Authority derivation never hashes that host form: it
+  hashes this exact text-key/raw-byte CBOR object shared with foreign clients."
+  [genesis]
+  (when-not (genesis? genesis)
+    (throw (ex-info "not a valid genesis record"
+                    {:type :netz.identity/bad-genesis})))
+  {"v" 1
+   "rotation" (mapv hex->bytes (:netz/rotation-keys genesis))
+   "threshold" (:netz/rotation-threshold genesis)
+   "operational" (mapv hex->bytes (:netz/operational-keys genesis))
+   "revoke" (hex->bytes (:netz/revocation-commit genesis))})
+
+(defn genesis-bytes
+  "Deterministic RFC 8949 CBOR bytes of the profile-1 genesis object."
+  [genesis]
+  (boring/encode (genesis->wire genesis) canonical-options))
+
+(defn authority-id-bytes
+  "Full 32-byte authority identifier.
+
+  It is the draft's domain-separated SHA-256 of deterministic profile-1 CBOR,
+  so an implementation needs no knowledge of Clojure keywords or hasch.
 
   This width is what belongs inside a signed record. `peer-id` below is a
   128-bit projection for *routing* only — both the TUF and SSB reviews flagged
   a truncated id as too weak to carry authority."
   [genesis]
-  (when-not (genesis? genesis)
-    (throw (ex-info "not a valid genesis record"
-                    {:type :netz.identity/bad-genesis})))
-  (sha256 (concat-bufs (utf8-bytes peer-id-tag)
-                       (seq->bytes (edn-hash genesis)))))
+  (sha256 (concat-bufs (utf8-bytes peer-id-tag) (genesis-bytes genesis))))
+
+(def peer-id-bytes
+  "Deprecated compatibility name for `authority-id-bytes`."
+  authority-id-bytes)
+
+(defn authority-id
+  "Portable lowercase hexadecimal presentation of the full Authority ID."
+  [genesis]
+  (bytes->hex (authority-id-bytes genesis)))
 
 (defn peer-id
   "Routing id for a genesis record: the first 16 bytes of `peer-id-bytes`,
@@ -194,26 +234,35 @@
   stamped, because overwriting six bits to satisfy a spec nothing here reads
   would only shrink the identifier."
   [genesis]
-  (let [h (bytes->hex (sub-buf (peer-id-bytes genesis) 0 16))
+  (let [h (bytes->hex (sub-buf (authority-id-bytes genesis) 0 16))
         s (str (subs h 0 8) "-" (subs h 8 12) "-" (subs h 12 16) "-"
                (subs h 16 20) "-" (subs h 20 32))]
     #?(:clj (UUID/fromString s)
        :cljs (uuid s))))
 
 (defn genesis-authorises?
-  "May `public-key` sign on behalf of `claimed-id`?
+  "May `public-key` sign on behalf of the full `claimed-authority`?
 
   Both halves are required, and this is the check that replaces `owns-id?`:
   the genesis must hash to the claimed id, **and** the key must be one of its
   operational keys. Either alone lets somebody sign under another's name."
-  [genesis public-key claimed-id]
+  [genesis public-key claimed-authority]
   (boolean
    (try
      (and (genesis? genesis)
-          (= claimed-id (peer-id genesis))
+          (= claimed-authority (authority-id genesis))
           (contains? (set (:netz/operational-keys genesis))
                      (bytes->hex public-key)))
      (catch #?(:clj Exception :cljs js/Error) _ false))))
+
+(defn genesis-routes?
+  "Does a routing UUID project from this genesis's Authority ID?
+
+  This is a consistency check only. Routing IDs are never authorization."
+  [genesis claimed-routing-id]
+  (boolean
+   (try (= claimed-routing-id (peer-id genesis))
+        (catch #?(:clj Exception :cljs js/Error) _ false))))
 
 ;; =============================================================================
 ;; Revocation commitment
@@ -279,7 +328,8 @@
 
       {:genesis            <record whose hash is the peer id>
        :peer-id            <UUID, for routing>
-       :peer-id-bytes      <32 bytes, the authority anchor>
+       :authority-id       <64 hex chars, portable authority anchor>
+       :peer-id-bytes      <32 bytes, compatibility alias>
        :operational        {:public … :private …}   ; HOT — signs everything
        :rotation           {:public … :private …}   ; COLD — signs rotations
        :revocation-secret  <32 bytes>}              ; KEEP OFFLINE
@@ -309,7 +359,8 @@
                             :revocation-commit (revocation-commitment secret)})]
               (put! ch {:genesis genesis
                         :peer-id (peer-id genesis)
-                        :peer-id-bytes (peer-id-bytes genesis)
+                        :authority-id (authority-id genesis)
+                        :peer-id-bytes (authority-id-bytes genesis)
                         :operational op
                         :rotation rot
                         :revocation-secret secret}))))
@@ -324,7 +375,8 @@
   deliberately excludes the rotation private key and revocation secret.  A
   compromise of the online store must not also compromise every recovery path."
   [identity]
-  (select-keys identity [:genesis :peer-id :peer-id-bytes :operational]))
+  (select-keys identity [:genesis :peer-id :authority-id :peer-id-bytes
+                         :operational]))
 
 (defn recovery-material
   "Cold recovery material extracted from a freshly generated identity.
@@ -350,18 +402,19 @@
 (defn record-bytes
   "Canonical bytes signed by an identity record.
 
-  Covers the **genesis** as well as the signing key, so an announcement is
-  bound to the identity it claims and cannot be lifted onto another one.
-  Canonicalised with `hasch/edn-hash` for the same reason `peer-id-bytes` is:
-  map key order is not stable across platforms, and a signature over
-  `pr-str` output would verify on the JVM and fail in a browser."
+  Covers the profile-1 genesis object as well as the signing key, so an
+  announcement is bound to the identity it claims and cannot be lifted onto
+  another one. The transcript is language-neutral deterministic CBOR."
   [genesis public-key addresses seq-no]
-  (seq->bytes
-   (edn-hash ["netz/identity/record/v2"
-              genesis
-              (bytes->hex public-key)
-              seq-no
-              (vec (sort addresses))])))
+  (concat-bufs
+   (utf8-bytes "netz/identity-record/v1\u0000")
+   (boring/encode
+    {"v" 1
+     "genesis" (genesis->wire genesis)
+     "operational" public-key
+     "seq" seq-no
+     "addresses" (vec (sort addresses))}
+    canonical-options)))
 
 (defn sign-record
   "Build a signed identity record announcing `addresses` for an identity.
@@ -380,6 +433,7 @@
           (put! ch sig)
           (put! ch {:netz/genesis genesis
                     :netz/public-key public
+                    :netz/authority-id (authority-id genesis)
                     :netz/peer-id (peer-id genesis)
                     :netz/addresses (vec (sort addresses))
                     :netz/seq-no seq-no
@@ -388,7 +442,7 @@
     ch))
 
 (defn challenge-bytes
-  "Canonical bytes proving possession of an operational key for ONE connection.
+  "Canonical transcript proving possession on one identified connection.
 
   An identity record is signed over the genesis, key, seq-no and addresses —
   all of which are constants of the identity, none of which is specific to a
@@ -397,11 +451,28 @@
   gossip still stop you forging its publishes, but membership, content and
   repair frames all become attributable to it.
 
-  A nonce the VERIFIER chose is what closes that. Signing it proves the peer
-  holds the key now, on this connection, rather than that it once published a
-  record. Canonicalised with `edn-hash` for the same reason `record-bytes` is."
-  [nonce]
-  (seq->bytes (edn-hash ["netz/identity/challenge/v1" nonce])))
+  Signing only the verifier's nonce is insufficient: another connection can
+  present that nonce to the alleged peer and relay its valid signature. Bind
+  both named roles and both fresh nonces, in prover-then-verifier order, so a
+  signature from a *different* transcript is useless here.
+
+  This does not provide channel binding. A live adversary can splice the entire
+  public transcript between two sockets. Public transports must additionally
+  bind the proof to the protected transport session and authenticate subsequent
+  frames; see RELEASE.md.
+
+  This transitional proof is deterministic CBOR. The direct public transport
+  profile replaces it with an identity payload inside the Noise transcript."
+  [prover-id prover-nonce verifier-id verifier-nonce]
+  (concat-bufs
+   (utf8-bytes "netz/challenge/v1\u0000")
+   (boring/encode
+    {"v" 1
+     "prover" (hex->bytes prover-id)
+     "prover_nonce" (hex->bytes prover-nonce)
+     "verifier" (hex->bytes verifier-id)
+     "verifier_nonce" (hex->bytes verifier-nonce)}
+    canonical-options)))
 
 (defn new-nonce
   "A fresh 32-byte challenge, hex-encoded so it survives every codec.
@@ -412,30 +483,35 @@
   (bytes->hex (random-bytes 32)))
 
 (defn sign-challenge
-  "Sign `nonce` with the identity's operational key. Channel of a hex signature."
-  [{:keys [operational]} nonce]
+  "Sign a prover-then-verifier connection transcript. Channel of a hex signature."
+  [{:keys [genesis operational]} prover-nonce verifier-authority verifier-nonce]
   (let [ch (chan 1)]
     (async/go
-      (let [sig (async/<! (sign (:private operational) (challenge-bytes nonce)))]
+      (let [sig (async/<! (sign (:private operational)
+                                (challenge-bytes (authority-id genesis) prover-nonce
+                                                 verifier-authority verifier-nonce)))]
         (async/put! ch (bytes->hex sig))
         (close! ch)))
     ch))
 
 (defn verify-challenge
-  "Does `sig-hex` prove the holder of `record`'s key signed `nonce`?
+  "Does `sig-hex` prove `record` signed this exact connection transcript?
 
   Channel of true/false. Garbage yields false rather than throwing, like
   `verify` — a peer must not be able to make us throw by sending nonsense."
-  [record nonce sig-hex]
+  [record prover-nonce verifier-authority verifier-nonce sig-hex]
   (let [ch (chan 1)]
     (async/go
       (async/put!
        ch
        (boolean
         (try
-          (and (string? sig-hex) (string? nonce)
+          (and (string? sig-hex)
+               (string? prover-nonce) (string? verifier-nonce)
                (async/<! (verify (:netz/public-key record)
-                                 (challenge-bytes nonce)
+                                 (challenge-bytes (:netz/authority-id record)
+                                                  prover-nonce
+                                                  verifier-authority verifier-nonce)
                                  (hex->bytes sig-hex))))
           (catch #?(:clj Exception :cljs js/Error) _ false))))
       (close! ch))
@@ -484,7 +560,8 @@
   Returns a channel yielding `true` or `false` — never an exception, because
   the record arrives from a stranger and a malformed one must fail
   verification rather than the connection."
-  [{gen :netz/genesis pk :netz/public-key claimed :netz/peer-id
+  [{gen :netz/genesis pk :netz/public-key authority :netz/authority-id
+    routing :netz/peer-id
     addresses :netz/addresses seq-no :netz/seq-no sig :netz/signature
     :as _record}]
   (let [ch (chan 1)]
@@ -494,7 +571,8 @@
                      (some? sig)
                      (= key-size (buf-length pk))
                      (= signature-size (buf-length sig))
-                     (genesis-authorises? gen pk claimed)
+                     (genesis-authorises? gen pk authority)
+                     (genesis-routes? gen routing)
                      (async/<! (verify pk
                                        (record-bytes gen pk addresses seq-no)
                                        sig)))))
