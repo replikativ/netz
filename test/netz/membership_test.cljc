@@ -151,6 +151,46 @@
       (is (m/dialable? s 0 :p))
       (is (= "ws://p" (m/dial-address s :p))))))
 
+(deftest full-authority-is-bound-to-routing-id
+  (let [peer-id #uuid "00112233-4455-6677-8899-aabbccddeeff"
+        authority (str "00112233445566778899aabbccddeeff"
+                       "0123456789abcdef0123456789abcdef")
+        other-authority (str "10112233445566778899aabbccddeeff"
+                             "0123456789abcdef0123456789abcdef")]
+    (testing "a matching Authority ID is retained and makes a secure seed dialable"
+      (let [s (m/make-state :me [{:peer-id peer-id
+                                  :authority-id (.toUpperCase authority)
+                                  :addresses ["wss://peer.example/netz"]}]
+                            {:require-authority? true})]
+        (is (= authority (get-in s [:book peer-id :authority-id])))
+        (is (m/dialable? s 0 peer-id))))
+
+    (testing "secure dialing refuses a routing-only record"
+      (let [s (m/make-state :me [{:peer-id peer-id
+                                  :addresses ["wss://peer.example/netz"]}]
+                            {:require-authority? true})]
+        (is (not (m/dialable? s 0 peer-id)))))
+
+    (testing "peer exchange cannot bind an Authority ID to another projection"
+      (let [s (m/learn (m/make-state :me)
+                       [{:peer-id peer-id
+                         :authority-id other-authority
+                         :addresses ["wss://attacker.example/netz"]}])]
+        (is (not (contains? (:book s) peer-id)))))
+
+    (testing "an established Authority ID cannot be replaced"
+      (let [s (-> (m/make-state :me [{:peer-id peer-id
+                                      :authority-id authority
+                                      :addresses ["wss://peer.example/netz"]}])
+                  (m/learn [{:peer-id peer-id
+                             :authority-id other-authority
+                             :addresses ["wss://attacker.example/netz"]}])
+                  (m/learn [{:peer-id peer-id
+                             :addresses ["wss://unsigned.example/netz"]}]))]
+        (is (= authority (get-in s [:book peer-id :authority-id])))
+        (is (= ["wss://peer.example/netz"]
+               (get-in s [:book peer-id :addresses])))))))
+
 (deftest addresses-accumulate-but-are-capped
   (testing "new addresses are added without displacing known-good ones"
     (let [s (-> (m/make-state :me [{:peer-id :p :addresses ["ws://first"]}])

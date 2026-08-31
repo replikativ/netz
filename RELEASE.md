@@ -127,7 +127,7 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 clojure -X:test :dirs '["test"]'
 # Exact unreleased Kabel transport-context and Geheimnis Noise commits:
 clojure -X:deps prep :aliases '[:secure-test]'
-clojure -X:secure-test :dirs '["test"]'
+clojure -X:secure-test :dirs '["test" "test-secure"]'
 clojure -X:konserve:test :dirs '["test" "test-konserve"]'
 # With ../urd, ../datahike, ../yggdrasil, and ../spindel checked out:
 clojure -X:stack :dirs '["test-stack"]'

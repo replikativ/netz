@@ -37,11 +37,11 @@
   ;; last released Kabel/Geheimnis coordinates until their respective PRs are
   ;; released, while this checkout tests the exact reviewed commits.
   :secure-test
-  {:extra-paths ["test"]
+  {:extra-paths ["test" "test-secure"]
    :override-deps
    {org.replikativ/kabel
     {:git/url "https://github.com/replikativ/kabel.git"
-     :git/sha "47151edb1b5438c9d8050496e21dcab684e1ff28"}
+     :git/sha "4f2064cb84d654637356fbc0ef249570f0af2d61"}
     org.replikativ/geheimnis
     {:git/url "https://github.com/replikativ/geheimnis.git"
      :git/sha "ed95baf100456ea09c3d6ae4dd089049363785d2"}}

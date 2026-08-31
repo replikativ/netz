@@ -462,6 +462,8 @@
                                      (<= (bounded-count (inc n) x) n))))
         addresses? (fn [x] (and ((bounded-coll? 16) x)
                                 (every? #(and (string? %) (<= (count %) 2048)) x)))
+        authority? (fn [x] (and (string? x)
+                                (boolean (re-matches #"(?i)[0-9a-f]{64}" x))))
         entries? (fn [x] (and ((bounded-coll? 64) x) (every? map? x)))
         iset? (fn [x] (and ((bounded-coll? 512) x)
                            (every? #(and (sequential? %) (= 2 (count %))
@@ -494,9 +496,9 @@
      :interests {:required {:topics (bounded-coll? 1024)}
                  :optional {:carries (bounded-coll? 1024) :relay? boolean?}}
      :dial {:required {:addresses addresses?}
-            :optional {:carries (bounded-coll? 1024)}}
+            :optional {:authority-id authority? :carries (bounded-coll? 1024)}}
      :dial-ok {:required {:addresses addresses?}
-               :optional {:carries (bounded-coll? 1024)}}
+               :optional {:authority-id authority? :carries (bounded-coll? 1024)}}
      :dial-refused {:required {:reason keyword?}
                     :optional {:peers entries?}}
      :peers {:required {:entries entries?}}
@@ -873,7 +875,13 @@
            ;; presenting `to` has proved it holds the key. An impostor at
            ;; `address` registers under its own id and never sees this.
              (outgoing S peer ctx identity to m)
-             (<? S (peer/connect S peer address))
+             (let [expected-authority
+                   (get-in @(:state ctx) [:membership :book to :authority-id])]
+               (if expected-authority
+                 (<? S (peer/connect S peer address
+                                     {:kabel.transport/expected-target
+                                      expected-authority}))
+                 (<? S (peer/connect S peer address))))
              (catch #?(:clj Exception :cljs js/Error) _
              ;; A failed dial needs no event: the membership layer already
              ;; armed a dial timeout, and letting the timeout be the single
@@ -981,6 +989,8 @@
                 book (when store (<? S (store/-load store :book)))
                 state (-> (overlay/make-state peer-id
                                               (merge {:addresses addresses
+                                                      :authority-id (id/authority-id
+                                                                     (:genesis identity))
                                                       :seeds seeds
                                                       :topics topics}
                                                      overlay-opts))

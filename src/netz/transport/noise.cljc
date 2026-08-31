@@ -350,8 +350,10 @@
                            (one-byte flag) (identity/sub-buf encoded offset end))
                 encrypted (unwrap (async/<! (noise/encrypt-transport cipher plaintext))
                                   "Noise transport encryption failed")]
-            (async/<! (send-raw! raw-out
-                                 (wrap-frame transport-kind (:message encrypted))))
+            (unwrap (async/<! (send-raw! raw-out
+                                         (wrap-frame transport-kind
+                                                     (:message encrypted))))
+                    "cannot write Noise transport fragment")
             (if (= end total)
               (:cipher encrypted)
               (recur (:cipher encrypted) end)))))
@@ -444,8 +446,10 @@
           (let [m1 (unwrap (async/<! (noise/write-message
                                       state-0 (offer-bytes capabilities required)))
                            "cannot write Noise message 1")
-                _ (async/<! (send-raw! raw-out
-                                       (wrap-frame handshake-kind (:message m1))))
+                _ (unwrap (async/<! (send-raw! raw-out
+                                               (wrap-frame handshake-kind
+                                                           (:message m1))))
+                          "cannot write Noise message 1")
                 m2-bytes (unwrap (async/<! (read-handshake! raw-in))
                                  "cannot receive Noise message 2")
                 m2 (unwrap (async/<! (noise/read-message (:state m1) m2-bytes))
@@ -471,8 +475,10 @@
                            "cannot build initiator identity payload")
                 m3 (unwrap (async/<! (noise/write-message (:state m2) payload-3))
                            "cannot write Noise message 3")
-                _ (async/<! (send-raw! raw-out
-                                       (wrap-frame handshake-kind (:message m3))))]
+                _ (unwrap (async/<! (send-raw! raw-out
+                                               (wrap-frame handshake-kind
+                                                           (:message m3))))
+                          "cannot write Noise message 3")]
             {:state (:state m3)
              :remote (install-context! context handshake-status remote (:state m3))})
           (let [m1-bytes (unwrap (async/<! (read-handshake! raw-in))
@@ -488,8 +494,10 @@
                            "cannot build responder identity payload")
                 m2 (unwrap (async/<! (noise/write-message (:state m1) payload-2))
                            "cannot write Noise message 2")
-                _ (async/<! (send-raw! raw-out
-                                       (wrap-frame handshake-kind (:message m2))))
+                _ (unwrap (async/<! (send-raw! raw-out
+                                               (wrap-frame handshake-kind
+                                                           (:message m2))))
+                          "cannot write Noise message 2")
                 m3-bytes (unwrap (async/<! (read-handshake! raw-in))
                                  "cannot receive Noise message 3")
                 m3 (unwrap (async/<! (noise/read-message (:state m2) m3-bytes))
@@ -569,6 +577,8 @@
                                        (encrypt-envelope! cipher raw-out envelope))]
                       (if (error-value? next-cipher)
                         (do (transport/update! context {::error next-cipher})
+                            (close! plain-in)
+                            (close! plain-out)
                             (close! raw-in)
                             (close! raw-out))
                         (recur next-cipher)))
@@ -579,5 +589,6 @@
                       (transport/update! context {::error receive-result})
                       (close! raw-in)
                       (close! raw-out))
-                    (close! plain-in))))))))
+                    (close! plain-in)
+                    (close! plain-out))))))))
       (transport/with-context [S peer [plain-in plain-out]] context))))

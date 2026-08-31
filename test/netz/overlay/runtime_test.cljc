@@ -293,6 +293,7 @@
       {:type :sync/open :session :s :topic :t :summary {}}
       {:type :sync/chunk :session :s :index "0" :data {}}
       {:type :dial :addresses 42}
+      {:type :dial :addresses [] :authority-id "truncated"}
       {:type :dial-refused :peers 42}
       {:type :peers :peers []}
       {:type :peers :entries 42}
@@ -313,6 +314,8 @@
        :checkpoint {} :frontiers {[:o 0 :t] 3}}
       {:type :sync/abort :session :s :code :timeout}
       {:type :interests :topics #{:t} :carries #{}}
+      {:type :dial :addresses ["wss://peer.example/netz"]
+       :authority-id (apply str (repeat 64 "a"))}
       {:type :peers :entries []}))
 
   (testing "required fields must be present"

@@ -28,7 +28,7 @@ jobs:
             - deps-
       - run:
           name: Resolve Clojure dependencies
-          command: clojure -A:test:konserve:cljs:build -P
+          command: clojure -A:test:secure-test:konserve:cljs:build -P
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
           paths:
@@ -80,6 +80,16 @@ jobs:
           command: clojure -X:konserve:test :dirs '["test" "test-konserve"]'
           no_output_timeout: 10m
 
+  test-secure:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Run secure Kabel/Noise binding tests
+          command: clojure -X:secure-test :dirs '["test" "test-secure"]'
+          no_output_timeout: 10m
+
   test-cljs:
     executor: tools/clojurecli
     steps:
@@ -129,6 +139,9 @@ workflows:
           context: dockerhub-deploy
           requires: [setup]
       - test-konserve:
+          context: dockerhub-deploy
+          requires: [setup]
+      - test-secure:
           context: dockerhub-deploy
           requires: [setup]
       - test-cljs:

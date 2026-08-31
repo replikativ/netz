@@ -48,7 +48,8 @@
   It never answers *does this peer count*. Membership is reachability, not
   authority. A consensus layer above may use this to find an address for an
   identity it already trusts, and nothing more."
-  (:require [netz.sim.rng :as rng]
+  (:require [clojure.string :as str]
+            [netz.sim.rng :as rng]
             [netz.topics :as topics]))
 
 ;; =============================================================================
@@ -78,6 +79,9 @@
    :dial-timeout-ms 2000
    ;; How many book entries to offer a peer on connect.
    :exchange-size 8
+   ;; Secure transports need the full 256-bit Authority ID before dialing.
+   ;; The UUID-shaped peer id is only its 128-bit routing projection.
+   :require-authority? false
    ;; Topics we want. Peers whose advertised ranges cover any of them are
    ;; preferred when dialling — without this, membership picks peers blind to
    ;; what they carry, and a subscriber has no way to reach the part of the
@@ -106,6 +110,23 @@
       ;; conservative direction. "Unknown" must be capped, not waved through.
       ::unknown))
 
+(defn authority-id?
+  "Is `value` the portable representation of a full 256-bit Authority ID?"
+  [value]
+  (and (string? value)
+       (boolean (re-matches #"(?i)[0-9a-f]{64}" value))))
+
+(defn authority-matches-route?
+  "Does `authority-id` project to the UUID-shaped routing `peer-id`?
+
+  This checks consistency, not authorization. Authorization still requires a
+  genesis record and signature at the authenticated transport boundary."
+  [peer-id authority-id]
+  (and (some? peer-id)
+       (authority-id? authority-id)
+       (= (subs (str/lower-case authority-id) 0 32)
+          (str/replace (str/lower-case (str peer-id)) "-" ""))))
+
 (defn make-state
   "Initial membership state.
 
@@ -119,6 +140,7 @@
   ([id seeds] (make-state id seeds {}))
   ([id seeds opts]
    {:id id
+    :authority-id (:authority-id opts)
     ;; Replaced by netz.sim/add-node with a per-node seeded rng; the default
     ;; is here so the policy functions can be unit-tested without a simulator.
     :rng (rng/make-rng 0)
@@ -130,9 +152,12 @@
     ;; This is the same fact that forces an identity handshake at the
     ;; transport layer, since kabel connections are anonymous.
     :addresses (vec (:addresses opts))
-    :opts (merge default-opts (dissoc opts :addresses))
-    :book (into {} (for [{:keys [peer-id addresses group]} seeds]
+    :opts (merge default-opts (dissoc opts :addresses :authority-id))
+    :book (into {} (for [{:keys [peer-id authority-id addresses group]} seeds]
                      [peer-id {:addresses (vec addresses)
+                               :authority-id (when (authority-matches-route?
+                                                    peer-id authority-id)
+                                               (str/lower-case authority-id))
                                ;; Seeds get a derived group too, or a
                                ;; configured seed list could itself bypass the
                                ;; cap by omitting the field.
@@ -194,6 +219,8 @@
          (not= peer-id (:id state))
          ;; Knowing a peer is not the same as being able to reach one.
          (seq (:addresses entry))
+         (or (not (get-in state [:opts :require-authority?]))
+             (authority-matches-route? peer-id (:authority-id entry)))
          (not (contains? (:connections state) peer-id))
          (not (contains? (:dialing state) peer-id))
          (>= now (:backoff-until entry 0))
@@ -272,8 +299,9 @@
 (defn- merge-addresses [existing incoming]
   (vec (take max-addresses-per-peer (distinct (concat existing incoming)))))
 
-(defn- new-entry [addresses group carries]
+(defn- new-entry [authority-id addresses group carries]
   {:addresses (merge-addresses [] addresses)
+   :authority-id authority-id
    ;; A supplied group wins -- a deployment that knows its topology should say
    ;; so -- but absence is filled in locally rather than left nil.
    :group (or group (host-group addresses))
@@ -283,23 +311,32 @@
    :attempts 0 :proven? false
    :last-success nil :backoff-until 0})
 
-(defn- ensure-entry [state peer-id addresses group carries]
-  (if (get-in state [:book peer-id])
-    (cond-> state
-      ;; Addresses accumulate — a peer may legitimately gain one — but only up
-      ;; to the cap, and existing ones keep their position so a flood of new
-      ;; addresses cannot displace one that is known to work.
-      (seq addresses)
-      (update-in [:book peer-id :addresses] merge-addresses addresses)
-      ;; Never let a gossiped record overwrite a group we already have; that
-      ;; would let a peer relabel itself out of a full bucket.
-      (and group (nil? (get-in state [:book peer-id :group])))
-      (assoc-in [:book peer-id :group] group)
+(defn- ensure-entry [state peer-id authority-id addresses group carries]
+  (let [authority-id (when (authority-matches-route? peer-id authority-id)
+                       (str/lower-case authority-id))
+        known-authority (get-in state [:book peer-id :authority-id])
+        authority-id (when (or (nil? known-authority)
+                               (= known-authority authority-id))
+                       authority-id)]
+    (if (get-in state [:book peer-id])
+      (cond-> state
+        (and authority-id (nil? known-authority))
+        (assoc-in [:book peer-id :authority-id] authority-id)
 
-      (seq carries)
-      (assoc-in [:book peer-id :carries] (topics/normalise carries)))
-    (let [{:keys [max-book]} (:opts state)]
-      (if (>= (count (:book state)) max-book)
+        ;; Addresses accumulate — a peer may legitimately gain one — but only up
+        ;; to the cap, and existing ones keep their position so a flood of new
+        ;; addresses cannot displace one that is known to work.
+        (seq addresses)
+        (update-in [:book peer-id :addresses] merge-addresses addresses)
+        ;; Never let a gossiped record overwrite a group we already have; that
+        ;; would let a peer relabel itself out of a full bucket.
+        (and group (nil? (get-in state [:book peer-id :group])))
+        (assoc-in [:book peer-id :group] group)
+
+        (seq carries)
+        (assoc-in [:book peer-id :carries] (topics/normalise carries)))
+      (let [{:keys [max-book]} (:opts state)]
+        (if (>= (count (:book state)) max-book)
         ;; Book is full: drop the worst unconnected entry to make room -- and
         ;; only if the newcomer is not itself the worst thing available.
         ;;
@@ -309,34 +346,44 @@
         ;; restarts, a poisoned one survives them: the sticky/anchor-peer
         ;; mitigation became a sticky-ATTACKER mitigation, which is the eclipse
         ;; it exists to prevent.
-        (let [newcomer (new-entry addresses group carries)
-              worst (->> (keys (:book state))
-                         (remove (:connections state))
-                         (sort-by #(- (priority (get-in state [:book %]))))
-                         first)]
-          (if (and worst
+          (let [newcomer (new-entry authority-id addresses group carries)
+                worst (->> (keys (:book state))
+                           (remove (:connections state))
+                           (sort-by #(- (priority (get-in state [:book %]))))
+                           first)]
+            (if (and worst
                    ;; Lower is better, so the newcomer must rank strictly
                    ;; better than the entry it would evict. An unproven
                    ;; stranger never outranks a proven anchor.
-                   (< (priority newcomer) (priority (get-in state [:book worst]))))
-            (-> state
-                (update :book dissoc worst)
-                (assoc-in [:book peer-id] newcomer))
-            state))
-        (assoc-in state [:book peer-id] (new-entry addresses group carries))))))
+                     (< (priority newcomer) (priority (get-in state [:book worst]))))
+              (-> state
+                  (update :book dissoc worst)
+                  (assoc-in [:book peer-id] newcomer))
+              state))
+          (assoc-in state [:book peer-id]
+                    (new-entry authority-id addresses group carries)))))))
 
 (defn learn
   "Merge gossiped peer entries into the book.
 
   Entries are `{:peer-id … :addresses [\"ws://…\"] :group …}`."
   [state entries]
-  (reduce (fn [s {:keys [peer-id addresses group carries]}]
-            (if (or (= peer-id (:id s)) (nil? peer-id))
-              s
-              (let [known? (contains? (:book s) peer-id)
-                    s (ensure-entry s peer-id addresses group carries)]
-                (cond-> s
-                  (not known?) (update-in [:stats :learned] inc)))))
+  (reduce (fn [s {:keys [peer-id authority-id addresses group carries]}]
+            (let [incoming-authority (when (authority-id? authority-id)
+                                       (str/lower-case authority-id))
+                  known-authority (get-in s [:book peer-id :authority-id])]
+              (if (or (= peer-id (:id s))
+                      (nil? peer-id)
+                      (and (some? authority-id)
+                           (not (authority-matches-route? peer-id authority-id)))
+                      (and known-authority
+                           (not= known-authority incoming-authority)))
+                s
+                (let [known? (contains? (:book s) peer-id)
+                      s (ensure-entry s peer-id incoming-authority
+                                      addresses group carries)]
+                  (cond-> s
+                    (not known?) (update-in [:stats :learned] inc))))))
           state
           entries))
 
@@ -351,9 +398,11 @@
           (update :dialing dissoc peer-id)
           (update-in [:stats :dial-failed] inc)))))
 
-(defn- record-connected [state now peer-id initiator? addresses carries]
+(defn- record-connected
+  [state now peer-id authority-id initiator? addresses carries]
   (-> state
       (ensure-entry peer-id
+                    authority-id
                     (or (seq addresses) (get-in state [:book peer-id :addresses]))
                     (get-in state [:book peer-id :group])
                     (or carries (get-in state [:book peer-id :carries])))
@@ -382,8 +431,9 @@
         ;; peer fill everyone's book with unreachable names.
         entries (for [[pid e] (:book state)
                       :when (seq (:addresses e))]
-                  {:peer-id pid :addresses (:addresses e) :group (:group e)
-                   :carries (vec (:carries e))})
+                  (cond-> {:peer-id pid :addresses (:addresses e) :group (:group e)
+                           :carries (vec (:carries e))}
+                    (:authority-id e) (assoc :authority-id (:authority-id e))))
         [rng' chosen] (rng/sample (:rng state) exchange-size entries)]
     [(assoc state :rng rng') chosen]))
 
@@ -408,9 +458,11 @@
          (vec (concat
                (for [pid chosen]
                  [:connect pid (dial-address state pid)
-                  {:type :dial
-                   :addresses (:addresses state)
-                   :carries (vec (get-in state [:opts :carries] []))}])
+                  (cond-> {:type :dial
+                           :addresses (:addresses state)
+                           :carries (vec (get-in state [:opts :carries] []))}
+                    (:authority-id state)
+                    (assoc :authority-id (:authority-id state)))])
                (for [pid chosen] [:timer dial-timeout-ms [:dial-timeout pid]])))]))))
 
 (defn handler
@@ -497,9 +549,11 @@
           (let [keep? (keep-new? (:id state) from false false)]
             {:state (update-in state [:stats :duplicates-resolved] inc)
              :actions [[:send from (if keep?
-                                     {:type :dial-ok
-                                      :addresses (:addresses state)
-                                      :carries (vec (get-in state [:opts :carries] []))}
+                                     (cond-> {:type :dial-ok
+                                              :addresses (:addresses state)
+                                              :carries (vec (get-in state [:opts :carries] []))}
+                                       (:authority-id state)
+                                       (assoc :authority-id (:authority-id state)))
                                      ;; Benign: we are already connected. Not a
                                      ;; capacity refusal, so no backoff.
                                      {:type :dial-refused :reason :duplicate})]]})
@@ -522,13 +576,16 @@
                                     :peers offer}]]})
 
           :else
-          (let [state (-> (record-connected state now from false (:addresses payload) (:carries payload))
+          (let [state (-> (record-connected state now from (:authority-id payload)
+                                            false (:addresses payload) (:carries payload))
                           (update-in [:stats :inbound] inc))
                 [state offer] (exchange-payload state)]
             {:state state
-             :actions [[:send from {:type :dial-ok
-                                    :addresses (:addresses state)
-                                    :carries (vec (get-in state [:opts :carries] []))}]
+             :actions [[:send from (cond-> {:type :dial-ok
+                                            :addresses (:addresses state)
+                                            :carries (vec (get-in state [:opts :carries] []))}
+                                     (:authority-id state)
+                                     (assoc :authority-id (:authority-id state)))]
                        [:send from {:type :peers :entries offer}]
                        [:timer (get-in state [:opts :proven-ms]) [:prove from]]]}))
 
@@ -549,7 +606,8 @@
            :actions [[:disconnect from]]}
 
           :else
-          (let [state (-> (record-connected state now from true (:addresses payload) (:carries payload))
+          (let [state (-> (record-connected state now from (:authority-id payload)
+                                            true (:addresses payload) (:carries payload))
                           (update-in [:stats :dial-ok] inc))
                 [state offer] (exchange-payload state)]
             {:state state
