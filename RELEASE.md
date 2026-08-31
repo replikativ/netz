@@ -52,6 +52,11 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       sockets and then inject unsigned membership/content/sync frames. Candidate
       profile: `Noise_XX_25519_AESGCM_SHA256` below Kabel serialization, with
       serialized transport ownership and Netz identity/capability payloads.
+      The direct middleware, exact capability intersection, full-Authority
+      binding, encrypted Kabel-envelope fragmentation and JVM/CLJS adversarial
+      tests now exist behind `:secure-test`. This remains unchecked until the
+      Kabel/Geheimnis PRs are released and the overlay's transitional
+      hello/proof middleware is removed from the default public path.
 - [x] Publication sequence, deduplication, repair, and bounded ordered delivery
       are scoped per origin/topic stream.
 - [x] Kabel routes external and direct application through one peer/topic
@@ -120,6 +125,9 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 
 ```sh
 clojure -X:test :dirs '["test"]'
+# Exact unreleased Kabel transport-context and Geheimnis Noise commits:
+clojure -X:deps prep :aliases '[:secure-test]'
+clojure -X:secure-test :dirs '["test"]'
 clojure -X:konserve:test :dirs '["test" "test-konserve"]'
 # With ../urd, ../datahike, ../yggdrasil, and ../spindel checked out:
 clojure -X:stack :dirs '["test-stack"]'

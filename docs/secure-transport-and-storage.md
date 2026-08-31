@@ -95,6 +95,19 @@ or nonce exhaustion. Netz retains its publication signatures because those are
 end-to-end origin proofs that survive relaying, whereas Noise authenticates only
 one link.
 
+The reference binding carries each protected container as Kabel serializer id
+`0` with a one-byte carrier kind. After the handshake, the ciphertext decrypts
+to a fragment kind followed by the original four-byte serializer id and encoded
+payload. Fragmentation occurs *inside* AEAD, allowing Kabel's bounded 5 MiB
+envelope even though one Noise message is limited to 65,535 bytes. The initial
+profile accepts only serializer id `14` after decryption, so a peer cannot
+silently switch the negotiated CBOR carrier to a host-native codec.
+
+The implementation is `netz.transport.noise/middleware`. Until the Kabel and
+Geheimnis changes are released, `:secure-test` pins their reviewed Git commits;
+the published Netz runtime dependency graph continues to use released
+coordinates.
+
 Fresh per-connection static keys avoid persistent DH secret storage and give
 connection forward secrecy once handshake key material is erased. Rekeying is a
 new connection for the first release. Matrix-style ratcheting can remain an

@@ -184,24 +184,91 @@ predecessor identifiers are opaque byte strings.
 
 ## 7. Connection handshake and capabilities
 
-Each side sends a `hello` containing its genesis object, selected operational
-key, addresses, monotonically increasing record sequence, a fresh 32-byte
-challenge and capabilities. The identity record is signed over deterministic
-CBOR with domain `netz/identity-record/v1`.
+The direct Kabel binding upgrades an anonymous ordered stream with
+`Noise_XX_25519_AESGCM_SHA256`. Its Noise prologue is the UTF-8 byte string
+`netz/kabel-noise/v1\0`. Each physical connection generates a fresh X25519
+static key as well as the ephemeral key required by Noise XX.
 
-Each side then sends `proof`, an Ed25519 signature over:
+Noise message 1 carries the initiator's deterministic-CBOR offer:
 
 ~~~text
-UTF8("netz/challenge/v1\u0000") || local_challenge || remote_challenge
+{
+  "v": 1, "type": "netz/noise/offer",
+  "capabilities": [<sorted unique text>, ...],
+  "required": [<sorted unique text>, ...]
+}
 ~~~
 
-The connection becomes identified only after genesis derivation, record
-signature and proof all verify. A second `hello` or `proof` after completion is
-a protocol error. Failed or timed-out handshakes close the connection.
+Noise messages 2 and 3 carry the responder's and initiator's identity payloads
+respectively. An identity payload contains the signed identity record, the
+sender's Noise static public key, its role, supported and required capabilities,
+the selected capabilities, and an additional Ed25519 signature by the record's
+operational key. That signature covers:
 
-Capabilities are text identifiers such as `dissemination/1`, `content/1`,
-`sync/1` and `transport/websocket-cbor/1`. Optional features MUST NOT be sent
-until both peers advertised them.
+~~~text
+UTF8("netz/noise-static-binding/v1\0") || deterministic-CBOR({
+  "v": 1,
+  "protocol": "Noise_XX_25519_AESGCM_SHA256",
+  "authority": <32-byte Authority ID>,
+  "noise_static": <32-byte X25519 public key>,
+  "role": "initiator" | "responder",
+  "capabilities": [<sorted unique text>, ...],
+  "required": [<sorted unique text>, ...],
+  "selected": [<sorted unique text>, ...]
+})
+~~~
+
+The identity record contains the genesis object, full Authority ID,
+operational Ed25519 public key, sorted addresses, sequence and identity-record
+signature. Its existing `netz/identity-record/v1\0` signature MUST verify, its
+operational key MUST occur in the genesis, and its Authority ID MUST equal the
+full hash derived from that genesis. The `noise_static` value MUST equal the
+static key authenticated by Noise. An initiator with an expected dial target
+MUST compare the complete 32-byte Authority ID; a routing projection is not an
+authentication target.
+
+`selected` MUST be the exact intersection of the two supported sets. Both
+peers' required sets MUST be subsets of it. A peer MUST abort rather than
+silently choose a smaller set. The initiator's message-3 capability values MUST
+also equal its transcript-hashed message-1 offer. Example feature identifiers
+include `dissemination/1`, `content/1` and `sync/1`; the direct carrier is
+`transport/kabel-noise-cbor/1`.
+
+The connection enters authenticated state only after the Noise handshake,
+identity record, static-key binding, expected target and capability selection
+all verify. Failure closes the stream and publishes no remote identity to
+application middleware. Handshake frames after completion and transport frames
+before completion are protocol errors.
+
+### 7.1 Direct Kabel carrier framing
+
+The WebSocket carrier uses Kabel's binary serializer id `0` for the protected
+container. The first payload octet is visible carrier framing: `1` denotes a
+Noise handshake message and `2` a Noise transport ciphertext. No application
+or serializer metadata occurs outside the ciphertext after the handshake.
+
+The decrypted transport plaintext begins with one fragment octet followed by
+bytes from one complete Kabel envelope (four-byte serializer id plus payload):
+
+| Fragment octet | Meaning |
+|---:|---|
+| `0` | complete envelope |
+| `1` | first fragment |
+| `2` | middle fragment |
+| `3` | final fragment |
+
+Fragments MUST remain contiguous on the ordered stream and MUST reconstruct no
+more than the 5 MiB Kabel envelope limit. Nested starts, an isolated middle or
+end, a new complete envelope during assembly, or closure with an incomplete
+envelope are protocol errors. Fragment headers are inside Noise AEAD. This
+layering preserves Kabel's 5 MiB envelope limit despite Noise's 65,535-byte
+message limit. Profile 1 accepts serializer id `14` (CBOR) after decryption;
+any other serializer is an unnegotiated protocol error.
+
+One serialized owner MUST advance each directional Noise CipherState. A failed
+authentication, replay, nonce/state reuse or out-of-order ciphertext closes the
+connection. Publication signatures remain necessary end-to-end origin proofs;
+Noise authenticates only this direct link.
 
 ## 8. Dissemination and recent-message repair
 
