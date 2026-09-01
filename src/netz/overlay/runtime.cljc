@@ -137,6 +137,10 @@
    ;; Late-bound too, and for the same reason: what a horizon gap MEANS is the
    ;; application's business, not the transport's.
    :state-sync-fn (atom nil)
+   ;; Optional capability-gated protocols sharing the authenticated overlay
+   ;; carrier. Each handler owns its own bounded event queue/state machines;
+   ;; the overlay supplies connection identity, rate limiting and routing.
+   :extensions (atom {})
    ;; Per-connection metering. Written as a pure state machine, kept in an atom
    ;; here because the middleware meters concurrently across connections.
    :limiter (atom (rl/make-state (or ratelimit {})))
@@ -376,6 +380,76 @@
   "Whether the current authenticated connection negotiated `capability`."
   [peer peer-id capability]
   (boolean (contains? (:capabilities (connection-info peer peer-id)) capability)))
+
+(defn register-extension!
+  "Register one capability-gated direct protocol on a running node.
+
+  `handler` contains `:capability`, `:match?`, `:valid?`, `:receive!`, and an
+  optional `:disconnected!`. `:receive!` receives the routing ID, immutable
+  authenticated connection facts, and payload; returning false applies
+  backpressure by closing that connection. Returns an idempotent cleanup fn."
+  [{:keys [ctx]} extension-id
+   {:keys [capability match? valid? receive!] :as handler}]
+  (when-not (and (some? extension-id)
+                 (string? capability) (seq capability)
+                 (ifn? match?) (ifn? valid?) (ifn? receive!))
+    (throw (ex-info "Invalid overlay extension handler"
+                    {:type :netz.overlay.runtime/invalid-extension
+                     :extension extension-id})))
+  (swap! (:extensions ctx)
+         (fn [extensions]
+           (when (contains? extensions extension-id)
+             (throw (ex-info "Overlay extension is already registered"
+                             {:type :netz.overlay.runtime/duplicate-extension
+                              :extension extension-id})))
+           (assoc extensions extension-id handler)))
+  (let [removed? (atom false)]
+    (fn []
+      (when (compare-and-set! removed? false true)
+        (swap! (:extensions ctx) dissoc extension-id)
+        true))))
+
+(defn send-extension!
+  "Send a direct extension payload only on a connection that negotiated its
+  exact capability. Returns false instead of queueing across an unauthenticated
+  or incompatible connection."
+  [{:keys [ctx peer]} to capability payload]
+  (if (connection-supports? peer to capability)
+    (do ((get-in ctx [:effects :send!]) to (frame payload)) true)
+    false))
+
+(defn disconnect-peer!
+  "Close the current connection to `peer-id`. The normal socket cleanup path
+  removes authenticated facts and notifies the overlay and every extension."
+  [{:keys [ctx]} peer-id]
+  ((get-in ctx [:effects :disconnect!]) peer-id))
+
+(declare bounded-value?)
+
+(defn- matching-extension [ctx payload]
+  (reduce-kv (fn [found _id handler]
+               (if ((:match? handler) payload)
+                 (if found
+                   (throw (ex-info "More than one extension accepted a frame"
+                                   {:type :netz.overlay.runtime/ambiguous-extension}))
+                   handler)
+                 found))
+             nil @(:extensions ctx)))
+
+(defn- dispatch-extension! [ctx peer from payload]
+  (if-let [{:keys [capability valid? receive!]} (matching-extension ctx payload)]
+    (let [facts (connection-info peer from)]
+      (if (and (contains? (:capabilities facts) capability)
+               (bounded-value? payload)
+               (valid? payload)
+               (receive! from facts payload))
+        :accepted
+        :rejected))
+    :unmatched))
+
+(defn- extension-disconnected! [ctx peer-id]
+  (doseq [{:keys [disconnected!]} (vals @(:extensions ctx))]
+    (when disconnected! (disconnected! peer-id))))
 
 (defn- register!
   "Bind `peer-id` to `out`, and flush anything queued for it.
@@ -842,18 +916,22 @@
                                    nil)
                                  (if (= :reject verdict)
                                    (log-rejected ctx from)
-                                   (if (and require-signed? (= :gossip (:type payload)))
-                                 ;; Checked at EVERY hop, not only at the
-                                 ;; destination: a single authorised relay
-                                 ;; would otherwise be able to inject anything
-                                 ;; into the rest of the network.
-                                     (when (<? S (verify-gossip S payload))
+                                   (case (dispatch-extension! ctx peer from payload)
+                                     :accepted true
+                                     :rejected (close! out)
+                                     :unmatched
+                                     (if (and require-signed? (= :gossip (:type payload)))
+                                       ;; Checked at EVERY hop, not only at the
+                                       ;; destination: a single authorised relay
+                                       ;; would otherwise be able to inject anything
+                                       ;; into the rest of the network.
+                                       (when (<? S (verify-gossip S payload))
+                                         (accept-or-drop!
+                                          S ctx peer out from payload
+                                          (:kabel/encoded-bytes (meta m))))
                                        (accept-or-drop!
                                         S ctx peer out from payload
-                                        (:kabel/encoded-bytes (meta m))))
-                                     (accept-or-drop!
-                                      S ctx peer out from payload
-                                      (:kabel/encoded-bytes (meta m)))))))
+                                        (:kabel/encoded-bytes (meta m))))))))
 
                              :else
                              (if (= :complete @handshake-state)
@@ -875,6 +953,7 @@
                        ;; the connection and its dial policy becomes the
                        ;; reconnect policy — kabel has no reconnect of its own.
                        (do (doseq [pid (unregister! peer out)]
+                             (extension-disconnected! ctx pid)
                              (submit! ctx {:type :disconnected :peer pid}))
                            (close! pass-in))))
 

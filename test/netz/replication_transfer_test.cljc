@@ -38,7 +38,11 @@
    "manifest" (:manifest split)})
 
 (defn step [state event]
-  (transfer/handler state event {:now 1000}))
+  (transfer/handler
+   state
+   (cond-> event
+     (:from event) (assoc :from-authority authority))
+   {:now 1000}))
 
 (defn started []
   (:state (step (transfer/make-state authority)
@@ -198,7 +202,8 @@
   (let [{expired :state actions :actions}
         (transfer/handler
          (transfer/make-state authority)
-         {:type :transfer/authorized-offer :from :coordinator :frame offer}
+         {:type :transfer/authorized-offer :from :coordinator
+          :from-authority authority :frame offer}
          {:now 5000})]
     (is (empty? actions))
     (is (empty? (:sessions expired)))
@@ -207,4 +212,37 @@
         (step (started) {:type :transfer/timeout :session session})]
     (is (empty? (:sessions timed-out)))
     (is (= "timeout" (get-in actions [0 2 "code"])))
+    (is (= :cleanup-staging (first (second actions))))))
+
+(deftest remote-abort-cleans-receiver-state-without-an-abort-loop
+  (let [{state :state actions :actions}
+        (step (started)
+              {:type :transfer/abort
+               :from :coordinator
+               :frame {"v" 1
+                       "type" "blob/abort"
+                       "session" session
+                       "code" "piece-load-failed"}})]
+    (is (empty? (:sessions state)))
+    (is (= [[:cleanup-staging session (:manifest-id split)]] actions))
+    (is (= 1 (get-in state [:stats :aborted])))))
+
+(deftest every-remote-frame-is-bound-to-the-offers-full-authority
+  (let [{loaded :state}
+        (step (started) {:type :transfer/staging-loaded
+                         :session session :held []})
+        piece-0 (first (:pieces split))
+        wrong-authority (identity/hex->bytes (apply str (repeat 32 "ff")))
+        {aborted :state actions :actions}
+        (transfer/handler
+         loaded
+         {:type :transfer/piece
+          :from :coordinator
+          :from-authority wrong-authority
+          :frame {"v" 1 "type" "blob/piece" "session" session
+                  "manifest" (:manifest-id split) "index" 0
+                  "data" (:data piece-0)}}
+         {:now 1000})]
+    (is (empty? (:sessions aborted)))
+    (is (= "unknown-session" (get-in actions [0 2 "code"])))
     (is (= :cleanup-staging (first (second actions))))))

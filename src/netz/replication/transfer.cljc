@@ -63,6 +63,9 @@
   [:timer (get-in state [:opts :timeout-ms])
    {:type :transfer/timeout :session session}])
 
+(defn- reject [state]
+  {:state (update-in state [:stats :rejected] inc) :actions []})
+
 (defn- abort
   ([state session code] (abort state session code true))
   ([state session code notify?]
@@ -126,7 +129,15 @@
                                  :receipt receipt))
          :actions [[:sign-receipt (:session entry) receipt]]}))))
 
-(defn- authorized-offer [state {:keys [from frame]} now]
+(defn- authenticated-authority? [value]
+  (and (wire/byte-buffer? value)
+       (= 32 (identity/buf-length value))))
+
+(defn- connection-matches? [entry from from-authority]
+  (and (= (:peer entry) from)
+       (same-bytes? (:remote-authority entry) from-authority)))
+
+(defn- authorized-offer [state {:keys [from from-authority frame]} now]
   (try
     (replication-wire/validate-frame frame)
     (let [session (get frame "session")
@@ -139,6 +150,9 @@
         {:state (update-in state [:stats :rejected] inc) :actions []}
 
         (not (same-bytes? (:authority state) (get frame "replica")))
+        {:state (update-in state [:stats :rejected] inc) :actions []}
+
+        (not (authenticated-authority? from-authority))
         {:state (update-in state [:stats :rejected] inc) :actions []}
 
         (> length (get-in state [:opts :max-object-bytes]))
@@ -156,6 +170,7 @@
         :else
         (let [entry {:phase :loading
                      :peer from
+                     :remote-authority from-authority
                      :session session
                      :attempt (get frame "attempt")
                      :manifest manifest
@@ -229,7 +244,7 @@
       (recur (inc index))
       (dec index))))
 
-(defn- piece [state {:keys [from frame]}]
+(defn- piece [state {:keys [from from-authority frame]}]
   (try
     (replication-wire/validate-frame frame)
     (let [session (get frame "session")
@@ -241,7 +256,8 @@
           data (get frame "data")]
       (cond
         (not= "blob/piece" (get frame "type")) (abort state session :wrong-frame)
-        (or (not= :receiving phase) (not= peer from))
+        (or (not= :receiving phase)
+            (not (connection-matches? entry from from-authority)))
         (abort state session :unknown-session)
         (not (same-bytes? manifest-id (get frame "manifest")))
         (abort state session :manifest-mismatch)
@@ -292,16 +308,17 @@
                         {"v" 1 "type" "blob/ack" "session" session
                          "manifest" manifest-id "through" through}]])}))))
 
-(defn- commit [state {:keys [from frame]}]
+(defn- commit [state {:keys [from from-authority frame]}]
   (try
     (replication-wire/validate-frame frame)
     (let [session (get frame "session")
           key (session-key session)
-          {:keys [phase peer manifest manifest-id needed pending retention] :as entry}
+          {:keys [phase manifest manifest-id needed pending retention] :as entry}
           (get-in state [:sessions key])]
       (cond
         (not= "blob/commit" (get frame "type")) (abort state session :wrong-frame)
-        (or (not= :receiving phase) (not= peer from))
+        (or (not= :receiving phase)
+            (not (connection-matches? entry from from-authority)))
         (abort state session :unknown-session)
         (not (same-bytes? manifest-id (get frame "manifest")))
         (abort state session :manifest-mismatch)
@@ -342,6 +359,27 @@
       (catch #?(:clj Throwable :cljs :default) _
         (abort state session :invalid-receipt)))))
 
+(defn- remote-abort [state {:keys [from from-authority frame]}]
+  (try
+    (replication-wire/validate-frame frame)
+    (let [session (get frame "session")
+          key (session-key session)
+          entry (get-in state [:sessions key])]
+      (cond
+        (not= "blob/abort" (get frame "type"))
+        (if entry (abort state session :wrong-frame) (reject state))
+
+        (not entry)
+        (reject state)
+
+        (not (connection-matches? entry from from-authority))
+        (abort state session :connection-mismatch)
+
+        :else
+        (abort state session (get frame "code") false)))
+    (catch #?(:clj Throwable :cljs :default) _
+      (reject state))))
+
 (defn handler
   "Advance the receiver machine using `ctx.now` for lease-expiry checks."
   [state event ctx]
@@ -355,6 +393,7 @@
       :transfer/commit (commit state event)
       :transfer/installed (installed state event now)
       :transfer/receipt-signed (receipt-signed state event)
+      :transfer/abort (remote-abort state event)
       :timer (if (= :transfer/timeout (get-in event [:payload :type]))
                (if (contains? (:sessions state)
                               (session-key (get-in event [:payload :session])))

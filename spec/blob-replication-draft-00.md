@@ -251,6 +251,11 @@ disk is replaced.
 
 The `netz/blob-replication/1` capability selects these transfer frames. It MUST
 only be used over a connection that authenticates both full Netz Authority IDs.
+An implementation MUST NOT send or accept these frames merely because a local
+handler is installed: both endpoints must cryptographically negotiate the exact
+capability for the current connection. The capability is intentionally absent
+from the reference implementation's default set while this extension remains
+experimental.
 Every frame is a closed map with `v: 1` and a 16-byte random `session`:
 
 ~~~text
@@ -269,6 +274,15 @@ address. An offer's addresses MUST match its signed retention statement and
 its target `replica` MUST be the authenticated receiving Authority. A stored
 frame's receipt signer MUST be the authenticated sending Authority. Structural
 frame decoding alone is not signature verification.
+
+Before accepting an offer, the receiver MUST verify its retention signature,
+authorize the controller signer and named layout under local deployment policy,
+and durably accept the lifecycle statement. These are distinct checks. A valid
+signature from an unknown controller MUST be rejected without staging bytes.
+The transport routing peer need not itself be the controller, but its full
+authenticated Authority is an input to policy and every later session frame is
+bound to that same connection. Invalid signatures, non-negotiated extension
+frames and extension-queue overflow fail closed by disconnecting the peer.
 
 The receiver requests missing pieces with a bitset: bit index 0 is the most
 significant bit of byte 0, and a set bit means "needed". Unused trailing bits
@@ -344,7 +358,9 @@ freeze and test:
 1. the signed/configured layout and reconfiguration transcript;
 2. non-JVM durable piece-staging adapters (the bounded pure sender/receiver and
    JVM fsync/atomic-file reference adapter are implemented);
-3. durable outbox and restart recovery against real file stores;
+3. a production durable lifecycle-policy/outbox adapter and restart recovery
+   against real file stores (the JVM capability-gated transfer runtime and
+   durable receipt replay are implemented);
 4. operational clock-skew and real-store deletion tests (the journal-first
    pure lease/expiry/deletion machine is implemented);
 5. independent JVM, JavaScript and Python end-to-end tests; and

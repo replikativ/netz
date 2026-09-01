@@ -125,6 +125,45 @@
     (is (nil? (rt/stop! running)))
     (is (= 1 @cleaned))))
 
+(deftest extensions-are-explicitly-registered-and-capability-gated
+  (let [log (atom [])
+        ctx (runtime-with [] log)
+        peer (atom {})
+        node {:ctx ctx :peer peer}
+        handler {:capability "example/1"
+                 :match? #(= "example" (get % "type"))
+                 :valid? map?
+                 :receive! (fn [_ _ _] true)}
+        cleanup (rt/register-extension! node :example handler)]
+    (testing "a local handler cannot send before remote negotiation"
+      (is (false? (rt/send-extension!
+                   node :remote "example/1" {"type" "example"})))
+      (is (empty? @log)))
+
+    ;; Public registry access initializes the per-peer connection registry.
+    (rt/connections peer)
+    (swap! (:netz.overlay/connections @peer)
+           assoc-in [:facts :remote :capabilities] #{"example/1"})
+
+    (testing "a negotiated extension shares the normal framed send path"
+      (is (true? (rt/send-extension!
+                  node :remote "example/1" {"type" "example"})))
+      (is (= [[:send :remote
+               {:type rt/frame-type :payload {"type" "example"}}]]
+             @log)))
+
+    (testing "registration and cleanup are unambiguous and idempotent"
+      (is (thrown? #?(:clj Throwable :cljs :default)
+                   (rt/register-extension! node :example handler)))
+      (is (true? (cleanup)))
+      (is (nil? (cleanup)))
+      (let [cleanup-again (rt/register-extension! node :example handler)]
+        (is (true? (cleanup-again)))))
+
+    (testing "extensions use the overlay's ordinary disconnect effect"
+      (rt/disconnect-peer! node :remote)
+      (is (= [:disconnect :remote] (last @log))))))
+
 #?(:clj
    (deftest publisher-authentication
      (let [kp (<!! (id/generate-identity))
