@@ -4,6 +4,7 @@
             [konserve.memory :refer [new-mem-store]]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.inventory :as inventory]
             [netz.replication.konserve-store :as konserve-store]
             [netz.replication.lifecycle :as lifecycle]
             [netz.replication.lifecycle-runtime :as lifecycle-runtime]
@@ -68,10 +69,15 @@
                                    {} "netz/store/volatile/1"))
               loaded (async/<! (storage/-load-piece
                                  restarted session (:manifest-id split) 1
-                                 (:id (second (:pieces split)))))]
+                                 (:id (second (:pieces split)))))
+              page (async/<! (inventory/inventory-page restarted nil 10))
+              health (async/<! (inventory/scrub-object!
+                                 restarted (:manifest-id split)))]
           (is (= :ok (:result installed)))
           (is (= "netz/store/volatile/1" (:persistence installed)))
-          (is (identity/bufs= (:data (second (:pieces split))) loaded)))
+          (is (identity/bufs= (:data (second (:pieces split))) loaded))
+          (is (= 1 (count (:manifests page))))
+          (is (= :healthy (:status health))))
         (done)))))
 
 (deftest portable-lifecycle-policy-restarts-from-konserve

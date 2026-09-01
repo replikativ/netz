@@ -15,6 +15,7 @@
   (:require [konserve.core :as k]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.inventory :as inventory]
             [netz.replication.lifecycle-storage :as lifecycle-storage]
             [netz.replication.storage :as storage]
             [netz.replication.wire :as replication-wire]
@@ -372,6 +373,46 @@
          (= :blob/lifecycle (first (nth key 2)))
          (string? (second (nth key 2))))))
 
+(defn- marker-entry? [store entry]
+  (let [key (:key entry)]
+    (and (vector? key)
+         (= 3 (count key))
+         (= (:prefix store) (nth key 0))
+         (= ::manifest (nth key 1))
+         (string? (nth key 2))
+         (re-matches #"[0-9a-f]{64}" (nth key 2)))))
+
+(defn- installed-addresses! [store]
+  (go-try-
+   (let [entries (<?- (k/keys (:store store) {:sync? false}))
+         addresses (into [] (comp (filter #(marker-entry? store %))
+                                  (map #(nth (:key %) 2)))
+                         entries)]
+     (when (> (count addresses) (:max-inventory-records store))
+       (throw (ex-info "Installed-object inventory exceeds its configured bound"
+                       {:type :netz.replication/too-many-installed-objects
+                        :limit (:max-inventory-records store)})))
+     addresses)))
+
+(defn- scrub-object! [store manifest-id]
+  (go-try-
+   (let [marker (<?- (k/get (:store store) (marker-key store manifest-id)
+                            nil {:sync? false}))]
+     (if-not marker
+       {:status :missing :manifest manifest-id}
+       (let [manifest (get marker "descriptor")]
+         (when-not (valid-marker? marker manifest-id manifest)
+           (throw (ex-info "Invalid installed-object marker"
+                           {:type :netz.replication/invalid-install-marker})))
+         (<?- (verify-object! store manifest))
+         {:status :healthy
+          :manifest manifest-id
+          :object (get marker "object")
+          :persistence (get marker "persistence")
+          :stored-at (get marker "stored_at")
+          :length (get manifest "length")
+          :pieces (count (get manifest "pieces"))})))))
+
 (defn- load-lifecycle-records! [store]
   (go-try-
    (let [entries (<?- (k/keys (:store store) {:sync? false}))
@@ -396,7 +437,8 @@
          result)))))
 
 (defrecord KonserveBlobStore [store prefix persistence clock max-receipts
-                              max-lifecycle-records delete-object!]
+                              max-lifecycle-records max-inventory-records
+                              delete-object!]
   storage/PBlobTransferStore
 
   (-load-staging [this _session manifest-id manifest]
@@ -467,7 +509,22 @@
        (ex-info
         "Konserve object deletion requires an explicit erasure implementation"
         {:type :netz.replication/deletion-not-configured
-         :key key})))))
+         :key key}))))
+
+  inventory/PBlobInventoryStore
+
+  (-inventory-page [this cursor limit]
+    (go-try-
+     (try
+       (inventory/page-addresses (<?- (installed-addresses! this))
+                                 cursor limit)
+       (catch #?(:clj Throwable :cljs js/Error) cause cause))))
+
+  (-scrub-object! [this manifest-id]
+    (go-try-
+     (try
+       (<?- (scrub-object! this manifest-id))
+       (catch #?(:clj Throwable :cljs js/Error) cause cause)))))
 
 (defn new-konserve-blob-store
   "Use a connected Konserve store as a portable Netz transfer repository.
@@ -479,7 +536,9 @@
 
   Staged pieces intentionally survive session cleanup. `:max-receipts` and
   `:max-lifecycle-records` independently bound restart scans (both default to
-  100,000).
+  100,000). `:max-inventory-records` bounds the first reference
+  implementation's local marker scan (default 1,000,000); returned pages stay
+  bounded to 1,024 addresses.
 
   Privacy deletion is intentionally fail-closed. Supply `:delete-object!` as a
   function from `{key statement persistence}` to a result channel only when it
@@ -488,12 +547,13 @@
   retained as a durable tombstone and retried, but no deletion receipt is
   issued."
   [store {:keys [prefix persistence clock max-receipts
-                 max-lifecycle-records delete-object!]
+                 max-lifecycle-records max-inventory-records delete-object!]
           :or {prefix :netz.blob
                clock #?(:clj #(System/currentTimeMillis)
                         :cljs #(.now js/Date))
                max-receipts 100000
-               max-lifecycle-records 100000}}]
+               max-lifecycle-records 100000
+               max-inventory-records 1000000}}]
   (when-not (and store
                  (some? prefix)
                  (contains? persistence-profiles persistence)
@@ -502,11 +562,15 @@
                  (pos? max-receipts)
                  (int? max-lifecycle-records)
                  (pos? max-lifecycle-records)
+                 (int? max-inventory-records)
+                 (pos? max-inventory-records)
                  (or (nil? delete-object!) (ifn? delete-object!)))
     (throw (ex-info "Invalid Konserve blob-store options"
                     {:type :netz.replication/invalid-konserve-store-options
                      :persistence persistence
                      :max-receipts max-receipts
-                     :max-lifecycle-records max-lifecycle-records})))
+                     :max-lifecycle-records max-lifecycle-records
+                     :max-inventory-records max-inventory-records})))
   (->KonserveBlobStore store prefix persistence clock max-receipts
-                       max-lifecycle-records delete-object!))
+                       max-lifecycle-records max-inventory-records
+                       delete-object!))

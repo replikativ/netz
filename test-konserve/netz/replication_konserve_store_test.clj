@@ -6,6 +6,7 @@
             [konserve.memory :refer [new-mem-store]]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.inventory :as inventory]
             [netz.replication.konserve-store :as konserve-store]
             [netz.replication.lifecycle :as lifecycle]
             [netz.replication.lifecycle-runtime :as lifecycle-runtime]
@@ -232,3 +233,28 @@
                  "netz/store/volatile/1")))
           "generic Konserve refuses to claim marker-only privacy erasure")
       (lifecycle-runtime/stop! restarted))))
+
+(deftest installed-konserve-objects-are-inventoried-and-scrubbed
+  (let [underlying (<!! (new-mem-store))
+        store (fresh-store underlying)]
+    (doseq [piece (:pieces split)] (stage! store piece))
+    (install! store)
+    (let [page (await (inventory/inventory-page store nil 10))
+          healthy (await (inventory/scrub-object! store (:manifest-id split)))]
+      (is (= 1 (count (:manifests page))))
+      (is (identity/bufs= (:manifest-id split) (first (:manifests page))))
+      (is (nil? (:next-cursor page)))
+      (is (= :healthy (:status healthy)))
+      (is (identity/bufs= (:object-id split) (:object healthy))))
+    (is (= :missing
+           (:status (await (inventory/scrub-object!
+                            store (identity/sha256
+                                   (identity/utf8-bytes "absent")))))))
+    (let [piece (first (:pieces split))
+          key [:netz.blob :netz.replication.konserve-store/piece
+               (identity/bytes->hex (:id piece))]]
+      (await (k/assoc underlying key (identity/seq->bytes (repeat 8 0))
+                      {:sync? false}))
+      (is (instance? Throwable
+                     (<!! (inventory/scrub-object!
+                           store (:manifest-id split))))))))

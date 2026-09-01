@@ -19,9 +19,10 @@ may make incompatible protocol changes.
   lifecycle adapter with restore-before-authorize ordering and signed
   lease/deletion ingestion, a journal-first expiry/deletion machine, simulated
   disk/partition/crash repair, an explicit optional Konserve object seam, and a
-  three-device demonstration. Privacy deletion fails closed unless a backend
-  provides complete erasure. The remaining storage and network bindings stay
-  gated in `RELEASE.md`.
+  three-device demonstration. JVM file and portable Konserve stores also expose
+  bounded sorted installed-manifest inventory and full-address object scrubs.
+  Privacy deletion fails closed unless a backend provides complete erasure.
+  The remaining storage and network bindings stay gated in `RELEASE.md`.
 - Added the exact `Noise_XX_25519_AESGCM_SHA256` direct Kabel carrier with
   full-Authority target binding, transcript-bound capability negotiation,
   authenticated serializer-14 envelopes, bounded fragmentation, and shared
