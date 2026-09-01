@@ -1,0 +1,185 @@
+(ns netz.replication-konserve-store-test
+  (:refer-clojure :exclude [await])
+  (:require [clojure.core.async :refer [<!!]]
+            [clojure.test :refer [deftest is testing]]
+            [konserve.core :as k]
+            [konserve.memory :refer [new-mem-store]]
+            [netz.identity :as identity]
+            [netz.replication.blob :as blob]
+            [netz.replication.konserve-store :as konserve-store]
+            [netz.replication.storage :as storage]
+            [netz.replication.wire :as replication-wire]
+            [netz.wire :as wire]))
+
+(def public-hex
+  "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+(def private-hex
+  "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+(def genesis
+  (identity/make-genesis
+   {:rotation-keys [(apply str (repeat 32 "aa"))]
+    :rotation-threshold 1
+    :operational-keys [public-hex]
+    :revocation-commit (apply str (repeat 32 "cc"))}))
+(def authority (identity/authority-id-bytes genesis))
+(def session (identity/hex->bytes (apply str (repeat 16 "30"))))
+(def session-2 (identity/hex->bytes (apply str (repeat 16 "31"))))
+(def split (blob/split (identity/seq->bytes (range 20)) {:piece-size 8}))
+
+(defn await [channel]
+  (let [result (<!! channel)]
+    (if (instance? Throwable result) (throw result) result)))
+
+(defn fresh-store
+  ([] (fresh-store (<!! (new-mem-store))))
+  ([underlying]
+   (konserve-store/new-konserve-blob-store
+    underlying {:persistence "netz/store/volatile/1"
+                :clock (constantly 1200)})))
+
+(defn stage! [store piece]
+  (await (storage/-stage-piece!
+          store session (:manifest-id split) (:manifest split)
+          (:index piece) (:id piece) (:data piece))))
+
+(defn install! [store]
+  (await (storage/-install-object!
+          store session (:manifest-id split) (:manifest split)
+          {} "netz/store/volatile/1")))
+
+(defn sign-statement [statement]
+  (await (replication-wire/sign-statement
+          {:genesis genesis
+           :operational {:public (identity/hex->bytes public-hex)
+                         :private (identity/hex->bytes private-hex)}}
+          statement)))
+
+(defn signed-receipt []
+  (sign-statement
+   {"v" 1
+    "type" "blob/stored"
+    "cluster" (identity/hex->bytes (apply str (repeat 16 "10")))
+    "privacy_domain" (identity/hex->bytes (apply str (repeat 16 "20")))
+    "retention_revision" 1
+    "manifest" (:manifest-id split)
+    "object" (:object-id split)
+    "layout_epoch" 7
+    "replica" authority
+    "attempt" 0
+    "persistence" "netz/store/volatile/1"
+    "stored_at" 1200
+    "retain_until" 5000
+    "signer" authority}))
+
+(defn controller-event [receipt]
+  {:type :replication/stored
+   :object-id (identity/bytes->hex (:object-id split))
+   :replica-id (identity/bytes->hex authority)
+   :layout-epoch 7
+   :attempt 0
+   :persistence "netz/store/volatile/1"
+   :receipt receipt
+   :manifest-id (identity/bytes->hex (:manifest-id split))})
+
+(deftest pieces-resume-and-install-through-konserve
+  (let [underlying (<!! (new-mem-store))
+        first-run (fresh-store underlying)
+        piece-0 (first (:pieces split))]
+    (is (= {:held [] :installed nil}
+           (await (storage/-load-staging
+                   first-run session (:manifest-id split) (:manifest split)))))
+    (is (= :ok (stage! first-run piece-0)))
+    (is (true? (await (storage/-cleanup-session!
+                       first-run session (:manifest-id split)))))
+
+    (let [restarted (fresh-store underlying)
+          inventory (await (storage/-load-staging
+                            restarted session-2 (:manifest-id split)
+                            (:manifest split)))]
+      (is (= 1 (count (:held inventory))))
+      (is (identity/bufs= (:id piece-0) (first (:held inventory))))
+      (is (nil? (:installed inventory)))
+
+      (doseq [piece (rest (:pieces split))] (stage! restarted piece))
+      (let [installed (install! restarted)]
+        (is (= :ok (:result installed)))
+        (is (= "netz/store/volatile/1" (:persistence installed)))
+        (is (= 1200 (:stored-at installed))))
+
+      (let [loaded (await (storage/-load-piece
+                           restarted session-2 (:manifest-id split) 1
+                           (:id (second (:pieces split)))))]
+        (is (identity/bufs= (:data (second (:pieces split))) loaded)))
+
+      (is (= "netz/store/volatile/1"
+             (get-in (await (storage/-load-staging
+                             restarted session-2 (:manifest-id split)
+                             (:manifest split)))
+                     [:installed :persistence]))))))
+
+(deftest invalid-content-and-persistence-fail-closed
+  (let [store (fresh-store)
+        piece (first (:pieces split))]
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo #"invalid piece"
+         (await (storage/-stage-piece!
+                 store session (:manifest-id split) (:manifest split)
+                 0 (:id piece) (identity/seq->bytes [0])))))
+    (doseq [value (butlast (:pieces split))] (stage! store value))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"missing or corrupt"
+                          (install! store)))
+    (stage! store (last (:pieces split)))
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo #"does not match"
+         (await (storage/-install-object!
+                 store session (:manifest-id split) (:manifest split)
+                 {} "netz/store/best-effort/1"))))))
+
+(deftest signed-receipts-survive-wrapper-restart
+  (let [underlying (<!! (new-mem-store))
+        store (fresh-store underlying)
+        receipt (signed-receipt)
+        event (controller-event receipt)]
+    (is (true? (await (replication-wire/verify-envelope receipt))))
+    (is (= :ok (await (storage/-persist-receipt! store session event))))
+
+    (let [replayed (first
+                    (await (storage/-recorded-receipts
+                            (fresh-store underlying))))]
+      (is (= (dissoc event :receipt) (dissoc replayed :receipt)))
+      (is (identity/bufs= (wire/encode-canonical receipt)
+                          (wire/encode-canonical (:receipt replayed)))))
+
+    (testing "receipt replay is bounded"
+      (is (= :ok (await (storage/-persist-receipt!
+                         store session-2 event))))
+      (let [bounded (konserve-store/new-konserve-blob-store
+                     underlying {:persistence "netz/store/volatile/1"
+                                 :max-receipts 1})]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"configured bound"
+                              (await (storage/-recorded-receipts bounded))))))))
+
+(deftest namespaces-and-durability-claims-are-explicit
+  (let [underlying (<!! (new-mem-store))
+        a (konserve-store/new-konserve-blob-store
+           underlying {:prefix :a :persistence "netz/store/volatile/1"})
+        b (konserve-store/new-konserve-blob-store
+           underlying {:prefix :b :persistence "netz/store/volatile/1"})]
+    (stage! a (first (:pieces split)))
+    (is (= 1 (count (:held
+                     (await (storage/-load-staging
+                             a session (:manifest-id split) (:manifest split)))))))
+    (is (empty? (:held
+                 (await (storage/-load-staging
+                         b session (:manifest-id split) (:manifest split))))))
+
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo #"Invalid Konserve blob-store options"
+         (konserve-store/new-konserve-blob-store
+          underlying {:persistence "netz/store/fsync/1"})))
+
+    ;; The repository uses ordinary Konserve top-level keys and does not alter
+    ;; unrelated application data in the shared store.
+    (await (k/assoc underlying :application/value 42 {:sync? false}))
+    (is (= 42 (await (k/get underlying :application/value nil
+                            {:sync? false}))))))

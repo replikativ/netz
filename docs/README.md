@@ -14,6 +14,9 @@
 - [Resilient blob-store profile](resilient-blob-store.md) proposes optional
   Konserve-backed placement, durability receipts, repair, retention and
   erasure semantics.
+- [Konserve-backed object exchange](konserve-object-exchange.md) defines the
+  application-key, immutable-object, receipt, and mutable-root boundary for
+  Geschichte, Spindel, Simmis, and other stack consumers.
 - [Durable blob replication extension](../spec/blob-replication-draft-00.md)
   freezes the portable placement subset and records the remaining wire gates.
 - [Protocol draft](../spec/netz-draft-00.md) is the prospective language-neutral

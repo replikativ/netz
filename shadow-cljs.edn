@@ -1,4 +1,4 @@
-{:deps {:aliases [:test :secure-test :cljs]}
+{:deps {:aliases [:test :secure-test :konserve :cljs]}
 
  :dependencies []
 
