@@ -45,6 +45,7 @@
 (def ^:private frame-fields
   {"blob/offer"
    #{"v" "type" "session" "attempt" "replica" "retention" "manifest"}
+   "blob/fetch" #{"v" "type" "session" "attempt" "retention"}
    "blob/need" #{"v" "type" "session" "manifest" "need"}
    "blob/piece" #{"v" "type" "session" "manifest" "index" "data"}
    "blob/ack" #{"v" "type" "session" "manifest" "through"}
@@ -273,6 +274,13 @@
                            (get manifest "object"))))
     (catch #?(:clj Throwable :cljs :default) _ false)))
 
+(defn- valid-fetch? [frame]
+  (try
+    (let [retention (:statement (parse-envelope (get frame "retention")))]
+      (and (= "blob/retention" (get retention "type"))
+           (safe-uint? (get frame "attempt"))))
+    (catch #?(:clj Throwable :cljs :default) _ false)))
+
 (defn valid-frame?
   "Whether `frame` has the exact bounded durable-blob transfer schema."
   [frame]
@@ -284,6 +292,7 @@
          (bytes-n? 16 (get frame "session"))
          (case type
            "blob/offer" (valid-offer? frame)
+           "blob/fetch" (valid-fetch? frame)
            "blob/need" (and (bytes-n? 32 (get frame "manifest"))
                             (wire/byte-buffer? (get frame "need"))
                             (<= (identity/buf-length (get frame "need")) 2048))

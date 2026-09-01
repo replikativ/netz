@@ -24,6 +24,12 @@
     or `{:status :missing :manifest ...}`. Corruption and IO failures are
     delivered as exception values; callers must not count them as replicas."))
 
+(defprotocol PBlobProviderStore
+  (-load-installed-manifest [store manifest-id]
+    "Yield the validated transfer-manifest descriptor for an installed marker,
+    or nil when absent. This is the provider-side source for an authenticated
+    fetch; it does not itself authorize serving the object."))
+
 (defn valid-cursor? [cursor]
   (or (nil? cursor)
       (and (string? cursor) (re-matches #"[0-9a-f]{64}" cursor))))
@@ -71,6 +77,18 @@
                     {:type :netz.replication/invalid-inventory-page
                      :cursor cursor :limit limit})))
   (-inventory-page store cursor limit))
+
+(defn installed-manifest
+  "Load the validated descriptor behind one local installed-object marker.
+
+  This is local inventory, not network retrieval and not read authorization.
+  A missing marker yields nil; malformed input fails synchronously."
+  [store manifest-id]
+  (when-not (satisfies? PBlobProviderStore store)
+    (throw (ex-info "Store cannot provide installed blob manifests"
+                    {:type :netz.replication/provider-not-supported})))
+  (-load-installed-manifest
+   store (identity/hex->bytes (address-hex manifest-id))))
 
 (defn scrub-object!
   "Request a complete local integrity scrub of one installed manifest."

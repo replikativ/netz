@@ -267,8 +267,21 @@ lowercase-hex cursor; both the page size and the underlying marker scan are
 bounded. An inventory entry means only that an installation marker exists.
 `scrub-object!` separately revalidates the marker, every piece and the complete
 domain-separated object address. Missing objects are explicit; corruption and
-IO failure never count as replicas. Inventory wire frames, scheduling and
-provider retrieval remain later layers.
+IO failure never count as replicas. The capability-gated runtime now implements
+explicit authenticated provider retrieval: `fetch!` sends the already
+reconciled signed retention envelope to one selected peer, the provider applies
+a separate read policy, loads only an installed manifest from its
+Konserve/file repository, and reuses the ordinary
+offer/piece/install/receipt path. A pending request accepts a response only
+from that exact peer and Authority with the exact session, attempt and
+retention envelope. Network inventory exchange and automated repair scheduling
+remain later layers.
+
+This keeps Konserve as the common storage abstraction without making ordinary
+Konserve reads remote. A future `ensure-local` or tiered adapter can try local
+Konserve first and explicitly invoke `fetch!`; it must surface unavailable,
+denied, pending and verified-local outcomes instead of hiding them behind a
+plain map lookup.
 
 Current `netz.content` remains discovery and bounded transfer state. Its working
 set is not a durability catalogue. The replica controller is a separate pure
@@ -444,8 +457,9 @@ three process IDs represent three independent failure domains.
    memory-store restart/install tests and honestly exposes only volatile or
    best-effort completion. The lifecycle-policy adapter now has JVM and Node
    Konserve restart tests; add real Node/browser durable-backend tests.
-6. [local store done] Add scrubbing and paginated inventory; network inventory
-   exchange and repair scheduling remain.
+6. [local store and provider fetch done] Add network inventory exchange and
+   repair scheduling; authenticated provider retrieval already reuses the
+   receipt-producing transfer runtime.
 7. Build the explicit application-key/immutable-object adapter over the
    Konserve transfer repository; publish any tiered or transparent
    `konserve-netz` wrapper only after its stream/batch semantics are explicit.

@@ -240,12 +240,19 @@
     (doseq [piece (:pieces split)] (stage! store piece))
     (install! store)
     (let [page (await (inventory/inventory-page store nil 10))
+          manifest (await (inventory/installed-manifest
+                           store (:manifest-id split)))
           healthy (await (inventory/scrub-object! store (:manifest-id split)))]
       (is (= 1 (count (:manifests page))))
       (is (identity/bufs= (:manifest-id split) (first (:manifests page))))
       (is (nil? (:next-cursor page)))
+      (is (identity/bufs= (wire/encode-canonical (:manifest split))
+                          (wire/encode-canonical manifest)))
       (is (= :healthy (:status healthy)))
       (is (identity/bufs= (:object-id split) (:object healthy))))
+    (is (nil? (await (inventory/installed-manifest
+                      store (identity/sha256
+                             (identity/utf8-bytes "absent"))))))
     (is (= :missing
            (:status (await (inventory/scrub-object!
                             store (identity/sha256

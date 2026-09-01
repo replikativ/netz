@@ -8,7 +8,8 @@
             [netz.replication.konserve-store :as konserve-store]
             [netz.replication.lifecycle :as lifecycle]
             [netz.replication.lifecycle-runtime :as lifecycle-runtime]
-            [netz.replication.storage :as storage]))
+            [netz.replication.storage :as storage]
+            [netz.wire :as wire]))
 
 (def session (identity/hex->bytes (apply str (repeat 16 "30"))))
 (def split (blob/split (identity/seq->bytes (range 20)) {:piece-size 8}))
@@ -71,12 +72,16 @@
                                  restarted session (:manifest-id split) 1
                                  (:id (second (:pieces split)))))
               page (async/<! (inventory/inventory-page restarted nil 10))
+              manifest (async/<! (inventory/installed-manifest
+                                  restarted (:manifest-id split)))
               health (async/<! (inventory/scrub-object!
                                  restarted (:manifest-id split)))]
           (is (= :ok (:result installed)))
           (is (= "netz/store/volatile/1" (:persistence installed)))
           (is (identity/bufs= (:data (second (:pieces split))) loaded))
           (is (= 1 (count (:manifests page))))
+          (is (identity/bufs= (wire/encode-canonical (:manifest split))
+                              (wire/encode-canonical manifest)))
           (is (= :healthy (:status health))))
         (done)))))
 

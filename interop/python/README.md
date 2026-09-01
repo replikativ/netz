@@ -20,7 +20,8 @@ an application-specific format.
 `netz_protocol.replication` implements transport-independent deterministic
 placement for the experimental durable-blob extension. The companion
 `netz_protocol.replication_wire` module validates the frozen retention, lease,
-deletion, replica-receipt and bounded transfer-frame schemas. Python and
+deletion, replica-receipt and bounded transfer-frame schemas, including the
+authenticated-provider fetch request. Python and
 Clojure share the placement, blob-manifest and signed-statement known-answer
 corpora. The transfer runtime and Konserve adapter are not yet part of the
 Python API.

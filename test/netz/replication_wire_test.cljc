@@ -28,6 +28,8 @@
   "2fabe29228c3bf86e8fd2d8461e3a5ceabab3c2023eb88ee158d0ebb5691851e2357f03919c88c5bcb543d78dd39a52a710e432e0e1892eb0e5ecd1bad1f0800")
 (def offer-hash-hex
   "b089b87f09f1d1c9f7cee7d6ef8b8a14138b814518a9b54c893111acdf6de2cc")
+(def fetch-hash-hex
+  "6a8ee720984025a398f9d60135509e80941333ed3afaddf25bc9945e46eeb18a")
 
 (def split
   (blob/split (identity/seq->bytes (range 20)) {:piece-size 8}))
@@ -121,6 +123,21 @@
     (is (not (replication-wire/valid-frame?
               {"v" 1 "type" "blob/abort" "session" session
                "code" ""})))))
+
+(deftest fetch-frames-bind-the-signed-retention-request
+  (let [fetch {"v" 1 "type" "blob/fetch" "session" session
+               "attempt" 0 "retention" (fake-envelope retention)}
+        encoded (replication-wire/encode-frame fetch)]
+    (is (replication-wire/valid-frame? fetch))
+    (is (= fetch-hash-hex
+           (identity/bytes->hex (identity/sha256 encoded))))
+    (is (replication-wire/valid-frame?
+         (replication-wire/decode-frame encoded)))
+    (is (not (replication-wire/valid-frame?
+              (assoc fetch "attempt" -1))))
+    (is (not (replication-wire/valid-frame?
+              (assoc-in fetch ["retention" "statement" "type"]
+                        "blob/lease"))))))
 
 (deftest lease-and-deletion-have-independent-monotone-revisions
   (let [common {"v" 1 "cluster" cluster "privacy_domain" privacy-domain

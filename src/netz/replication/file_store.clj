@@ -459,6 +459,17 @@
          :length (get manifest "length")
          :pieces (count (get manifest "pieces"))}))))
 
+(defn- load-installed-manifest! [store manifest-id]
+  (let [target (marker-path store manifest-id)]
+    (when (exists? target)
+      (let [marker (wire/decode (read-bounded target max-marker-bytes))
+            manifest (get marker "descriptor")]
+        (when-not (valid-marker? marker manifest-id manifest)
+          (throw (ex-info "Invalid installed-object marker"
+                          {:type :netz.replication/invalid-install-marker
+                           :path (str target)})))
+        manifest))))
+
 (defn- run-io [operation]
   (async/thread
     (try
@@ -505,7 +516,13 @@
                                          cursor limit))))
 
   (-scrub-object! [store manifest-id]
-    (run-io #(locking lock (scrub-object! store manifest-id)))))
+    (run-io #(locking lock (scrub-object! store manifest-id))))
+
+  inventory/PBlobProviderStore
+
+  (-load-installed-manifest [store manifest-id]
+    (run-io #(locking lock
+               (load-installed-manifest! store manifest-id)))))
 
 (defn new-file-store
   "Create a JVM durable-blob store rooted at `root`.

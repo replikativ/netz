@@ -14,10 +14,12 @@
   (:require [clojure.string :as str]
             [netz.identity :as identity]
             [netz.overlay.runtime :as overlay-runtime]
+            [netz.replication.inventory :as inventory]
             [netz.replication.sender :as sender]
             [netz.replication.storage :as storage]
             [netz.replication.transfer :as transfer]
             [netz.replication.wire :as replication-wire]
+            [netz.wire :as wire]
             #?(:clj [clojure.core.async :as async
                      :refer [chan close! go go-loop <! timeout]]
                :cljs [clojure.core.async :as async
@@ -43,11 +45,20 @@
                       {:type :netz.replication/invalid-connection-authority})))
     (identity/hex->bytes value)))
 
+(defn- same-value? [a b]
+  (identity/bufs= (wire/encode-canonical a)
+                  (wire/encode-canonical b)))
+
+(defn- session-hex [session]
+  (when (and (wire/byte-buffer? session)
+             (= 16 (identity/buf-length session)))
+    (identity/bytes->hex session)))
+
 (defn- submit! [ctx event]
   (and (not @(:stopped? ctx))
        (boolean (async/offer! (:events ctx) event))))
 
-(declare advance! stop!)
+(declare advance! stop! replicate!)
 
 (defn- callback! [ctx callback value stat]
   (try
@@ -55,6 +66,27 @@
     (swap! (:stats ctx) update stat (fnil inc 0))
     (catch #?(:clj Throwable :cljs :default) _
       (swap! (:stats ctx) update :callback-errors inc))))
+
+(defn- fetch-failure [entry code]
+  {:type :replication/fetch-failed
+   :session (:session entry)
+   :object-id
+   (identity/bytes->hex
+    (get-in entry [:retention "statement" "object"]))
+   :manifest-id
+   (identity/bytes->hex
+    (get-in entry [:retention "statement" "manifest"]))
+   :provider-id (identity/bytes->hex (:authority entry))
+   :code code})
+
+(defn- fail-fetch! [ctx session code]
+  (when-let [key (session-hex session)]
+    (let [entry (get @(:fetches ctx) key)]
+      (when entry
+        (swap! (:fetches ctx) dissoc key)
+        (callback! ctx (:on-fetch-failed! ctx)
+                   (fetch-failure entry code) :fetch-failed)
+        true))))
 
 (defn- apply-action! [ctx side [op & args :as action]]
   (cond
@@ -101,6 +133,14 @@
     (= :replication-stored op)
     (callback! ctx (:on-stored! ctx) (first args) :stored)
 
+    (= :replica-installed op)
+    (let [event (first args)
+          key (session-hex (:session event))]
+      (when (and key (contains? @(:fetches ctx) key))
+        (swap! (:fetches ctx) dissoc key)
+        (swap! (:stats ctx) update :fetched inc))
+      (callback! ctx (:on-installed! ctx) event :installed))
+
     (= :transfer-failed op)
     (callback! ctx (:on-failed! ctx) (first args) :failed)
 
@@ -131,27 +171,105 @@
         (do
           (swap! (:stats ctx) update :invalid-signatures inc)
           (overlay-runtime/disconnect-peer! (:node ctx) from))
+        (let [pending (get @(:fetches ctx)
+                           (session-hex (get frame "session")))
+              responding-provider?
+              (and pending
+                   (= from (:peer pending))
+                   (identity/bufs= from-authority (:authority pending)))
+              expected? (or (nil? pending)
+                            (and responding-provider?
+                                 (= (get frame "attempt")
+                                    (:attempt pending))
+                                 (same-value? (get frame "retention")
+                                              (:retention pending))))
+              retention (:statement
+                         (replication-wire/parse-envelope
+                          (get frame "retention")))]
+          (if-not expected?
+            (do
+              (when responding-provider?
+                (fail-fetch! ctx (get frame "session") :offer-mismatch))
+              (overlay-runtime/disconnect-peer! (:node ctx) from))
+            (let [request {:from from
+                           :from-authority from-authority
+                           :frame frame
+                           :retention retention}
+                  [decision authorization-error?]
+                  (try
+                    [(<! ((:authorize-offer! ctx) request)) false]
+                    (catch #?(:clj Throwable :cljs :default) _ [false true]))]
+              (when authorization-error?
+                (swap! (:stats ctx) update :authorization-errors inc))
+              (if (true? decision)
+                (advance! ctx :receiver
+                          {:type :transfer/authorized-offer
+                           :from from :from-authority from-authority
+                           :frame frame})
+                (do
+                  (fail-fetch! ctx (get frame "session")
+                               :unauthorized-offer)
+                  (swap! (:stats ctx) update :unauthorized-offers inc)
+                  (send-rejection! ctx from (get frame "session")
+                                   "unauthorized"))))))))))
+
+(defn- process-fetch! [ctx from from-authority frame]
+  (go
+    (let [verified (<! (replication-wire/verify-envelope
+                        (get frame "retention")))]
+      (if-not (true? verified)
+        (do
+          (swap! (:stats ctx) update :invalid-signatures inc)
+          (overlay-runtime/disconnect-peer! (:node ctx) from))
         (let [retention (:statement
                          (replication-wire/parse-envelope
                           (get frame "retention")))
-              request {:from from
-                       :from-authority from-authority
-                       :frame frame
-                       :retention retention}
+              request {:from from :from-authority from-authority
+                       :frame frame :retention retention}
               [decision authorization-error?]
               (try
-                [(<! ((:authorize-offer! ctx) request)) false]
+                [(<! ((:authorize-fetch! ctx) request)) false]
                 (catch #?(:clj Throwable :cljs :default) _ [false true]))]
           (when authorization-error?
             (swap! (:stats ctx) update :authorization-errors inc))
-          (if (true? decision)
-            (advance! ctx :receiver
-                      {:type :transfer/authorized-offer
-                       :from from :from-authority from-authority :frame frame})
+          (cond
+            (not (true? decision))
             (do
-              (swap! (:stats ctx) update :unauthorized-offers inc)
+              (swap! (:stats ctx) update :unauthorized-fetches inc)
               (send-rejection! ctx from (get frame "session")
-                               "unauthorized"))))))))
+                               "fetch-unauthorized"))
+
+            (not (satisfies? inventory/PBlobProviderStore (:store ctx)))
+            (do
+              (swap! (:stats ctx) update :fetch-unavailable inc)
+              (send-rejection! ctx from (get frame "session")
+                               "fetch-unavailable"))
+
+            :else
+            (let [manifest
+                  (try
+                    (<! (inventory/installed-manifest
+                         (:store ctx) (get retention "manifest")))
+                    (catch #?(:clj Throwable :cljs :default) cause cause))]
+              (if (or (failure? manifest) (nil? manifest))
+                (do
+                  (when (failure? manifest)
+                    (swap! (:stats ctx) update :storage-errors inc))
+                  (swap! (:stats ctx) update :fetch-unavailable inc)
+                  (send-rejection! ctx from (get frame "session")
+                                   "fetch-unavailable"))
+                (let [offer {"v" 1 "type" "blob/offer"
+                             "session" (get frame "session")
+                             "attempt" (get frame "attempt")
+                             "replica" from-authority
+                             "retention" (get frame "retention")
+                             "manifest" manifest}]
+                  (if (replicate! ctx from from-authority offer)
+                    (swap! (:stats ctx) update :fetch-served inc)
+                    (do
+                      (swap! (:stats ctx) update :fetch-unavailable inc)
+                      (send-rejection! ctx from (get frame "session")
+                                       "fetch-unavailable"))))))))))))
 
 (defn- session-side [ctx session]
   (let [key (identity/bytes->hex session)
@@ -168,6 +286,9 @@
     (let [from-authority (authority-bytes facts)]
       (swap! (:stats ctx) update :inbound inc)
       (case (get frame "type")
+        "blob/fetch"
+        (<! (process-fetch! ctx from from-authority frame))
+
         "blob/offer"
         (<! (process-offer! ctx from from-authority frame))
 
@@ -207,11 +328,24 @@
           :sender (advance! ctx :sender
                             {:type :transfer/abort :from from
                              :from-authority from-authority :frame frame})
-          :receiver (advance! ctx :receiver
-                              {:type :transfer/abort :from from
-                               :from-authority from-authority :frame frame})
+          :receiver (do
+                      (advance! ctx :receiver
+                                {:type :transfer/abort :from from
+                                 :from-authority from-authority :frame frame})
+                      (let [entry (get @(:fetches ctx)
+                                       (session-hex (get frame "session")))]
+                        (when (and entry (= from (:peer entry))
+                                   (identity/bufs= from-authority
+                                                   (:authority entry)))
+                          (fail-fetch! ctx (get frame "session")
+                                       (get frame "code")))))
           :ambiguous (overlay-runtime/disconnect-peer! (:node ctx) from)
-          nil)
+          (let [entry (get @(:fetches ctx)
+                           (session-hex (get frame "session")))]
+            (when (and entry (= from (:peer entry))
+                       (identity/bufs= from-authority (:authority entry)))
+              (fail-fetch! ctx (get frame "session")
+                           (get frame "code")))))
 
         nil))))
 
@@ -226,7 +360,11 @@
                           (advance! ctx :sender
                                     {:type :disconnected :peer (:peer item)})
                           (advance! ctx :receiver
-                                    {:type :disconnected :peer (:peer item)}))
+                                    {:type :disconnected :peer (:peer item)})
+                          (doseq [[_ entry] @(:fetches ctx)
+                                  :when (= (:peer item) (:peer entry))]
+                            (fail-fetch! ctx (:session entry) :disconnected)))
+          :fetch-timeout (fail-fetch! ctx (:session item) :timeout)
           nil)
         (catch #?(:clj Throwable :cljs :default) _
           (swap! (:stats ctx) update :dropped inc)))
@@ -239,19 +377,29 @@
 
   - `:authorize-offer!` returns a channel yielding true only after policy and
     durable lifecycle acceptance (default rejects);
+  - `:authorize-fetch!` separately authorizes an authenticated reader before
+    this peer serves an installed object (default rejects);
   - `:on-stored!` receives replayed/new fenced `:replication/stored` events;
+  - `:on-installed!` receives locally installed replica events;
   - `:on-failed!` receives sender failure records;
+  - `:on-fetch-failed!` receives requester-side fetch failures;
   - `:sender-opts`, `:receiver-opts`, and `:now-fn` configure pure machines.
 
   Noise must be constructed with `netz/blob-replication/1` in its supported
   capability set on both peers. The capability is intentionally not in the
   default set."
   [{:keys [identity] :as node}
-   {:keys [store authorize-offer! on-stored! on-failed!
-           sender-opts receiver-opts now-fn]}]
+   {:keys [store authorize-offer! authorize-fetch!
+           on-stored! on-installed! on-failed! on-fetch-failed!
+           sender-opts receiver-opts now-fn max-fetches fetch-timeout-ms]
+    :or {max-fetches 64 fetch-timeout-ms 30000}}]
   (when-not (satisfies? storage/PBlobTransferStore store)
     (throw (ex-info "Durable-blob runtime requires a transfer store"
                     {:type :netz.replication.runtime/missing-store})))
+  (when-not (and (int? max-fetches) (pos? max-fetches)
+                 (int? fetch-timeout-ms) (pos? fetch-timeout-ms))
+    (throw (ex-info "Invalid durable-blob fetch runtime options"
+                    {:type :netz.replication.runtime/invalid-fetch-options})))
   (let [authority (identity/authority-id-bytes (:genesis identity))
         ctx {:node node
              :identity identity
@@ -260,14 +408,24 @@
              :receiver-state (atom (transfer/make-state authority receiver-opts))
              :authorize-offer! (or authorize-offer!
                                    (fn [_] (storage/chan-of false)))
+             :authorize-fetch! (or authorize-fetch!
+                                   (fn [_] (storage/chan-of false)))
              :on-stored! on-stored!
+             :on-installed! on-installed!
              :on-failed! on-failed!
+             :on-fetch-failed! on-fetch-failed!
+             :fetches (atom {})
+             :max-fetches max-fetches
+             :fetch-timeout-ms fetch-timeout-ms
              :now-fn (or now-fn #?(:clj #(System/currentTimeMillis)
                                    :cljs #(.getTime (js/Date.))))
              :events (chan event-capacity)
              :stopped? (atom false)
              :cleanup (atom nil)
              :stats (atom {:inbound 0 :stored 0 :failed 0
+                           :installed 0 :fetched 0 :fetch-failed 0
+                           :fetch-served 0 :fetch-unavailable 0
+                           :unauthorized-fetches 0
                            :invalid-signatures 0 :unauthorized-offers 0
                            :authorization-errors 0
                            :send-refused 0 :storage-errors 0
@@ -294,6 +452,58 @@
             (callback! ctx on-stored! event :stored)))))
     ctx))
 
+(defn fetch!
+  "Ask one authenticated provider to push an installed object back to us.
+
+  `retention-envelope` is the controller-signed statement already reconciled
+  by the application. The provider still applies its independent
+  `:authorize-fetch!` read policy, and this requester applies
+  `:authorize-offer!` before accepting the response. Returns the fresh 16-byte
+  session, or false when capability/limits/input reject the request.
+
+  Optional `:attempt` defaults to zero and `:session` exists for deterministic
+  tests only; production callers should let the runtime draw it from the CSPRNG."
+  ([ctx peer authority retention-envelope]
+   (fetch! ctx peer authority retention-envelope {}))
+  ([ctx peer authority retention-envelope {:keys [attempt session]
+                                           :or {attempt 0}}]
+   (try
+     (let [statement (:statement
+                      (replication-wire/parse-envelope retention-envelope))
+           session (or session (identity/random-bytes 16))
+           key (session-hex session)
+           frame {"v" 1 "type" "blob/fetch" "session" session
+                  "attempt" attempt "retention" retention-envelope}
+           entry {:session session :peer peer :authority authority
+                  :attempt attempt :retention retention-envelope}]
+       (replication-wire/validate-frame frame)
+       (if-not (and (= "blob/retention" (get statement "type"))
+                    key
+                    (wire/byte-buffer? authority)
+                    (= 32 (identity/buf-length authority))
+                    (overlay-runtime/connection-supports?
+                     (get-in ctx [:node :peer]) peer
+                     replication-wire/capability))
+         false
+         (let [fetches (swap! (:fetches ctx)
+                              (fn [current]
+                                (if (or (contains? current key)
+                                        (>= (count current)
+                                            (:max-fetches ctx)))
+                                  current
+                                  (assoc current key entry))))]
+           (if-not (= entry (get fetches key))
+             false
+             (if-not (overlay-runtime/send-extension!
+                      (:node ctx) peer replication-wire/capability frame)
+               (do (swap! (:fetches ctx) dissoc key) false)
+               (do
+                 (go
+                   (<! (timeout (:fetch-timeout-ms ctx)))
+                   (submit! ctx {:kind :fetch-timeout :session session}))
+                 session))))))
+     (catch #?(:clj Throwable :cljs :default) _ false))))
+
 (defn replicate!
   "Start one already-signed offer after the controller's durable outbox step.
   Returns false when the target connection did not negotiate the capability or
@@ -312,7 +522,8 @@
 
 (defn states [ctx]
   {:sender @(:sender-state ctx)
-   :receiver @(:receiver-state ctx)})
+   :receiver @(:receiver-state ctx)
+   :fetches @(:fetches ctx)})
 
 (defn stats [ctx] @(:stats ctx))
 
@@ -321,5 +532,7 @@
   [ctx]
   (when (compare-and-set! (:stopped? ctx) false true)
     (when-let [cleanup @(:cleanup ctx)] (cleanup))
+    (doseq [[_ entry] @(:fetches ctx)]
+      (fail-fetch! ctx (:session entry) :stopped))
     (close! (:events ctx))
     true))

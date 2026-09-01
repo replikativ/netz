@@ -100,6 +100,8 @@
     (is (= "netz/store/fsync/1" (get receipt "persistence")))
     (is (= "blob/stored" (get-in done-actions [0 2 "type"])))
     (is (= :cleanup-staging (first (second done-actions))))
+    (is (= :replica-installed (first (nth done-actions 2))))
+    (is (= :replication/installed (get-in done-actions [2 1 :type])))
     (is (empty? (:sessions done)))
     (is (= 1 (get-in done [:stats :receipts])))))
 
