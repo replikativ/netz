@@ -27,7 +27,7 @@ outside the Clojure ecosystem.
 | Membership | Bounded peer exchange, dialing, backoff, and topology diversity |
 | Dissemination | Signed topic messages, deduplication, and bounded repair |
 | Content | Content-addressed block discovery and subtree transfer |
-| Durable blobs | Experimental private replica placement, receipts, and repair |
+| Durable blobs | Experimental Konserve-backed placement, receipts, and lifecycle |
 | Synchronization | Pure acknowledged sessions with application-defined profiles |
 | Runtime | Kabel/WebSocket integration, limits, lifecycle, and persistence hooks |
 

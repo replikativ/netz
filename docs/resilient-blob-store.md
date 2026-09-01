@@ -209,6 +209,44 @@ controller callback runs only after the verified receipt has been durably
 recorded. A bounded single event loop serializes inbound protocol decisions;
 the pure machines retain their own session and timeout bounds.
 
+`netz.replication.lifecycle-runtime` is the production adapter for that
+authorization boundary. It restores its bounded journal before it consumes
+offers, serializes controller revisions, waits for the exact journal write,
+and then answers the transfer runtime. The portable Konserve repository
+implements both the transfer and lifecycle storage contracts:
+
+```clojure
+(let [store  (konserve-store/new-konserve-blob-store
+              connected-konserve
+              {:persistence "netz/store/best-effort/1"})
+      policy (lifecycle-runtime/start!
+              {:identity peer-identity
+               :store store
+               :controllers [controller-authority]
+               :lifecycle-opts
+               {:persistence "netz/store/best-effort/1"
+                :accepted-persistence
+                #{"netz/store/best-effort/1"}}})]
+  (async/<! (lifecycle-runtime/ready policy))
+  (replication-runtime/start!
+   overlay-node
+   {:store store
+    :authorize-offer! (lifecycle-runtime/offer-authorizer policy)}))
+```
+
+Signed lease and deletion envelopes arrive through an authenticated,
+reconcilable control stream and are handed to
+`lifecycle-runtime/apply-envelope!`. Pub/sub may announce them, but a peer that
+was offline must reconcile the authoritative stream before serving retained
+objects again.
+
+The generic Konserve adapter cannot infer physical erasure from `dissoc`:
+pieces may be shared and encrypted backends may have their own reclamation
+rules. Its deletion path therefore fails closed unless the caller supplies an
+explicit `:delete-object!` implementation which erases every retained copy and
+returns the achieved persistence boundary. A missing eraser leaves a durable
+tombstone and produces no false deletion receipt.
+
 ## Read and repair protocol
 
 Reads prefer the local store. A local miss or integrity failure causes the
@@ -393,8 +431,8 @@ three process IDs represent three independent failure domains.
    staging/install, signed-receipt replay and the explicit capability-gated
    Kabel/Noise binding. The generic Konserve repository now passes JVM and Node
    memory-store restart/install tests and honestly exposes only volatile or
-   best-effort completion; add real Node/browser durable-backend tests and a
-   production lifecycle-policy adapter.
+   best-effort completion. The lifecycle-policy adapter now has JVM and Node
+   Konserve restart tests; add real Node/browser durable-backend tests.
 6. Add scrubbing, paginated inventory and repair scheduling.
 7. Build the explicit application-key/immutable-object adapter over the
    Konserve transfer repository; publish any tiered or transparent

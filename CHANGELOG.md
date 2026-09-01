@@ -15,10 +15,13 @@ may make incompatible protocol changes.
   portable transfer-store contract, a JVM atomic/fsynced file reference with
   restart receipt verification, a portable Konserve transfer repository with
   JVM/Node restart and install coverage, a capability-gated Kabel/Noise runtime
-  with an explicit durable authorization boundary, a journal-first
-  expiry/deletion machine, simulated disk/partition/crash repair, an explicit
-  optional Konserve object seam, and a three-device demonstration. The storage
-  and network bindings remain gated in `RELEASE.md`.
+  with an explicit durable authorization boundary, a portable production
+  lifecycle adapter with restore-before-authorize ordering and signed
+  lease/deletion ingestion, a journal-first expiry/deletion machine, simulated
+  disk/partition/crash repair, an explicit optional Konserve object seam, and a
+  three-device demonstration. Privacy deletion fails closed unless a backend
+  provides complete erasure. The remaining storage and network bindings stay
+  gated in `RELEASE.md`.
 - Added the exact `Noise_XX_25519_AESGCM_SHA256` direct Kabel carrier with
   full-Authority target binding, transcript-bound capability negotiation,
   authenticated serializer-14 envelopes, bounded fragmentation, and shared

@@ -59,11 +59,6 @@
               :equivocations 0 :expired 0 :delete-attempts 0
               :deleted 0 :receipts 0 :persistence-failures 0}})))
 
-(defn restore-state
-  "Restore previously journaled lifecycle records into a fresh state."
-  [state records]
-  (assoc state :records (or records {})))
-
 (defn- object-key [statement]
   (str (identity/bytes->hex (get statement "cluster")) "/"
        (identity/bytes->hex (get statement "privacy_domain")) "/"
@@ -75,6 +70,94 @@
 (defn- fingerprint [statement]
   (identity/bytes->hex
    (identity/sha256 (replication-wire/signing-bytes statement))))
+
+(def ^:private lifecycle-statuses
+  #{:retained :deletion-pending :deleting :expiring :deletion-failed
+    :deleted})
+
+(defn- safe-time? [value]
+  (and (integer? value) (<= 0 value wire/max-safe-integer)))
+
+(defn- same-value? [a b]
+  (identity/bufs= (wire/encode-canonical a) (wire/encode-canonical b)))
+
+(defn- valid-restored-receipt? [state record]
+  (let [statement (:statement record)
+        body (:receipt-body record)
+        envelope (:receipt-envelope record)]
+    (and (if envelope body true)
+         (if-not body
+           true
+           (and (= "blob/deletion" (get statement "type"))
+                (= "blob/deleted" (get body "type"))
+                (replication-wire/valid-statement? body)
+                (= (get statement "revision")
+                   (get body "deletion_revision"))
+                (= (:deleted-at record) (get body "deleted_at"))
+                (= (:delete-persistence record) (get body "persistence"))
+                (identity/bufs= (:local-authority state)
+                                (get body "replica"))
+                (every? true?
+                        (map #(identity/bufs= (get statement %) (get body %))
+                             ["cluster" "privacy_domain" "manifest"
+                              "object"]))
+                (= (get statement "layout_epoch")
+                   (get body "layout_epoch"))))
+         (if-not envelope
+           true
+           (try
+             (same-value?
+              body (:statement (replication-wire/parse-envelope envelope)))
+             (catch #?(:clj Throwable :cljs :default) _ false))))))
+
+(defn- valid-restored-status? [state record]
+  (let [status (:status record)
+        statement (:statement record)
+        type (get statement "type")]
+    (case status
+      :retained (contains? #{"blob/retention" "blob/lease"} type)
+      :deletion-pending (= "blob/deletion" type)
+      :deleting (= "blob/deletion" type)
+      :expiring (and (contains? #{"blob/retention" "blob/lease"} type)
+                     (safe-time? (:expired-at record)))
+      :deletion-failed (safe-time? (:retry-at record))
+      :deleted (and (safe-time? (:deleted-at record))
+                    (contains? (get-in state [:opts :accepted-persistence])
+                               (:delete-persistence record))
+                    (valid-restored-receipt? state record))
+      false)))
+
+(defn- valid-restored-record? [state key record]
+  (try
+    (let [statement (:statement record)
+          signer (authority-hex (get statement "signer"))]
+      (replication-wire/validate-statement statement)
+      (and (map? record)
+           (= key (object-key statement))
+           (= signer (:controller record))
+           (contains? (:controllers state) signer)
+           (= (revision statement) (:revision record))
+           (= (fingerprint statement) (:fingerprint record))
+           (contains? lifecycle-statuses (:status record))
+           (valid-restored-status? state record)))
+    (catch #?(:clj Throwable :cljs :default) _ false)))
+
+(defn restore-state
+  "Restore previously journaled lifecycle records into a fresh state.
+
+  Corrupt, foreign-controller and over-limit journals fail closed. The record
+  fingerprint detects accidental mutation of a previously accepted statement;
+  the journal remains inside the trusted local persistence boundary."
+  [state records]
+  (let [records (or records {})]
+    (when-not (and (map? records)
+                   (<= (count records) (get-in state [:opts :max-records]))
+                   (every? (fn [[key record]]
+                             (valid-restored-record? state key record))
+                           records))
+      (throw (ex-info "Invalid durable lifecycle journal"
+                      {:type :netz.replication/invalid-lifecycle-journal})))
+    (assoc state :records records)))
 
 (defn- same-bytes? [a b]
   (and (wire/byte-buffer? a) (wire/byte-buffer? b)
@@ -394,3 +477,32 @@
 
 (defn status [state statement]
   (get-in state [:records (object-key statement) :status] :unknown))
+
+(defn accepted-retention?
+  "Whether this exact retention statement is durably active in `state`.
+
+  This deliberately compares the canonical statement fingerprint, not just
+  the object key or revision. Runtime authorization uses it after executing
+  the lifecycle journal action, so an equivocation or failed persistence can
+  never turn into permission to receive bytes."
+  [state statement]
+  (try
+    (let [record (get-in state [:records (object-key statement)])]
+      (and (= "blob/retention" (get statement "type"))
+           (= :retained (:status record))
+           (= (fingerprint statement) (:fingerprint record))))
+    (catch #?(:clj Throwable :cljs :default) _ false)))
+
+(defn accepted-statement?
+  "Whether this exact controller statement crossed the durable journal.
+
+  Unlike `accepted-retention?`, this also recognizes leases and deletion
+  markers in their later lifecycle phases. It is intended for acknowledging a
+  control-plane statement, not for authorizing an object transfer."
+  [state statement]
+  (try
+    (let [record (get-in state [:records (object-key statement)])]
+      (and (contains? #{"blob/retention" "blob/lease" "blob/deletion"}
+                      (get statement "type"))
+           (= (fingerprint statement) (:fingerprint record))))
+    (catch #?(:clj Throwable :cljs :default) _ false)))

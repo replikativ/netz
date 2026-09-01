@@ -7,6 +7,9 @@
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
             [netz.replication.konserve-store :as konserve-store]
+            [netz.replication.lifecycle :as lifecycle]
+            [netz.replication.lifecycle-runtime :as lifecycle-runtime]
+            [netz.replication.lifecycle-storage :as lifecycle-storage]
             [netz.replication.storage :as storage]
             [netz.replication.wire :as replication-wire]
             [netz.wire :as wire]))
@@ -80,6 +83,15 @@
    :persistence "netz/store/volatile/1"
    :receipt receipt
    :manifest-id (identity/bytes->hex (:manifest-id split))})
+
+(def retention
+  {"v" 1 "type" "blob/retention"
+   "cluster" (identity/hex->bytes (apply str (repeat 16 "10")))
+   "privacy_domain" (identity/hex->bytes (apply str (repeat 16 "20")))
+   "revision" 1 "manifest" (:manifest-id split)
+   "object" (:object-id split) "layout_epoch" 7
+   "replicas" 1 "write_acks" 1 "minimum_domains" {}
+   "issued_at" 1000 "retain_until" 5000 "signer" authority})
 
 (deftest pieces-resume-and-install-through-konserve
   (let [underlying (<!! (new-mem-store))
@@ -183,3 +195,40 @@
     (await (k/assoc underlying :application/value 42 {:sync? false}))
     (is (= 42 (await (k/get underlying :application/value nil
                             {:sync? false}))))))
+
+(deftest lifecycle-policy-journal-restarts-through-the-same-konserve
+  (let [underlying (<!! (new-mem-store))
+        replica-identity {:genesis genesis
+                          :operational
+                          {:public (identity/hex->bytes public-hex)
+                           :private (identity/hex->bytes private-hex)}}
+        make-store #(fresh-store underlying)
+        make-runtime
+        #(lifecycle-runtime/start!
+          {:identity replica-identity
+           :store (make-store)
+           :controllers [authority]
+           :lifecycle-opts
+           {:persistence "netz/store/volatile/1"
+            :accepted-persistence #{"netz/store/volatile/1"}}
+           :now-fn (constantly 1000)})
+        request {:from :controller :from-authority authority
+                 :retention retention :frame {"replica" authority}}
+        first-run (make-runtime)]
+    (is (true? (await (lifecycle-runtime/ready first-run))))
+    (is (true? (await (lifecycle-runtime/authorize-offer!
+                       first-run request))))
+    (lifecycle-runtime/stop! first-run)
+
+    (let [restarted (make-runtime)]
+      (is (true? (await (lifecycle-runtime/ready restarted))))
+      (is (= :retained
+             (lifecycle/status (lifecycle-runtime/state restarted)
+                               retention)))
+      (is (instance?
+           Throwable
+           (<!! (lifecycle-storage/-delete-object!
+                 (:store restarted) "object-key" retention
+                 "netz/store/volatile/1")))
+          "generic Konserve refuses to claim marker-only privacy erasure")
+      (lifecycle-runtime/stop! restarted))))

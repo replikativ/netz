@@ -5,10 +5,29 @@
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
             [netz.replication.konserve-store :as konserve-store]
+            [netz.replication.lifecycle :as lifecycle]
+            [netz.replication.lifecycle-runtime :as lifecycle-runtime]
             [netz.replication.storage :as storage]))
 
 (def session (identity/hex->bytes (apply str (repeat 16 "30"))))
 (def split (blob/split (identity/seq->bytes (range 20)) {:piece-size 8}))
+(def public-hex
+  "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+(def genesis
+  (identity/make-genesis
+   {:rotation-keys [(apply str (repeat 32 "aa"))]
+    :rotation-threshold 1
+    :operational-keys [public-hex]
+    :revocation-commit (apply str (repeat 32 "cc"))}))
+(def authority (identity/authority-id-bytes genesis))
+(def retention
+  {"v" 1 "type" "blob/retention"
+   "cluster" (identity/hex->bytes (apply str (repeat 16 "10")))
+   "privacy_domain" (identity/hex->bytes (apply str (repeat 16 "20")))
+   "revision" 1 "manifest" (:manifest-id split)
+   "object" (:object-id split) "layout_epoch" 7
+   "replicas" 1 "write_acks" 1 "minimum_domains" {}
+   "issued_at" 1000 "retain_until" 5000 "signer" authority})
 
 (deftest portable-konserve-store-resumes-and-installs
   (async done
@@ -53,4 +72,34 @@
           (is (= :ok (:result installed)))
           (is (= "netz/store/volatile/1" (:persistence installed)))
           (is (identity/bufs= (:data (second (:pieces split))) loaded)))
+        (done)))))
+
+(deftest portable-lifecycle-policy-restarts-from-konserve
+  (async done
+    (async/go
+      (let [underlying (async/<! (new-mem-store))
+            make-store #(konserve-store/new-konserve-blob-store
+                         underlying {:persistence "netz/store/volatile/1"})
+            make-runtime
+            #(lifecycle-runtime/start!
+              {:identity {:genesis genesis}
+               :store (make-store)
+               :controllers [authority]
+               :lifecycle-opts
+               {:persistence "netz/store/volatile/1"
+                :accepted-persistence #{"netz/store/volatile/1"}}
+               :now-fn (constantly 1000)})
+            request {:from :controller :from-authority authority
+                     :retention retention :frame {"replica" authority}}
+            first-run (make-runtime)]
+        (is (true? (async/<! (lifecycle-runtime/ready first-run))))
+        (is (true? (async/<! (lifecycle-runtime/authorize-offer!
+                              first-run request))))
+        (lifecycle-runtime/stop! first-run)
+        (let [restarted (make-runtime)]
+          (is (true? (async/<! (lifecycle-runtime/ready restarted))))
+          (is (= :retained
+                 (lifecycle/status (lifecycle-runtime/state restarted)
+                                   retention)))
+          (lifecycle-runtime/stop! restarted))
         (done)))))

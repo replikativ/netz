@@ -38,6 +38,14 @@ streams and backend-specific durability. Giving all of those an implicit
 quorum meaning would hide failures and make ordinary local updates acquire
 surprising network semantics.
 
+The implementation now uses that boundary in both directions: a connected
+Konserve store backs content-addressed transfer pieces/install markers and the
+receiver's monotone lifecycle journal. `netz.replication.lifecycle-runtime`
+turns that journal into the asynchronous offer authorizer expected by the
+Kabel/Noise blob runtime. This makes Konserve the common storage integration
+surface without assigning network conflict semantics to arbitrary Konserve
+keys.
+
 ## The object/ref split
 
 A publication has two phases.
@@ -313,6 +321,14 @@ tests.
 10. **Scale simulation:** thousands of small repositories/forks and a few hot
     repositories share bounded queues without one slow object or topic causing
     global head-of-line blocking.
+
+The journal-first portion of item 8 is implemented and covered on JVM and
+Node: restart precedes authorization, exact retention persistence gates byte
+transfer, and signed leases/deletions have a verification entry point. Actual
+erasure remains backend-specific. The generic Konserve adapter refuses to
+claim deletion unless an explicit callback can erase all retained
+representations; shared-piece garbage collection and operational offline-peer
+reconciliation remain release gates.
 
 ## Delivery order
 
