@@ -12,7 +12,9 @@ may make incompatible protocol changes.
   JVM/JavaScript/Python fixtures, signed retention/lease/deletion and replica
   receipt schemas, bounded transfer frames, persistence-backpressured pure
   sender/receiver machines with persist-before-quorum signed evidence, a
-  journal-first expiry/deletion machine, simulated
+  portable transfer-store contract, a JVM atomic/fsynced file reference with
+  restart receipt verification, a journal-first expiry/deletion machine,
+  simulated
   disk/partition/crash repair, an explicit optional Konserve seam, and a
   three-device demonstration. The storage and network bindings remain gated in
   `RELEASE.md`.

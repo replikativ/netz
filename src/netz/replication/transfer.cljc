@@ -183,12 +183,18 @@
      :indices (into #{} (mapcat indexes-by-piece) held-ids)}))
 
 (defn- staging-loaded
-  [state {:keys [session held installed]} now]
+  [state {:keys [session held installed error]} now]
   (let [key (session-key session)
         {:keys [phase manifest manifest-id peer indexes-by-piece] :as entry}
         (get-in state [:sessions key])]
-    (if-not (= :loading phase)
+    (cond
+      (not= :loading phase)
       (abort state session :unexpected-staging-result)
+
+      error
+      (abort state session :load-staging-failed)
+
+      :else
       (try
         (let [{held :indices held-addresses :addresses}
               (held-inventory indexes-by-piece (or held []))
@@ -258,7 +264,7 @@
                                                 (identity/bytes->hex
                                                  (nth (get manifest "pieces")
                                                       index)))}))
-         :actions [[:stage-piece session manifest-id index
+         :actions [[:stage-piece session manifest-id manifest index
                     (nth (get manifest "pieces") index) data]]}))
     (catch #?(:clj Throwable :cljs :default) _
       {:state (update-in state [:stats :rejected] inc) :actions []})))

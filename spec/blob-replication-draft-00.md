@@ -288,6 +288,11 @@ Sessions, staged bytes, decoded maps, in-flight pieces and outbound queues MUST
 all be bounded. A reconnect or retry uses a fresh session and `blob/need` to
 resume from verified pieces.
 
+Durable staging SHOULD be addressed by manifest and piece address rather than
+the volatile session ID. Session cleanup releases in-memory work but MUST NOT
+delete a verified piece that is installed, shared by another manifest, or
+needed for retry. Orphan collection is a separate lease-aware operation.
+
 The receiver verifies every piece and the complete
 object, atomically installs it, and flushes according to the persistence level
 named in the deployment. Only then may it issue a signed storage receipt. Mere
@@ -337,8 +342,8 @@ Before advertising a durable-blob capability, implementations must additionally
 freeze and test:
 
 1. the signed/configured layout and reconfiguration transcript;
-2. durable piece-staging/file adapters (the bounded pure sender and receiver
-   transition machines are implemented);
+2. non-JVM durable piece-staging adapters (the bounded pure sender/receiver and
+   JVM fsync/atomic-file reference adapter are implemented);
 3. durable outbox and restart recovery against real file stores;
 4. operational clock-skew and real-store deletion tests (the journal-first
    pure lease/expiry/deletion machine is implemented);

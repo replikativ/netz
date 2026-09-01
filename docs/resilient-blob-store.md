@@ -147,6 +147,40 @@ local success into a false quorum success:
 Immutable retries are idempotent. A crash at any boundary leaves either an
 unacknowledged staging object or a resumable durable intent.
 
+### Reference storage boundary
+
+`netz.replication.storage/PBlobTransferStore` is the portable asynchronous
+contract behind the sender and receiver actions. Its stage action carries the
+complete manifest as well as the expected index and piece address, allowing an
+independent backend to re-verify bytes without reaching into machine state.
+The shared action adapter normalizes successful and failed completions back
+into pure-machine events.
+
+The JVM reference implementation, `netz.replication.file-store`, uses this
+layout under an exclusively owned root:
+
+```text
+pieces/<hash-prefix>/<hash-rest>.piece
+manifests/<hash-prefix>/<hash-rest>.cbor
+receipts/<record-hash-prefix>/<record-hash-rest>.cbor
+```
+
+Pieces are immutable and content addressed. Installation streams and verifies
+every piece and the full object, then atomically publishes a closed CBOR
+manifest marker. In `netz/store/fsync/1` mode it forces piece files, atomic
+markers, and their containing directories; unsupported atomic moves fail
+instead of silently downgrading the receipt. Receipt records are independently
+content addressed, bounded during restart scanning, and their Ed25519
+signatures are re-verified before replay to the quorum controller.
+
+Session cleanup deliberately does not delete addressed pieces. This is what
+allows a new attempt to resume after a process crash or lost ACK, and it avoids
+deleting a piece shared by several manifests. Lease-aware orphan collection,
+scrubbing, and inventory exchange remain separate gates; until they land the
+reference adapter can accumulate uninstalled staged pieces. The JVM adapter is
+an executable conformance reference, not yet the Node/browser/Python storage
+implementation.
+
 ## Read and repair protocol
 
 Reads prefer the local store. A local miss or integrity failure causes the
@@ -327,8 +361,9 @@ three process IDs represent three independent failure domains.
    resurrection-prevention invariants.
 4. [done] Implement the bounded pure sender, including one-piece backpressure,
    receipt fencing and persist-before-quorum handoff.
-5. Implement the Kabel/Noise session binding and durable file staging/install
-   adapter.
+5. [JVM done] Implement durable file staging/install and signed-receipt replay;
+   add Node/browser storage implementations and the Kabel/Noise session
+   binding.
 6. Add scrubbing, paginated inventory and repair scheduling.
 7. Publish the optional `konserve-netz` adapter only after its stream/batch
    semantics are explicit.
