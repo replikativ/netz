@@ -2,9 +2,11 @@
   "Portable Konserve implementation of the durable-blob transfer store.
 
   Pieces, installation markers and receipt records are immutable values in a
-  caller-supplied Konserve store. This is the Netz transfer repository, not a
-  transparent wrapper over application keys. Applications publish their own
-  key-to-object mapping only after the required receipts exist.
+  caller-supplied Konserve store. The same namespace also holds the bounded,
+  monotone lifecycle journal used by `netz.replication.lifecycle-runtime`.
+  This is the Netz transfer repository, not a transparent wrapper over
+  application keys. Applications publish their own key-to-object mapping only
+  after the required receipts exist.
 
   A generic Konserve write completion cannot prove a POSIX fsync boundary, so
   this adapter supports only `netz/store/volatile/1` and
@@ -13,6 +15,7 @@
   (:require [konserve.core :as k]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.lifecycle-storage :as lifecycle-storage]
             [netz.replication.storage :as storage]
             [netz.replication.wire :as replication-wire]
             [netz.wire :as wire]
@@ -71,6 +74,9 @@
 (defn- receipt-key [store record]
   (entry-key store ::receipt
              (identity/sha256 (wire/encode-canonical record))))
+
+(defn- lifecycle-key [store key]
+  [(:prefix store) ::lifecycle key])
 
 (defn- verify-context! [manifest-id manifest]
   (blob/validate-manifest manifest)
@@ -356,7 +362,41 @@
                   (conj result (record->controller-event record))))
          result)))))
 
-(defrecord KonserveBlobStore [store prefix persistence clock max-receipts]
+(defn- lifecycle-entry? [store entry]
+  (let [key (:key entry)]
+    (and (vector? key)
+         (= 3 (count key))
+         (= (:prefix store) (nth key 0))
+         (= ::lifecycle (nth key 1))
+         (vector? (nth key 2))
+         (= :blob/lifecycle (first (nth key 2)))
+         (string? (second (nth key 2))))))
+
+(defn- load-lifecycle-records! [store]
+  (go-try-
+   (let [entries (<?- (k/keys (:store store) {:sync? false}))
+         keys (into [] (comp (filter #(lifecycle-entry? store %))
+                             (map :key))
+                    entries)]
+     (when (> (count keys) (:max-lifecycle-records store))
+       (throw (ex-info "Lifecycle journal exceeds its configured bound"
+                       {:type :netz.replication/too-many-lifecycle-records
+                        :limit (:max-lifecycle-records store)})))
+     (loop [remaining (seq keys) result {}]
+       (if-let [storage-key (first remaining)]
+         (let [machine-key (nth storage-key 2)
+               object-key (second machine-key)
+               record (<?- (k/get (:store store) storage-key
+                                  nil {:sync? false}))]
+           (when-not (map? record)
+             (throw (ex-info "Invalid durable lifecycle record"
+                             {:type :netz.replication/invalid-lifecycle-record
+                              :key machine-key})))
+           (recur (next remaining) (assoc result object-key record)))
+         result)))))
+
+(defrecord KonserveBlobStore [store prefix persistence clock max-receipts
+                              max-lifecycle-records delete-object!]
   storage/PBlobTransferStore
 
   (-load-staging [this _session manifest-id manifest]
@@ -398,7 +438,36 @@
        (catch #?(:clj Throwable :cljs js/Error) cause cause))))
 
   (-cleanup-session! [_this _session _manifest-id]
-    (storage/chan-of true)))
+    (storage/chan-of true))
+
+  lifecycle-storage/PBlobLifecycleStore
+
+  (-load-lifecycle-records [this]
+    (go-try-
+     (try
+       (<?- (load-lifecycle-records! this))
+       (catch #?(:clj Throwable :cljs js/Error) cause cause))))
+
+  (-persist-lifecycle! [this key value]
+    (go-try-
+     (try
+       (<?- (k/assoc store (lifecycle-key this key) value
+                     nil {:sync? false}))
+       :ok
+       (catch #?(:clj Throwable :cljs js/Error) cause cause))))
+
+  (-delete-object! [_this key statement requested]
+    (if delete-object!
+      (try
+        (delete-object! {:key key :statement statement
+                         :persistence requested})
+        (catch #?(:clj Throwable :cljs js/Error) cause
+          (lifecycle-storage/chan-of cause)))
+      (lifecycle-storage/chan-of
+       (ex-info
+        "Konserve object deletion requires an explicit erasure implementation"
+        {:type :netz.replication/deletion-not-configured
+         :key key})))))
 
 (defn new-konserve-blob-store
   "Use a connected Konserve store as a portable Netz transfer repository.
@@ -408,21 +477,36 @@
   fsync receipt. `:prefix` isolates the repository in a shared store and
   defaults to `:netz.blob`. `:clock` returns Unix milliseconds.
 
-  Staged pieces intentionally survive session cleanup. `:max-receipts` bounds
-  restart replay (default 100,000)."
-  [store {:keys [prefix persistence clock max-receipts]
+  Staged pieces intentionally survive session cleanup. `:max-receipts` and
+  `:max-lifecycle-records` independently bound restart scans (both default to
+  100,000).
+
+  Privacy deletion is intentionally fail-closed. Supply `:delete-object!` as a
+  function from `{key statement persistence}` to a result channel only when it
+  can erase every retained representation and return an honest
+  `{result :ok, persistence ..., deleted-at ...}` proof. Without it, expiry is
+  retained as a durable tombstone and retried, but no deletion receipt is
+  issued."
+  [store {:keys [prefix persistence clock max-receipts
+                 max-lifecycle-records delete-object!]
           :or {prefix :netz.blob
                clock #?(:clj #(System/currentTimeMillis)
                         :cljs #(.now js/Date))
-               max-receipts 100000}}]
+               max-receipts 100000
+               max-lifecycle-records 100000}}]
   (when-not (and store
                  (some? prefix)
                  (contains? persistence-profiles persistence)
                  (ifn? clock)
                  (int? max-receipts)
-                 (pos? max-receipts))
+                 (pos? max-receipts)
+                 (int? max-lifecycle-records)
+                 (pos? max-lifecycle-records)
+                 (or (nil? delete-object!) (ifn? delete-object!)))
     (throw (ex-info "Invalid Konserve blob-store options"
                     {:type :netz.replication/invalid-konserve-store-options
                      :persistence persistence
-                     :max-receipts max-receipts})))
-  (->KonserveBlobStore store prefix persistence clock max-receipts))
+                     :max-receipts max-receipts
+                     :max-lifecycle-records max-lifecycle-records})))
+  (->KonserveBlobStore store prefix persistence clock max-receipts
+                       max-lifecycle-records delete-object!))

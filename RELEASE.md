@@ -138,8 +138,13 @@ This extension is not part of the alpha interoperability claim yet.
       explicit negotiation, multi-piece fsync installation, policy rejection,
       invalid-signature disconnect, receipt persistence and unsupported-peer
       refusal. The capability remains absent from Noise defaults.
-- [ ] Implement a production lifecycle-policy adapter, Node/browser durable
-      storage, scrubbing, inventory exchange and operational restart recovery.
+- [x] Implement a portable production lifecycle-policy adapter which restores
+      before authorization, journals the exact retention statement before byte
+      transfer, verifies reconciled lease/deletion envelopes, and fails closed
+      when backend erasure is not explicitly implemented. JVM and Node
+      Konserve memory backends cover restart ordering.
+- [ ] Implement Node/browser durable storage, scrubbing, inventory exchange,
+      backend erasure and operational offline-peer reconciliation.
 - [ ] Implement and validate any later transparent Konserve wrapper semantics
       for binary streams, multi-key root-last batches, nested updates and read
       repair.
