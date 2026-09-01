@@ -159,6 +159,16 @@ class SignedBlobProtocolTest(unittest.TestCase):
         self.assertIs(offer, validate_frame(offer))
         self.assertEqual(fixture["offer_cbor_sha256_hex"],
                          sha256(encode_frame(offer)).hexdigest())
+        fetch = {
+            "v": 1,
+            "type": "blob/fetch",
+            "session": bytes.fromhex(diagnostic["session_hex"]),
+            "attempt": 0,
+            "retention": envelope,
+        }
+        self.assertIs(fetch, validate_frame(fetch))
+        self.assertEqual(fixture["fetch_cbor_sha256_hex"],
+                         sha256(encode_frame(fetch)).hexdigest())
 
     def test_statement_and_frame_schemas_fail_closed(self):
         values = self.values()

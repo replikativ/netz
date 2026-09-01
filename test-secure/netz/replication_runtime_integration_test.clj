@@ -10,6 +10,7 @@
             [netz.overlay.runtime :as overlay-runtime]
             [netz.replication.blob :as blob]
             [netz.replication.file-store :as file-store]
+            [netz.replication.inventory :as inventory]
             [netz.replication.runtime :as replication-runtime]
             [netz.replication.storage :as storage]
             [netz.replication.wire :as replication-wire]
@@ -173,9 +174,14 @@
           client-authority
           (identity/authority-id-bytes (:genesis client-identity))
           allow-offers? (atom true)
+          allow-fetches? (atom true)
           accepted (atom [])
+          fetch-requests (atom [])
           stored (atom [])
+          provider-stored (atom [])
+          installed (atom [])
           failures (atom [])
+          fetch-failures (atom [])
           server-runtime
           (replication-runtime/start!
            (:node server)
@@ -190,14 +196,31 @@
                (and @allow-offers?
                     (identity/bufs= client-authority from-authority)
                     (identity/bufs= client-authority
-                                    (get retention "signer")))))})
+                                    (get retention "signer")))))
+            :authorize-fetch!
+            (fn [{:keys [from-authority retention] :as request}]
+              (swap! fetch-requests conj request)
+              (storage/chan-of
+               (and @allow-fetches?
+                    (identity/bufs= client-authority from-authority)
+                    (identity/bufs= client-authority
+                                    (get retention "signer")))))
+            :on-stored! #(swap! provider-stored conj %)})
           client-runtime
           (replication-runtime/start!
            (:node client)
            {:store source
             :now-fn (constantly 1000)
+            :authorize-offer!
+            (fn [{:keys [from-authority retention]}]
+              (storage/chan-of
+               (and (identity/bufs= server-authority from-authority)
+                    (identity/bufs= client-authority
+                                    (get retention "signer")))))
             :on-stored! #(swap! stored conj %)
-            :on-failed! #(swap! failures conj %)})]
+            :on-installed! #(swap! installed conj %)
+            :on-failed! #(swap! failures conj %)
+            :on-fetch-failed! #(swap! fetch-failures conj %)})]
       (try
         (is (wait-for 10000
                       #(and (contains? (overlay-runtime/connections
@@ -252,6 +275,57 @@
                               [:sender :sessions])))
           (is (empty? (get-in (replication-runtime/states server-runtime)
                               [:receiver :sessions])))
+
+          (testing "an authenticated reader pulls an installed object"
+            (let [provider-session (identity/seq->bytes (range 80 96))
+                  fetch-session (identity/seq->bytes (range 96 112))
+                  provider-split
+                  (blob/split (identity/utf8-bytes
+                               "provider-side immutable Konserve value")
+                              {:piece-size 7})
+                  retention-envelope
+                  (get (signed-offer client-identity client-authority
+                                     fetch-session provider-split)
+                       "retention")]
+              (install-source! target provider-session provider-split)
+              (is (identity/bufs=
+                   fetch-session
+                   (replication-runtime/fetch!
+                    client-runtime (:id server) server-authority
+                    retention-envelope {:session fetch-session})))
+              (is (wait-for 10000 #(= 1 (count @installed)))
+                  "requester never installed the fetched object")
+              (is (wait-for 10000 #(= 1 (count @provider-stored)))
+                  "provider never durably recorded the requester receipt")
+              (is (= 1 (count @fetch-requests)))
+              (is (identity/bufs=
+                   client-authority
+                   (:from-authority (first @fetch-requests))))
+              (is (= (identity/bytes->hex (:manifest-id provider-split))
+                     (:manifest-id (first @installed))))
+              (is (identity/bufs=
+                   (wire/encode-canonical (:manifest provider-split))
+                   (wire/encode-canonical
+                    (await (inventory/installed-manifest
+                            source (:manifest-id provider-split))))))
+              (is (empty? @fetch-failures))
+              (is (= 1 (:fetched
+                        (replication-runtime/stats client-runtime))))
+              (is (= 1 (:fetch-served
+                        (replication-runtime/stats server-runtime))))
+
+              (reset! allow-fetches? false)
+              (let [denied-fetch-session
+                    (identity/seq->bytes (range 112 128))]
+                (is (replication-runtime/fetch!
+                     client-runtime (:id server) server-authority
+                     retention-envelope {:session denied-fetch-session}))
+                (is (wait-for 10000 #(= 1 (count @fetch-failures)))
+                    "requester did not observe provider read-policy rejection")
+                (is (= "fetch-unauthorized"
+                       (:code (first @fetch-failures))))
+                (is (empty? (:fetches
+                             (replication-runtime/states client-runtime)))))))
 
           (testing "a valid but unauthorized offer is aborted without storage"
             (reset! allow-offers? false)

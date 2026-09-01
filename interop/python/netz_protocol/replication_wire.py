@@ -48,6 +48,7 @@ STATEMENT_FIELDS = {
 FRAME_FIELDS = {
     "blob/offer": {"v", "type", "session", "attempt", "replica",
                    "retention", "manifest"},
+    "blob/fetch": {"v", "type", "session", "attempt", "retention"},
     "blob/need": {"v", "type", "session", "manifest", "need"},
     "blob/piece": {"v", "type", "session", "manifest", "index", "data"},
     "blob/ack": {"v", "type", "session", "manifest", "through"},
@@ -234,6 +235,13 @@ def validate_frame(frame: dict[str, Any]) -> dict[str, Any]:
                      and _bytes_n(frame["replica"], 32)
                      and retention["manifest"] == manifest_address(manifest)
                      and retention["object"] == manifest["object"])
+        except Exception:
+            valid = False
+    elif kind == "blob/fetch":
+        try:
+            retention = parse_envelope(frame["retention"])["statement"]
+            valid = (retention["type"] == "blob/retention"
+                     and _uint(frame["attempt"]))
         except Exception:
             valid = False
     elif kind == "blob/need":

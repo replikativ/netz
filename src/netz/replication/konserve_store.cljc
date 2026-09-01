@@ -413,6 +413,17 @@
           :length (get manifest "length")
           :pieces (count (get manifest "pieces"))})))))
 
+(defn- load-installed-manifest! [store manifest-id]
+  (go-try-
+   (let [marker (<?- (k/get (:store store) (marker-key store manifest-id)
+                            nil {:sync? false}))]
+     (when marker
+       (let [manifest (get marker "descriptor")]
+         (when-not (valid-marker? marker manifest-id manifest)
+           (throw (ex-info "Invalid installed-object marker"
+                           {:type :netz.replication/invalid-install-marker})))
+         manifest)))))
+
 (defn- load-lifecycle-records! [store]
   (go-try-
    (let [entries (<?- (k/keys (:store store) {:sync? false}))
@@ -524,6 +535,14 @@
     (go-try-
      (try
        (<?- (scrub-object! this manifest-id))
+       (catch #?(:clj Throwable :cljs js/Error) cause cause))))
+
+  inventory/PBlobProviderStore
+
+  (-load-installed-manifest [this manifest-id]
+    (go-try-
+     (try
+       (<?- (load-installed-manifest! this manifest-id))
        (catch #?(:clj Throwable :cljs js/Error) cause cause)))))
 
 (defn new-konserve-blob-store

@@ -21,6 +21,9 @@ may make incompatible protocol changes.
   disk/partition/crash repair, an explicit optional Konserve object seam, and a
   three-device demonstration. JVM file and portable Konserve stores also expose
   bounded sorted installed-manifest inventory and full-address object scrubs.
+  Authenticated providers can now serve an explicitly requested installed
+  manifest through the same offer/piece/receipt path, with independent read
+  authorization and exact pending-request fencing.
   Privacy deletion fails closed unless a backend provides complete erasure.
   The remaining storage and network bindings stay gated in `RELEASE.md`.
 - Added the exact `Noise_XX_25519_AESGCM_SHA256` direct Kabel carrier with

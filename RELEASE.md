@@ -146,9 +146,14 @@ This extension is not part of the alpha interoperability claim yet.
 - [x] Implement bounded, sorted local installed-manifest inventory and
       full-object scrubbing for the JVM file and portable Konserve stores.
       JVM corruption tests and Node Konserve tests share the same API.
-- [ ] Implement Node/browser durable storage, network inventory exchange and
-      repair scheduling, backend erasure, and operational offline-peer
-      reconciliation.
+- [x] Implement authenticated provider retrieval with separate read and offer
+      authorization, exact pending-request fencing, bounded timeout/capacity,
+      and reuse of the receipt-producing transfer path. JVM and Python pin the
+      fetch frame, JavaScript runs the same fixture, and a real Kabel/Noise test
+      covers success and policy denial.
+- [ ] Implement Node/browser durable storage, network inventory exchange,
+      automated repair scheduling, backend erasure, and operational
+      offline-peer reconciliation.
 - [ ] Implement and validate any later transparent Konserve wrapper semantics
       for binary streams, multi-key root-last batches, nested updates and read
       repair.

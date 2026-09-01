@@ -46,7 +46,10 @@ Kabel/Noise blob runtime. This makes Konserve the common storage integration
 surface without assigning network conflict semantics to arbitrary Konserve
 keys. The same adapter now exposes sorted installed-manifest pages and a
 full-object scrub operation, which are the local evidence a later tiered
-read-repair controller needs.
+read-repair controller needs. The runtime also supports an explicit
+authenticated provider fetch backed by that installed-manifest operation. It
+does not intercept `konserve/get`: applications or a later tiered adapter
+select a provider and invoke retrieval deliberately.
 
 ## The object/ref split
 
@@ -335,13 +338,16 @@ reconciliation remain release gates.
 ## Delivery order
 
 1. Keep `netz/blob-replication/1` experimental and implement a streaming object
-   source/sink over a connected Konserve store.
+   source/sink over a connected Konserve store. The small-value Konserve
+   repository and authenticated provider-fetch path are implemented; bounded
+   streaming remains.
 2. Add explicit application-key mapping and `ensure-local`; do not yet wrap
    every `PStore` operation.
 3. Demonstrate Dvergr/Simmis drive replication and one Geschichte pack closure.
 4. Add signed head reconciliation and materialization tests using the existing
    root-log and Spindel workspace gate.
-5. [local inventory/scrub done] Add network inventory exchange and read repair,
-   then expose a tiered Konserve convenience adapter.
+5. [local inventory/scrub and explicit provider fetch done] Add network
+   inventory exchange and repair scheduling, then expose `ensure-local` and a
+   tiered Konserve convenience adapter.
 6. Run independent JVM/Node/Python conformance before advertising the blob
    capability by default.

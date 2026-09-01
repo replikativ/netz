@@ -280,6 +280,14 @@
         (is (= :healthy (:status healthy)))
         (is (= (get-in split [:manifest "length"]) (:length healthy)))
         (is (identity/bufs= (:object-id split) (:object healthy))))
+      (is (identity/bufs=
+           (wire/encode-canonical (:manifest split))
+           (wire/encode-canonical
+            (await (inventory/installed-manifest
+                    store (:manifest-id split))))))
+      (is (nil? (await (inventory/installed-manifest
+                        store (identity/sha256
+                               (identity/utf8-bytes "absent"))))))
       (is (= :missing
              (:status (await (inventory/scrub-object!
                               store (identity/sha256
@@ -374,6 +382,9 @@
 
           (= :replication-stored op)
           (recur states queue (second action) (inc steps))
+
+          (= :replica-installed op)
+          (recur states queue controller-event (inc steps))
 
           (= :transfer-failed op)
           (throw (ex-info "Unexpected transfer failure" {:failure action}))

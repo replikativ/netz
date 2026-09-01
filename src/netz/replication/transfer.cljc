@@ -355,7 +355,19 @@
            :actions [[:send peer
                       {"v" 1 "type" "blob/stored" "session" session
                        "receipt" envelope}]
-                     [:cleanup-staging session manifest-id]]}))
+                     [:cleanup-staging session manifest-id]
+                     [:replica-installed
+                      {:type :replication/installed
+                       :session session
+                       :object-id
+                       (identity/bytes->hex (get actual "object"))
+                       :manifest-id (identity/bytes->hex manifest-id)
+                       :replica-id
+                       (identity/bytes->hex (get actual "replica"))
+                       :layout-epoch (get actual "layout_epoch")
+                       :attempt (get actual "attempt")
+                       :persistence (get actual "persistence")
+                       :receipt envelope}]]}))
       (catch #?(:clj Throwable :cljs :default) _
         (abort state session :invalid-receipt)))))
 

@@ -262,6 +262,7 @@ Every frame is a closed map with `v: 1` and a 16-byte random `session`:
 
 ~~~text
 blob/offer  {session, attempt, replica, retention, manifest}
+blob/fetch  {session, attempt, retention}
 blob/need   {session, manifest, need}
 blob/piece  {session, manifest, index, data}
 blob/ack    {session, manifest, through}
@@ -276,6 +277,17 @@ address. An offer's addresses MUST match its signed retention statement and
 its target `replica` MUST be the authenticated receiving Authority. A stored
 frame's receipt signer MUST be the authenticated sending Authority. Structural
 frame decoding alone is not signature verification.
+
+`blob/fetch` asks the authenticated peer to serve the manifest named by the
+signed retention statement. The provider MUST independently authorize the
+authenticated requester and controller-signed retention statement before
+revealing whether it holds the object. If authorized and installed, it answers
+with an ordinary `blob/offer` using the same session, attempt and exact
+retention envelope; all piece, install and receipt rules then remain unchanged.
+The requester MUST accept that offer only from the selected authenticated
+provider and MUST still apply its normal offer/lifecycle policy. An abort or
+timeout fails the pending fetch and does not count as a replica. A signed
+retention statement is durability intent, not by itself read authorization.
 
 Before accepting an offer, the receiver MUST verify its retention signature,
 authorize the controller signer and named layout under local deployment policy,
@@ -316,7 +328,8 @@ network delivery, an accepted offer, a queued write or a partially installed
 manifest is not an acknowledgement.
 
 `fixtures/blob-statements-1.json` pins the retention transcript, Ed25519
-signature and complete canonical-offer hash across JVM, JavaScript and Python.
+signature and complete canonical offer/fetch hashes across JVM, JavaScript and
+Python.
 
 A coordinator may return quorum when it holds `W` current receipts satisfying
 all domain constraints. Signature verification and an authenticated replica
