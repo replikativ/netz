@@ -389,11 +389,15 @@ three process IDs represent three independent failure domains.
    resurrection-prevention invariants.
 4. [done] Implement the bounded pure sender, including one-piece backpressure,
    receipt fencing and persist-before-quorum handoff.
-5. [JVM done] Implement durable file staging/install, signed-receipt replay and
-   the explicit capability-gated Kabel/Noise binding; add Node/browser storage
-   implementations and a production lifecycle-policy adapter.
+5. [JVM done, portable Konserve reference added] Implement durable file
+   staging/install, signed-receipt replay and the explicit capability-gated
+   Kabel/Noise binding. The generic Konserve repository now passes JVM and Node
+   memory-store restart/install tests and honestly exposes only volatile or
+   best-effort completion; add real Node/browser durable-backend tests and a
+   production lifecycle-policy adapter.
 6. Add scrubbing, paginated inventory and repair scheduling.
-7. Publish the optional `konserve-netz` adapter only after its stream/batch
-   semantics are explicit.
+7. Build the explicit application-key/immutable-object adapter over the
+   Konserve transfer repository; publish any tiered or transparent
+   `konserve-netz` wrapper only after its stream/batch semantics are explicit.
 8. Add the real JVM/Node/Python three-device conformance campaign.
 9. Enable automatic reclamation only after operational deletion tests.

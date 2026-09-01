@@ -140,8 +140,13 @@ This extension is not part of the alpha interoperability claim yet.
       refusal. The capability remains absent from Noise defaults.
 - [ ] Implement a production lifecycle-policy adapter, Node/browser durable
       storage, scrubbing, inventory exchange and operational restart recovery.
-- [ ] Decide transparent Konserve wrapper semantics for binary streams,
-      multi-key root-last batches, nested updates and read repair.
+- [ ] Implement and validate any later transparent Konserve wrapper semantics
+      for binary streams, multi-key root-last batches, nested updates and read
+      repair.
+- [x] Decide the initial Konserve integration boundary: explicit immutable
+      object exchange first, with transport pieces hidden below application
+      keys and root publication; write-hook, tiered and transparent wrappers
+      remain later convenience layers.
 - [ ] Pass real three-device JVM/JavaScript/Python conformance and operational
       lease/deletion tests before advertising the capability.
 

@@ -50,6 +50,12 @@ adds replica placement, durable receipts and repair through a separate
 database synchronization; the blob profile does not infer mutable-value
 semantics.
 
+The [Konserve-backed object-exchange design](konserve-object-exchange.md)
+defines the narrower integration boundary: explicit immutable object transfer
+and receipts below an application-controlled root publication. Transport
+pieces are not an application storage format, and an ordinary Konserve map is
+not implicitly converted into a quorum-replicated mutable map.
+
 This separation is a security property. Peer exchange is useful discovery but
 cannot add a Raft voter, grant a write capability, or confer access to an
 encrypted store.
