@@ -121,6 +121,10 @@ This extension is not part of the alpha interoperability claim yet.
 - [x] Implement a bounded pure receiver that resumes verified staging, applies
       one-piece persistence backpressure, ACKs only staged pieces, requires an
       accepted install durability level, and signs receipts only afterwards.
+- [x] Implement a bounded pure sender that retains no piece bytes in control
+      state, obeys one-piece receiver backpressure, fences authenticated
+      receipts by session/layout/attempt, and durably records a verified signed
+      receipt before releasing it to quorum accounting.
 - [x] Implement a journal-first lifecycle machine with monotone leases,
       same-revision equivocation evidence, expiry, deletion retry, absorbing
       tombstones, and persist-before-emit deletion receipts. Simulator tests

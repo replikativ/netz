@@ -36,6 +36,7 @@
    :layout-epoch (:layout-epoch entry)
    :target-replicas (count (:targets entry))
    :durable-acks (vec (filter (:acks entry) (:targets entry)))
+   :signed-receipts (select-keys (:receipts entry) (:targets entry))
    :status status})
 
 (defn- ack-members [state entry]
@@ -74,6 +75,7 @@
                    :targets targets
                    :attempts (zipmap targets (repeat 0))
                    :acks #{}
+                   :receipts {}
                    :intent-stored? false
                    :durable-emitted? false
                    :complete-emitted? false
@@ -101,7 +103,8 @@
          :actions (mapv #(store-action entry %) (:targets entry))}))
     {:state (update-in state [:stats :invalid-acks] inc) :actions []}))
 
-(defn- stored [state {:keys [object-id replica-id layout-epoch attempt]}]
+(defn- stored
+  [state {:keys [object-id replica-id layout-epoch attempt receipt]}]
   (if-let [entry (get-in state [:objects object-id])]
     (let [valid? (and (:intent-stored? entry)
                       (= layout-epoch (:layout-epoch entry))
@@ -117,9 +120,13 @@
          :actions []}
 
         :else
-        (let [state (-> state
-                        (update-in [:objects object-id :acks] conj replica-id)
-                        (update-in [:stats :stored] inc))
+        (let [state (cond-> (-> state
+                                (update-in [:objects object-id :acks]
+                                           conj replica-id)
+                                (update-in [:stats :stored] inc))
+                      receipt
+                      (assoc-in [:objects object-id :receipts replica-id]
+                                receipt))
               entry (get-in state [:objects object-id])
               emit-durable? (and (durable? state entry)
                                  (not (:durable-emitted? entry)))
@@ -165,6 +172,8 @@
              (some #{replica-id} (:targets entry)))
       (let [state (-> state
                       (update-in [:objects object-id :acks] disj replica-id)
+                      (update-in [:objects object-id :receipts]
+                                 dissoc replica-id)
                       (assoc-in [:objects object-id :repairing?]
                                 (:complete-emitted? entry))
                       (update-in [:stats :lost] inc))]
@@ -190,7 +199,7 @@
   - `{:type :replication/begin :manifest {... :object-id ...}}`
   - `{:type :replication/intent-stored :object-id ... :layout-epoch ...}`
   - `{:type :replication/stored :object-id ... :replica-id ...
-      :layout-epoch ... :attempt ...}`
+      :layout-epoch ... :attempt ... :receipt <verified-envelope>}`
   - `{:type :replication/lost :object-id ... :replica-id ...
       :layout-epoch ...}`
   - `{:type :replication/repair :object-id ...}`"
