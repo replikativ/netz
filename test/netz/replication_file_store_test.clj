@@ -6,6 +6,7 @@
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
             [netz.replication.file-store :as file-store]
+            [netz.replication.inventory :as inventory]
             [netz.replication.sender :as sender]
             [netz.replication.storage :as storage]
             [netz.replication.transfer :as transfer]
@@ -245,6 +246,54 @@
                                   StandardOpenOption/TRUNCATE_EXISTING]))
         (is (thrown? Throwable
                      (await (storage/-recorded-receipts store))))))))
+
+(deftest installed-inventory-is-paginated-and-scrubbed
+  (with-store-root [root (temporary-directory)]
+    (let [store (file-store/new-file-store root {:clock (constantly 1200)})
+          second-split (blob/split (identity/seq->bytes (range 30 55))
+                                   {:piece-size 8})
+          install-split!
+          (fn [value]
+            (doseq [piece (:pieces value)]
+              (await (storage/-stage-piece!
+                      store session (:manifest-id value) (:manifest value)
+                      (:index piece) (:id piece) (:data piece))))
+            (await (storage/-install-object!
+                    store session (:manifest-id value) (:manifest value)
+                    {} "netz/store/fsync/1")))]
+      (install-split! split)
+      (install-split! second-split)
+      (let [first-page (await (inventory/inventory-page store nil 1))
+            second-page (await (inventory/inventory-page
+                                store (:next-cursor first-page) 1))
+            addresses (mapv identity/bytes->hex
+                            (concat (:manifests first-page)
+                                    (:manifests second-page)))]
+        (is (= (sort [(identity/bytes->hex (:manifest-id split))
+                      (identity/bytes->hex (:manifest-id second-split))])
+               addresses))
+        (is (string? (:next-cursor first-page)))
+        (is (nil? (:next-cursor second-page))))
+
+      (let [healthy (await (inventory/scrub-object!
+                            store (:manifest-id split)))]
+        (is (= :healthy (:status healthy)))
+        (is (= (get-in split [:manifest "length"]) (:length healthy)))
+        (is (identity/bufs= (:object-id split) (:object healthy))))
+      (is (= :missing
+             (:status (await (inventory/scrub-object!
+                              store (identity/sha256
+                                     (identity/utf8-bytes "absent")))))))
+
+      (let [piece (first (:pieces split))]
+        (Files/write (piece-path root (:id piece))
+                     (identity/seq->bytes (repeat 8 0))
+                     (into-array OpenOption
+                                 [StandardOpenOption/WRITE
+                                  StandardOpenOption/TRUNCATE_EXISTING]))
+        (is (instance? Throwable
+                       (<!! (inventory/scrub-object!
+                             store (:manifest-id split)))))))))
 
 (defn machine-step [side state event]
   ((if (= side :sender) sender/handler transfer/handler)

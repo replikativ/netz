@@ -44,7 +44,9 @@ receiver's monotone lifecycle journal. `netz.replication.lifecycle-runtime`
 turns that journal into the asynchronous offer authorizer expected by the
 Kabel/Noise blob runtime. This makes Konserve the common storage integration
 surface without assigning network conflict semantics to arbitrary Konserve
-keys.
+keys. The same adapter now exposes sorted installed-manifest pages and a
+full-object scrub operation, which are the local evidence a later tiered
+read-repair controller needs.
 
 ## The object/ref split
 
@@ -339,7 +341,7 @@ reconciliation remain release gates.
 3. Demonstrate Dvergr/Simmis drive replication and one Geschichte pack closure.
 4. Add signed head reconciliation and materialization tests using the existing
    root-log and Spindel workspace gate.
-5. Add inventory/scrub/read-repair and then expose a tiered Konserve
-   convenience adapter.
+5. [local inventory/scrub done] Add network inventory exchange and read repair,
+   then expose a tiered Konserve convenience adapter.
 6. Run independent JVM/Node/Python conformance before advertising the blob
    capability by default.

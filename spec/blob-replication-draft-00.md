@@ -31,6 +31,8 @@ Placement.place(layout, policy, object_id) -> [Replica]
 BlobStore.put(ciphertext, durability) -> DurabilityReceipt
 BlobStore.get(object_id) -> bytes
 BlobStore.status(object_id) -> ReplicaStatus
+BlobStore.inventory(cursor, limit) -> ManifestPage
+BlobStore.scrub(manifest_id) -> ScrubStatus
 BlobStore.repair(object_id) -> completion
 BlobStore.delete(object_id, authorization) -> DeletionStatus
 ~~~
@@ -325,6 +327,15 @@ retention revision/deadline and accepted persistence profile MUST exactly match
 the current offer. It retains repair work until all `N` targets have receipts.
 A completion timeout MUST distinguish a local commit from achieved quorum.
 
+The local inventory interface enumerates installation-marker manifest IDs in
+unsigned bytewise order, without duplicates. Profile 1 pages contain at most
+1,024 IDs and use the lowercase hexadecimal form of the last returned ID as an
+exclusive cursor. Presence in this inventory is not a durability receipt or an
+integrity proof. `scrub` MUST separately verify the marker address, every piece
+address and length, and the complete domain-separated object address. A
+missing marker is distinct from corruption or IO failure. Network inventory
+exchange is not defined in draft-00.
+
 ## 8. Failure and privacy semantics
 
 With `N=3,W=2`, success proves two eligible durable installations at the stated
@@ -358,9 +369,9 @@ freeze and test:
 1. the signed/configured layout and reconfiguration transcript;
 2. non-JVM durable piece-staging adapters (the bounded pure sender/receiver and
    JVM fsync/atomic-file reference adapter are implemented);
-3. a production durable lifecycle-policy/outbox adapter and restart recovery
-   against real file stores (the JVM capability-gated transfer runtime and
-   durable receipt replay are implemented);
+3. restart recovery against real durable non-memory stores (the portable
+   lifecycle-policy adapter, JVM capability-gated transfer runtime, local
+   inventory/scrub API and durable receipt replay are implemented);
 4. operational clock-skew and real-store deletion tests (the journal-first
    pure lease/expiry/deletion machine is implemented);
 5. independent JVM, JavaScript and Python end-to-end tests; and

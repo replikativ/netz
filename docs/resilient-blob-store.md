@@ -175,10 +175,12 @@ signatures are re-verified before replay to the quorum controller.
 
 Session cleanup deliberately does not delete addressed pieces. This is what
 allows a new attempt to resume after a process crash or lost ACK, and it avoids
-deleting a piece shared by several manifests. Lease-aware orphan collection,
-scrubbing, and inventory exchange remain separate gates; until they land the
-reference adapter can accumulate uninstalled staged pieces. The JVM adapter is
-an executable conformance reference, not yet the Node/browser/Python storage
+deleting a piece shared by several manifests. Lease-aware orphan collection
+and network inventory exchange remain separate gates; until they land the
+reference adapter can accumulate uninstalled staged pieces. Local paginated
+installed-manifest inventory and full-object scrubbing now exist for the JVM
+file and portable Konserve adapters. The JVM adapter is an executable
+conformance reference, not yet the Node/browser/Python durable storage
 implementation.
 
 ### Authenticated runtime binding
@@ -258,6 +260,15 @@ Background repair compares desired placement with durable receipts and
 inventory. Profile 1 may use sorted, paginated object identifiers; a bucketed
 Merkle inventory can replace that representation without changing object
 transfer. Scrubbing re-reads local bytes and verifies their address.
+
+`netz.replication.inventory` implements the local half of that contract. Pages
+contain sorted, distinct 32-byte manifest addresses and use an exclusive
+lowercase-hex cursor; both the page size and the underlying marker scan are
+bounded. An inventory entry means only that an installation marker exists.
+`scrub-object!` separately revalidates the marker, every piece and the complete
+domain-separated object address. Missing objects are explicit; corruption and
+IO failure never count as replicas. Inventory wire frames, scheduling and
+provider retrieval remain later layers.
 
 Current `netz.content` remains discovery and bounded transfer state. Its working
 set is not a durability catalogue. The replica controller is a separate pure
@@ -433,7 +444,8 @@ three process IDs represent three independent failure domains.
    memory-store restart/install tests and honestly exposes only volatile or
    best-effort completion. The lifecycle-policy adapter now has JVM and Node
    Konserve restart tests; add real Node/browser durable-backend tests.
-6. Add scrubbing, paginated inventory and repair scheduling.
+6. [local store done] Add scrubbing and paginated inventory; network inventory
+   exchange and repair scheduling remain.
 7. Build the explicit application-key/immutable-object adapter over the
    Konserve transfer repository; publish any tiered or transparent
    `konserve-netz` wrapper only after its stream/batch semantics are explicit.

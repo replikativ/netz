@@ -14,6 +14,7 @@
             [clojure.string :as str]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.inventory :as inventory]
             [netz.replication.storage :as storage]
             [netz.replication.wire :as replication-wire]
             [netz.wire :as wire])
@@ -375,21 +376,26 @@
    :receipt (get record "receipt")
    :manifest-id (identity/bytes->hex (get record "manifest"))})
 
-(defn- regular-cbor-files [^Path root limit]
-  (if-not (exists? root)
-    []
-    (with-open [paths (Files/walk root (make-array java.nio.file.FileVisitOption 0))]
-      (let [files (->> (.iterator paths)
-                       iterator-seq
-                       (filter #(and (Files/isRegularFile ^Path % no-links)
-                                     (str/ends-with? (str %) ".cbor")))
-                       (take (inc limit))
-                       vec)]
-        (when (> (count files) limit)
-          (throw (ex-info "Receipt journal exceeds its configured bound"
-                          {:type :netz.replication/too-many-receipts
-                           :limit limit})))
-        files))))
+(defn- regular-cbor-files
+  ([root limit]
+   (regular-cbor-files root limit
+                       :netz.replication/too-many-receipts
+                       "Receipt journal"))
+  ([^Path root limit type label]
+   (if-not (exists? root)
+     []
+     (with-open [paths (Files/walk
+                        root (make-array java.nio.file.FileVisitOption 0))]
+       (let [files (->> (.iterator paths)
+                        iterator-seq
+                        (filter #(and (Files/isRegularFile ^Path % no-links)
+                                      (str/ends-with? (str %) ".cbor")))
+                        (take (inc limit))
+                        vec)]
+         (when (> (count files) limit)
+           (throw (ex-info (str label " exceeds its configured bound")
+                           {:type type :limit limit})))
+         files)))))
 
 (defn- load-receipts! [store]
   (mapv (fn [^Path target]
@@ -412,13 +418,55 @@
         (regular-cbor-files (path (:root store) "receipts")
                             (:max-receipts store))))
 
+(defn- manifest-address! [^Path root ^Path target]
+  (let [segments (vec (iterator-seq (.iterator (.relativize root target))))
+        directory (some-> (first segments) str)
+        filename (some-> (second segments) str)
+        hex (when (and (= 2 (count segments))
+                       (re-matches #"[0-9a-f]{2}" directory)
+                       (str/ends-with? filename ".cbor"))
+              (str directory (subs filename 0 (- (count filename) 5))))]
+    (when-not (and hex (re-matches #"[0-9a-f]{64}" hex))
+      (throw (ex-info "Invalid installed-manifest path"
+                      {:type :netz.replication/invalid-manifest-path
+                       :path (str target)})))
+    hex))
+
+(defn- installed-addresses! [store]
+  (let [root (path (:root store) "manifests")]
+    (mapv #(manifest-address! root %)
+          (regular-cbor-files
+           root (:max-inventory-records store)
+           :netz.replication/too-many-installed-objects
+           "Installed-object inventory"))))
+
+(defn- scrub-object! [store manifest-id]
+  (let [target (marker-path store manifest-id)]
+    (if-not (exists? target)
+      {:status :missing :manifest manifest-id}
+      (let [marker (wire/decode (read-bounded target max-marker-bytes))
+            manifest (get marker "descriptor")]
+        (when-not (valid-marker? marker manifest-id manifest)
+          (throw (ex-info "Invalid installed-object marker"
+                          {:type :netz.replication/invalid-install-marker
+                           :path (str target)})))
+        (verify-object! store manifest)
+        {:status :healthy
+         :manifest manifest-id
+         :object (get marker "object")
+         :persistence (get marker "persistence")
+         :stored-at (get marker "stored_at")
+         :length (get manifest "length")
+         :pieces (count (get manifest "pieces"))}))))
+
 (defn- run-io [operation]
   (async/thread
     (try
       (operation)
       (catch Throwable cause cause))))
 
-(defrecord FileBlobStore [root persistence fsync? clock max-receipts lock]
+(defrecord FileBlobStore [root persistence fsync? clock max-receipts
+                          max-inventory-records lock]
   storage/PBlobTransferStore
 
   (-load-staging [store _session manifest-id manifest]
@@ -447,7 +495,17 @@
     (run-io #(locking lock (load-receipts! store))))
 
   (-cleanup-session! [_store _session _manifest-id]
-    (storage/chan-of true)))
+    (storage/chan-of true))
+
+  inventory/PBlobInventoryStore
+
+  (-inventory-page [store cursor limit]
+    (run-io #(locking lock
+               (inventory/page-addresses (installed-addresses! store)
+                                         cursor limit))))
+
+  (-scrub-object! [store manifest-id]
+    (run-io #(locking lock (scrub-object! store manifest-id)))))
 
 (defn new-file-store
   "Create a JVM durable-blob store rooted at `root`.
@@ -457,8 +515,10 @@
   - `:persistence` is `netz/store/fsync/1` (default) or
     `netz/store/best-effort/1`;
   - `:clock` returns Unix milliseconds and is injectable for deterministic
-    tests;
-  - `:max-receipts` bounds restart scanning (default 100,000).
+  tests;
+  - `:max-receipts` bounds restart scanning (default 100,000);
+  - `:max-inventory-records` bounds local manifest scanning (default
+    1,000,000); returned pages remain bounded to 1,024 addresses.
 
   Fsync mode forces every staged piece, the atomic install/receipt marker, and
   the containing directory. An unsupported atomic move fails rather than
@@ -472,15 +532,18 @@
                   .normalize)
          persistence (or (:persistence opts) "netz/store/fsync/1")
          clock (or (:clock opts) #(System/currentTimeMillis))
-         max-receipts (or (:max-receipts opts) 100000)]
+         max-receipts (or (:max-receipts opts) 100000)
+         max-inventory-records (or (:max-inventory-records opts) 1000000)]
      (when-not (and (contains? file-persistence-profiles persistence)
                     (ifn? clock)
                     (int? max-receipts)
-                    (pos? max-receipts))
+                    (pos? max-receipts)
+                    (int? max-inventory-records)
+                    (pos? max-inventory-records))
        (throw (ex-info "Invalid file blob-store options"
                        {:type :netz.replication/invalid-file-store-options})))
      (Files/createDirectories root
                               (make-array java.nio.file.attribute.FileAttribute 0))
      (->FileBlobStore root persistence
                       (= persistence "netz/store/fsync/1")
-                      clock max-receipts (Object.)))))
+                      clock max-receipts max-inventory-records (Object.)))))
