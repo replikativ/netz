@@ -13,7 +13,8 @@ may make incompatible protocol changes.
   receipt schemas, bounded transfer frames, persistence-backpressured pure
   sender/receiver machines with persist-before-quorum signed evidence, a
   portable transfer-store contract, a JVM atomic/fsynced file reference with
-  restart receipt verification, a journal-first expiry/deletion machine,
+  restart receipt verification, a capability-gated Kabel/Noise runtime with an
+  explicit durable authorization boundary, a journal-first expiry/deletion machine,
   simulated
   disk/partition/crash repair, an explicit optional Konserve seam, and a
   three-device demonstration. The storage and network bindings remain gated in

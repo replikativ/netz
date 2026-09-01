@@ -57,7 +57,11 @@
   (sender/handler state event {:now 1000}))
 
 (defn receiver-step [state event]
-  (transfer/handler state event {:now 1000}))
+  (transfer/handler
+   state
+   (cond-> event
+     (:from event) (assoc :from-authority authority))
+   {:now 1000}))
 
 (defn inbound [type frame]
   {:type type

@@ -1,10 +1,10 @@
 # Resilient blob-store profile
 
 Status: experimental implementation draft. Portable placement, manifests,
-signed lifecycle statements, bounded sender/receiver transfer machines and a
-crash-safe lifecycle journal exist, but no released runtime advertises the
-capability. This is not yet a durability or data-protection claim of the Netz
-release.
+signed lifecycle statements, bounded sender/receiver transfer machines, a
+crash-safe lifecycle journal and a JVM Kabel/Noise/file-store runtime exist.
+The capability remains explicit opt-in and is not advertised by default. This
+is not yet a durability or data-protection claim of the Netz release.
 
 ## Scope
 
@@ -180,6 +180,34 @@ scrubbing, and inventory exchange remain separate gates; until they land the
 reference adapter can accumulate uninstalled staged pieces. The JVM adapter is
 an executable conformance reference, not yet the Node/browser/Python storage
 implementation.
+
+### Authenticated runtime binding
+
+`netz.replication.runtime` attaches the sender and receiver machines to the
+same per-connection Kabel middleware path as the overlay. The generic extension
+dispatcher contributes only authenticated connection facts, capability
+checking, the existing decoded-value/rate limits, ordered delivery and
+disconnect notification. Blob policy and storage do not become Kabel concerns.
+
+Both endpoints must explicitly add `netz/blob-replication/1` to their Noise
+supported-capability set before connecting. Installing the runtime alone does
+not advertise it, and `replicate!` refuses before creating a sender session when
+the current connection did not negotiate the exact capability.
+
+The receiver must supply `:authorize-offer!`. This asynchronous callback sees
+the verified retention statement, its frame, routing peer and authenticated
+full Authority ID. It may yield true only after checking the controller and
+layout against deployment policy and durably accepting the lifecycle record.
+A valid signature is evidence of who signed a statement, not authority to store
+it; the default callback therefore rejects every offer. Invalid signatures and
+malformed extension frames close the connection.
+
+Storage operations preserve machine backpressure. Each piece is ACKed only
+after the store's stage channel succeeds, a stored receipt is signed only after
+complete installation at the requested persistence level, and the sender's
+controller callback runs only after the verified receipt has been durably
+recorded. A bounded single event loop serializes inbound protocol decisions;
+the pure machines retain their own session and timeout bounds.
 
 ## Read and repair protocol
 
@@ -361,9 +389,9 @@ three process IDs represent three independent failure domains.
    resurrection-prevention invariants.
 4. [done] Implement the bounded pure sender, including one-piece backpressure,
    receipt fencing and persist-before-quorum handoff.
-5. [JVM done] Implement durable file staging/install and signed-receipt replay;
-   add Node/browser storage implementations and the Kabel/Noise session
-   binding.
+5. [JVM done] Implement durable file staging/install, signed-receipt replay and
+   the explicit capability-gated Kabel/Noise binding; add Node/browser storage
+   implementations and a production lifecycle-policy adapter.
 6. Add scrubbing, paginated inventory and repair scheduling.
 7. Publish the optional `konserve-netz` adapter only after its stream/batch
    semantics are explicit.

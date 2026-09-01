@@ -257,9 +257,11 @@
   (if (= side :sender)
     (case (get frame "type")
       "blob/offer" {:type :transfer/authorized-offer
-                    :from :sender :frame frame}
-      "blob/piece" {:type :transfer/piece :from :sender :frame frame}
-      "blob/commit" {:type :transfer/commit :from :sender :frame frame})
+                    :from :sender :from-authority authority :frame frame}
+      "blob/piece" {:type :transfer/piece
+                    :from :sender :from-authority authority :frame frame}
+      "blob/commit" {:type :transfer/commit
+                     :from :sender :from-authority authority :frame frame})
     (case (get frame "type")
       "blob/need" {:type :transfer/need
                    :from :receiver :from-authority authority :frame frame}

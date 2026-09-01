@@ -133,7 +133,12 @@ This extension is not part of the alpha interoperability claim yet.
       same-revision equivocation evidence, expiry, deletion retry, absorbing
       tombstones, and persist-before-emit deletion receipts. Simulator tests
       cover crash recovery and bulk expiry without sockets.
-- [ ] Implement the real Kabel/Noise transfer runtime, Node/browser durable
+- [x] Implement the JVM Kabel/Noise transfer runtime through a generic
+      capability-gated overlay extension dispatcher. Real-carrier tests cover
+      explicit negotiation, multi-piece fsync installation, policy rejection,
+      invalid-signature disconnect, receipt persistence and unsupported-peer
+      refusal. The capability remains absent from Noise defaults.
+- [ ] Implement a production lifecycle-policy adapter, Node/browser durable
       storage, scrubbing, inventory exchange and operational restart recovery.
 - [ ] Decide transparent Konserve wrapper semantics for binary streams,
       multi-key root-last batches, nested updates and read repair.
