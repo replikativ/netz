@@ -157,7 +157,9 @@
     (let [port (swap! port-counter inc)
           url (str "ws://localhost:" port)
           capabilities (conj noise/default-capabilities
-                             replication-wire/capability)
+                             replication-wire/capability
+                             overlay-runtime/extension-carrier-capability
+                             wire/profile-capability)
           server-identity (<?? S (identity/generate-identity))
           client-identity (<?? S (identity/generate-identity))
           server (assoc (start-server url server-identity capabilities)
@@ -275,7 +277,9 @@
     (let [port (swap! port-counter inc)
           url (str "ws://localhost:" port)
           capabilities (conj noise/default-capabilities
-                             replication-wire/capability)
+                             replication-wire/capability
+                             overlay-runtime/extension-carrier-capability
+                             wire/profile-capability)
           server-identity (<?? S (identity/generate-identity))
           client-identity (<?? S (identity/generate-identity))
           server (assoc (start-server url server-identity capabilities)

@@ -148,6 +148,13 @@ This extension is not part of the alpha interoperability claim yet.
       explicit negotiation, multi-piece fsync installation, policy rejection,
       invalid-signature disconnect, receipt persistence and unsupported-peer
       refusal. The capability remains absent from Noise defaults.
+- [x] Bind named extensions to the language-neutral wire profile with the
+      separately negotiated `netz/extension-cbor/1` carrier and a closed
+      deterministic inner envelope. JVM/JavaScript/Python pin identical
+      preferred bytes; negotiated JVM transfers use the portable path while
+      older Clojure peers retain an explicit transitional fallback. Python
+      enforces the transcript capability set and exposes bounded carrier codecs
+      for its secure WebSocket client, but not yet the reconnecting runtime.
 - [x] Implement a portable production lifecycle-policy adapter which restores
       before authorization, journals the exact retention statement before byte
       transfer, verifies reconciled lease/deletion envelopes, and fails closed
@@ -240,7 +247,10 @@ This extension is not part of the alpha interoperability claim yet.
       self-verifying envelope, and bounded Python ordered receiver now exist.
 - [ ] Route handshake, dissemination, content, and sync runtime messages through
       `netz.wire` rather than native Clojure values. Strict sync-frame conversion
-      exists, but is not enabled without capability negotiation.
+      exists, but is not enabled without capability negotiation. Named extension
+      traffic now uses the portable carrier when both the wire profile and its
+      dedicated carrier capability are selected; this does not overstate the
+      remaining base-overlay work.
 - [x] Add canonical identity, publication signature and malformed-input
       fixtures.
 - [x] Implement cryptographically bound capability/version negotiation in the

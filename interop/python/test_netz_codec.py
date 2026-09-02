@@ -37,12 +37,98 @@ from netz_protocol.publication import (
     verify_publication,
 )
 from netz_protocol.dissemination import OrderedReceiver, Publisher
+from netz_protocol.extension import (
+    EXTENSION_CARRIER_CAPABILITY,
+    ExtensionError,
+    WIRE_PROFILE_CAPABILITY,
+    decode_extension_envelope,
+    decode_extension_frame,
+    encode_extension_envelope,
+    encode_extension_frame,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 class CodecTest(unittest.TestCase):
+    def test_shared_portable_extension_carrier(self):
+        fixture = json.loads(
+            (ROOT / "spec/fixtures/extension-envelope-1.json").read_text())
+        diagnostic = fixture["diagnostic"]
+        payload_diagnostic = diagnostic["payload"]
+        payload = {
+            "v": payload_diagnostic["v"],
+            "type": payload_diagnostic["type"],
+            "session": bytes.fromhex(payload_diagnostic["session_hex"]),
+            "attempt": payload_diagnostic["attempt"],
+            "need": bytes.fromhex(payload_diagnostic["need_hex"]),
+        }
+        selected = {
+            WIRE_PROFILE_CAPABILITY,
+            EXTENSION_CARRIER_CAPABILITY,
+            diagnostic["capability"],
+        }
+        envelope = encode_extension_envelope(diagnostic["capability"], payload)
+        frame = encode_extension_frame(
+            diagnostic["capability"], payload,
+            selected_capabilities=selected,
+        )
+        self.assertEqual(fixture["envelope_cbor_hex"], envelope.hex())
+        self.assertEqual(fixture["carrier_cbor_hex"], frame.hex())
+        self.assertEqual((diagnostic["capability"], payload),
+                         decode_extension_envelope(envelope))
+        self.assertEqual((diagnostic["capability"], payload),
+                         decode_extension_frame(
+                             frame, selected_capabilities=selected))
+
+        non_minimal_outer = b"\x98\x02" + frame[1:]
+        self.assertEqual(
+            (diagnostic["capability"], payload),
+            decode_extension_frame(
+                non_minimal_outer, selected_capabilities=selected),
+        )
+        marker = EXTENSION_CARRIER_CAPABILITY.encode("ascii")
+        indefinite_outer = (b"\x9f\x7f" + bytes([0x60 + len(marker)])
+                            + marker + b"\xff\x5f\x58" + bytes([len(envelope)])
+                            + envelope + b"\xff\xff")
+        self.assertEqual(
+            (diagnostic["capability"], payload),
+            decode_extension_frame(
+                indefinite_outer, selected_capabilities=selected),
+        )
+
+        large_payload = {"v": 1, "data": b"x" * (1024 * 1024)}
+        large_frame = encode_extension_frame(
+            diagnostic["capability"], large_payload,
+            selected_capabilities=selected,
+        )
+        self.assertEqual(
+            (diagnostic["capability"], large_payload),
+            decode_extension_frame(
+                large_frame, selected_capabilities=selected),
+        )
+
+        with self.assertRaises(ExtensionError):
+            encode_extension_envelope("example/é", {})
+        with self.assertRaises(ExtensionError):
+            decode_extension_frame(
+                dumps(["not-netz", envelope]),
+                selected_capabilities=selected,
+            )
+        with self.assertRaises(ExtensionError):
+            decode_extension_frame(
+                frame,
+                selected_capabilities={WIRE_PROFILE_CAPABILITY,
+                                       diagnostic["capability"]},
+            )
+        with self.assertRaises(ExtensionError):
+            decode_extension_envelope(dumps({
+                "v": 1, "type": "netz/extension",
+                "capability": "example/1", "payload": {},
+                "extension": True,
+            }))
+
     def test_installed_package_facade(self):
         self.assertEqual(dumps({"v": 1}), package_dumps({"v": 1}))
 

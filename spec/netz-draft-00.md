@@ -407,8 +407,10 @@ uses `netz.wire/sync-frame->wire` and `sync-frame-from-wire` as a strict
 boundary. These functions require opaque profile fields to be byte strings and
 convert the internal frontier map to the canonical array; they never stringify
 arbitrary Clojure values. Transport adapters MUST cross this boundary only
-after negotiating profile 1. The native Kabel runtime has not yet made that
-negotiation, so the existence of these codecs is not an interoperability claim.
+after negotiating profile 1. The native Kabel runtime currently applies this
+boundary to named extension traffic; its base overlay, dissemination, content,
+and synchronization frames remain transitional native values, so the existence
+of these codecs is not yet a complete runtime interoperability claim.
 The Python reference exposes the same pure receiver plus a bounded sender that
 accepts exact `sync/open` frames, enforces the cumulative-ACK chunk window, and
 emits `sync/done` only after all transmitted chunks are acknowledged.
@@ -471,6 +473,55 @@ before a Clojure implementation replaces its transitional native Kabel
 control values. Implementations MUST NOT reinterpret the older `netz/1`
 capability as this wire profile; doing so would make an existing connection
 appear compatible while changing every decoded message shape.
+
+### 11.1 Portable extension carrier
+
+An authenticated Kabel connection that negotiated `wire/netz-cbor/1`,
+`netz/extension-cbor/1`, and a named extension capability carries extension
+messages as the CBOR array:
+
+~~~text
+["netz/extension-cbor/1", <envelope-bytes>]
+~~~
+
+`envelope-bytes` is a byte string containing the Core Deterministic Encoding
+of this closed map:
+
+~~~text
+{
+  "v": 1,
+  "type": "netz/extension",
+  "capability": <the exact negotiated capability>,
+  "payload": <the extension frame>
+}
+~~~
+
+The array marker is reserved on a connection that selected the carrier
+capability. `netz/extension-cbor/1` is independently negotiated so older peers
+that already advertise the wire and application-extension capabilities keep
+their prior framing rather than being silently reinterpreted.
+
+The outer array belongs to the general Kabel CBOR carrier, not the deterministic
+profile-1 control value. Producers SHOULD use its preferred deterministic
+encoding pinned by the fixture, but receivers MUST accept any well-formed CBOR
+value that decodes to exactly the marker text and envelope byte string, including
+non-minimal lengths and indefinite arrays/strings. This matches Kabel decoders
+that expose the decoded carrier value. The inner envelope bytes MUST use Core
+Deterministic Encoding and remain the cross-language conformance boundary.
+
+The receiver MUST reject a malformed carrier, non-deterministic inner bytes,
+unknown field, invalid capability name, capability not selected by the Noise
+transcript, unknown local handler, or handler-invalid payload by closing the
+connection. The carrier uses the same authenticated connection identity,
+rate-limit, bounded queue, and disconnect lifecycle as native overlay frames.
+
+The inner byte string prevents Kabel's host-language CBOR options from becoming
+the canonicalization boundary. The typed outer array, rather than a naked byte
+string, leaves ordinary application byte values unclaimed. Its preferred
+serializer-14 payload is pinned by `fixtures/extension-envelope-1.json`. A
+transitional Clojure peer without the carrier capability continues to use the
+native keyword-map wrapper; independent implementations MUST require all three
+capabilities and MUST NOT accept that wrapper.
 
 ## 12. Conformance and stability gate
 

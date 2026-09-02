@@ -3,12 +3,14 @@
 
   Effects are injected, so these run without opening a socket. The real-wire
   behaviour is covered by `netz.overlay.integration-test`."
-  (:require [clojure.test :refer [deftest testing is are]]
+  (:require [boring.core :as boring]
+            [clojure.test :refer [deftest testing is are]]
+            [netz.identity :as id]
             [netz.overlay.runtime :as rt]
+            [netz.wire :as wire]
             #?@(:clj [[netz.dissemination :as d]
-                      [netz.identity :as id]
                       [superv.async :refer [S <??]]
-                      [clojure.core.async :refer [chan <!! >!!]]])))
+                      [clojure.core.async :refer [alts!! chan <!! >!! timeout]]])))
 
 (defn- recording-effects
   "Effects that record instead of acting."
@@ -152,6 +154,28 @@
                {:type rt/frame-type :payload {"type" "example"}}]]
              @log)))
 
+    (testing "wire profile alone preserves the transitional native carrier"
+      (swap! (:netz.overlay/connections @peer)
+             update-in [:facts :remote :capabilities]
+             conj wire/profile-capability)
+      (reset! log [])
+      (is (true? (rt/send-extension!
+                  node :remote "example/1" {"type" "example"})))
+      (is (= rt/frame-type (:type (nth (first @log) 2)))))
+
+    (testing "dedicated carrier negotiation selects the portable envelope"
+      (swap! (:netz.overlay/connections @peer)
+             update-in [:facts :remote :capabilities]
+             conj rt/extension-carrier-capability)
+      (reset! log [])
+      (is (true? (rt/send-extension!
+                  node :remote "example/1" {"type" "example"})))
+      (let [[_ _ carrier] (first @log)
+            decoded (rt/decode-extension-envelope (second carrier))]
+        (is (rt/extension-carrier? carrier))
+        (is (= "example/1" (:capability decoded)))
+        (is (= {"type" "example"} (:payload decoded)))))
+
     (testing "registration and cleanup are unambiguous and idempotent"
       (is (thrown? #?(:clj Throwable :cljs :default)
                    (rt/register-extension! node :example handler)))
@@ -163,6 +187,128 @@
     (testing "extensions use the overlay's ordinary disconnect effect"
       (rt/disconnect-peer! node :remote)
       (is (= [:disconnect :remote] (last @log))))))
+
+(def extension-fixture
+  {"v" 1
+   "type" "blob/need"
+   "session" (id/hex->bytes "000102030405060708090a0b0c0d0e0f")
+   "attempt" 0
+   "need" (id/hex->bytes "05")})
+
+(def extension-envelope-hex
+  "a461760164747970656e6e65747a2f657874656e73696f6e677061796c6f6164a5617601646e6565644105647479706569626c6f622f6e65656467617474656d7074006773657373696f6e50000102030405060708090a0b0c0d0e0f6a6361706162696c697479776e65747a2f626c6f622d7265706c69636174696f6e2f31")
+
+(def extension-carrier-hex
+  "82756e65747a2f657874656e73696f6e2d63626f722f31587fa461760164747970656e6e65747a2f657874656e73696f6e677061796c6f6164a5617601646e6565644105647479706569626c6f622f6e65656467617474656d7074006773657373696f6e50000102030405060708090a0b0c0d0e0f6a6361706162696c697479776e65747a2f626c6f622d7265706c69636174696f6e2f31")
+
+(def extension-carrier-indefinite-hex
+  "9f7f756e65747a2f657874656e73696f6e2d63626f722f31ff5f587fa461760164747970656e6e65747a2f657874656e73696f6e677061796c6f6164a5617601646e6565644105647479706569626c6f622f6e65656467617474656d7074006773657373696f6e50000102030405060708090a0b0c0d0e0f6a6361706162696c697479776e65747a2f626c6f622d7265706c69636174696f6e2f31ffff")
+
+(deftest portable-extension-envelope-known-answer
+  (let [capability "netz/blob-replication/1"
+        encoded (rt/encode-extension-envelope capability extension-fixture)
+        carrier (rt/extension-carrier capability extension-fixture)
+        decoded (rt/decode-extension-envelope encoded)]
+    (is (= extension-envelope-hex (id/bytes->hex encoded)))
+    (is (= extension-carrier-hex
+           (id/bytes->hex (wire/encode-canonical carrier))))
+    (is (= capability (:capability decoded)))
+    (is (= (dissoc extension-fixture "session" "need")
+           (dissoc (:payload decoded) "session" "need")))
+    (is (id/bufs= (get extension-fixture "session")
+                  (get-in decoded [:payload "session"])))
+    (is (id/bufs= (get extension-fixture "need")
+                  (get-in decoded [:payload "need"]))))
+
+  (testing "the portable boundary is closed and capability names are ASCII"
+    (is (thrown? #?(:clj Throwable :cljs :default)
+                 (rt/encode-extension-envelope "example/é" {})))
+    (is (thrown? #?(:clj Throwable :cljs :default)
+                 (rt/decode-extension-envelope
+                  (wire/encode-canonical
+                   {"v" 1 "type" rt/extension-envelope-type
+                    "capability" "example/1" "payload" {}
+                    "extension" true}))))))
+
+(deftest portable-extension-outer-cbor-is-a-semantic-carrier
+  (testing "JVM and JavaScript accept preferred, non-minimal and indefinite forms"
+    (doseq [hex [extension-carrier-hex
+                 (str "9802" (subs extension-carrier-hex 2))
+                 extension-carrier-indefinite-hex]]
+      (let [carrier (boring/decode (id/hex->bytes hex) {:stringref false})
+            decoded (rt/decode-extension-envelope (second carrier))]
+        (is (rt/extension-carrier? carrier))
+        (is (= "netz/blob-replication/1" (:capability decoded)))))))
+
+#?(:clj
+   (defn- assert-portable-extension-closes!
+     [handler capabilities carrier]
+     (let [local (<!! (id/generate-identity))
+           remote (<!! (id/generate-identity))
+           remote-record (<!! (id/sign-record remote [] 1))
+           remote-id (id/peer-id (:genesis remote))
+           authenticated-context
+           (atom {:netz.transport.noise/authenticated-record remote-record
+                  :netz.transport.noise/authenticated-routing-id remote-id
+                  :kabel.transport/authenticated-authority
+                  (id/authority-id (:genesis remote))
+                  :kabel.transport/negotiated-capabilities capabilities})
+           ctx (runtime-with [] (atom []))
+           peer (atom {})
+           in (chan)
+           out (chan)
+           node {:ctx ctx :peer peer}]
+       (rt/register-extension! node :example handler)
+       ((rt/middleware
+         {:ctx ctx :identity local :addresses [] :seq-no 1
+          :authenticated-context-fn (constantly authenticated-context)})
+        [S peer [in out]])
+       (>!! in carrier)
+       (let [[value port] (alts!! [out (timeout 1000)])]
+         (is (= out port) "hostile portable carrier did not close its connection")
+         (is (nil? value))))))
+
+#?(:clj
+   (deftest hostile-portable-extension-input-fails-closed
+     (let [base-capabilities
+           #{wire/profile-capability rt/extension-carrier-capability}
+           payload {"type" "example"}
+           normal-handler
+           {:capability "example/1"
+            :match? #(= "example" (get % "type"))
+            :valid? map?
+            :receive! (fn [_ _ _] true)}]
+       (testing "the named application capability is independently required"
+         (assert-portable-extension-closes!
+          normal-handler base-capabilities
+          (rt/extension-carrier "example/1" payload)))
+
+       (testing "unknown named handlers are rejected"
+         (assert-portable-extension-closes!
+          normal-handler (conj base-capabilities "unknown/1")
+          (rt/extension-carrier "unknown/1" {"type" "unknown"})))
+
+       (testing "malformed deterministic inner envelopes are rejected"
+         (assert-portable-extension-closes!
+          normal-handler (conj base-capabilities "example/1")
+          [rt/extension-carrier-type (id/hex->bytes "00")]))
+
+       (testing "malformed reserved outer carrier shapes are rejected"
+         (assert-portable-extension-closes!
+          normal-handler (conj base-capabilities "example/1")
+          [rt/extension-carrier-type]))
+
+       (testing "a handler refusal closes the connection"
+         (assert-portable-extension-closes!
+          (assoc normal-handler :receive! (fn [_ _ _] false))
+          (conj base-capabilities "example/1")
+          (rt/extension-carrier "example/1" payload)))
+
+       (testing "extension predicate exceptions close instead of looping"
+         (assert-portable-extension-closes!
+          (assoc normal-handler :match? (fn [_] (throw (ex-info "boom" {}))))
+          (conj base-capabilities "example/1")
+          (rt/extension-carrier "example/1" payload))))))
 
 #?(:clj
    (deftest publisher-authentication
@@ -242,7 +388,10 @@
   (testing "overlay frames are distinguishable from application messages"
     (is (rt/overlay-message? (rt/frame {:type :dial})))
     (is (rt/overlay-message? {:type rt/hello-type :record {}}))
+    (is (rt/overlay-message?
+         (rt/extension-carrier "example/1" {"type" "example"})))
     (is (not (rt/overlay-message? {:type :app/thing})))
+    (is (not (rt/overlay-message? ["application/vector" (id/hex->bytes "00")])))
     (is (not (rt/overlay-message? "a string")))
     (is (not (rt/overlay-message? nil)))))
 

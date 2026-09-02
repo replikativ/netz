@@ -510,6 +510,11 @@ The transport routing peer need not itself be the controller, but its full
 authenticated Authority is an input to policy and every later session frame is
 bound to that same connection. Invalid signatures, non-negotiated extension
 frames and extension-queue overflow fail closed by disconnecting the peer.
+Independent implementations use the portable extension carrier in Netz
+draft-00 Section 11.1 and therefore require both `wire/netz-cbor/1` and
+`netz/extension-cbor/1` in addition to `netz/blob-replication/1`. The named
+envelope capability MUST exactly equal the blob capability; payload-shape
+matching alone is not negotiation.
 
 The receiver requests missing pieces with a bitset: bit index 0 is the most
 significant bit of byte 0, and a set bit means "needed". Unused trailing bits

@@ -138,10 +138,13 @@ publication, `sync/open`, and `sync/done` fixtures. The Python package also has
 a real secure WebSocket round trip, bounded ordered publication receiver, and
 one-session durable-blob sender/receiver. JVM, JavaScript and Python pin the
 same canonical need/piece/ACK/commit trace. This proves the byte, signature,
-carrier, receiving-session and blob flow-control shapes. A complete portable
-runtime still needs negotiated codec routing, outbound Python sync/repair
-orchestration, content exchange, transfer carrier orchestration, and
-independent JVM/Python application-session tests.
+carrier, receiving-session and blob flow-control shapes. Named extensions now
+also have an exact capability-bound carrier fixture and the JVM runtime selects
+it after separate wire-profile and carrier negotiation; Python exposes both
+halves of that codec. A
+complete portable runtime still needs base-overlay codec routing, outbound
+Python sync/repair and blob-transfer orchestration, content exchange, and an
+independent JVM/Python application-session test.
 
 ## Boring and the CBOR data model
 

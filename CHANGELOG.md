@@ -83,6 +83,10 @@ may make incompatible protocol changes.
   its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.
   The remaining storage and network bindings stay gated in `RELEASE.md`.
+- Added a negotiated portable extension carrier with a deterministic closed
+  text-key envelope, exact capability binding, fail-closed dispatch, shared
+  JVM/JavaScript/Python fixture bytes, Python encode/decode APIs, and an
+  explicit native fallback for transitional Clojure-only connections.
 - Added the exact `Noise_XX_25519_AESGCM_SHA256` direct Kabel carrier with
   full-Authority target binding, transcript-bound capability negotiation,
   authenticated serializer-14 envelopes, bounded fragmentation, and shared
