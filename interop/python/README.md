@@ -54,7 +54,11 @@ needed to build that bounded reconnecting adapter. The separately installed
 package is exercised by `test-mixed/python/mixed_blob_sender.py`, an independent
 conformance peer: CI runs it through authenticated Noise/Kabel against the JVM
 fsync receiver and requires a verified, fsynced receipt before it exits
-successfully.
+successfully. `mixed_blob_receiver.py` tests the reverse fetch path through the
+Python fsync repository and sends its signed receipt to the JVM journal. Its
+minimal test-only controller fsyncs the exact admitted retention envelope before
+requesting bytes; it does not replace the reusable lifecycle/carrier runtime
+described above.
 
 This does not replace a full CBOR implementation for application values.
 Application payloads are opaque bytes and may use Boring's registered tags;

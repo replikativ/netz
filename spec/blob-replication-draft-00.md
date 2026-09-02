@@ -545,6 +545,16 @@ named in the deployment. Only then may it issue a signed storage receipt. Mere
 network delivery, an accepted offer, a queued write or a partially installed
 manifest is not an acknowledgement.
 
+`blob/stored` has no reciprocal receipt ACK in draft-00. The receiver may close
+its local session after sending it, but transport send completion does not prove
+that the coordinator durably recorded it. If the connection closes first, the
+controller retains missing work and a later fenced retry causes an already
+installed receiver to reverify the object and reissue a fresh receipt. A client
+that wants one-shot confirmation SHOULD keep the connection open until an
+application/controller signal confirms persistence. A future wire revision may
+add an explicit receipt ACK; it MUST be capability/version negotiated rather
+than inferred from WebSocket close or write completion.
+
 `fixtures/blob-statements-1.json` pins the retention transcript, Ed25519
 signature, complete canonical offer/fetch hashes, and the need/piece/ACK/commit
 transfer trace across JVM, JavaScript and Python.

@@ -81,6 +81,11 @@ may make incompatible protocol changes.
   A dedicated mixed-runtime CI test now drives the Python sender across an
   authenticated Noise/Kabel WebSocket into the JVM fsync repository, verifies
   the JVM-signed receipt in Python, and fsyncs it before sender completion.
+  The reverse fetch path serves an installed JVM object into Python's fsync
+  repository, returns a Python-signed receipt to the JVM journal, and reopens
+  the Python-written repository through the JVM adapter. The reverse test
+  fsyncs its exact admitted retention intent before requesting bytes, while
+  the provider independently pins the authorized requester and object scope.
   JVM, JavaScript and Python pin the same canonical need/piece/ACK/commit trace.
   The explicit Konserve immutable-write seam now fails before network work when
   its local commit fails and delivers thrown replication errors to callers.
