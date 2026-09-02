@@ -6,8 +6,8 @@ may make incompatible protocol changes.
 
 ## 0.1.0-alpha.1 — unreleased
 
-- Added a separately negotiated portable `netz/sync/1` carrier path and a real
-  Python receiver/JVM sender synchronization test. Portable bytes16 sessions
+- Added a separately negotiated portable `netz/sync/1` carrier path and real
+  bidirectional Python/JVM synchronization tests. Portable bytes16 sessions
   are now keyed by tagged content rather than JVM array identity, and malformed
   negotiated sync payloads close the connection. Portable reads are
   deny-by-default behind authenticated Authority/topic/profile authorization;

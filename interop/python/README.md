@@ -61,10 +61,12 @@ requesting bytes; it does not replace the reusable lifecycle/carrier runtime
 described above. The same test stops one process after a piece fsync but before
 ACK, then proves that a fresh process/session requests only the missing tail.
 `mixed_sync_receiver.py` independently opens `netz/sync/1` through the same
-negotiated carrier and atomically joins a JVM-provided reference state. It is a
-one-shot conformance peer rather than reconnecting application orchestration.
-The JVM fixture explicitly authorizes that Python peer's full Authority ID,
-topic and profile; capability negotiation alone never grants access to state.
+negotiated carrier and atomically joins a JVM-provided reference state;
+`mixed_sync_sender.py` serves the inverse JVM-initiated pull and waits for its
+cumulative ACK before emitting `sync/done`. They are one-shot conformance peers
+rather than reconnecting application orchestration. Each provider pins the
+requester's full Authority ID, topic and profile; capability negotiation alone
+never grants access to state.
 
 This does not replace a full CBOR implementation for application values.
 Application payloads are opaque bytes and may use Boring's registered tags;

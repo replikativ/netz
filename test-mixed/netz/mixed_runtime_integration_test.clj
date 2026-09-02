@@ -33,6 +33,9 @@
 (def ^:private python-sync-authority
   "dba4644c8e9b0ded79d5ef00569cb3841053b197c2b528b55ad8e1857085e56a")
 
+(def ^:private python-sync-peer-id
+  #uuid "dba4644c-8e9b-0ded-79d5-ef00569cb384")
+
 (defn- mixed-payload []
   (let [payload (byte-array (+ (bit-shift-left 1 20) 137))]
     (dotimes [index (alength payload)]
@@ -197,6 +200,28 @@
   (let [python (or (System/getenv "NETZ_PYTHON") "python3")
         arguments
         [python "test-mixed/python/mixed_sync_receiver.py"
+         "--uri" url
+         "--remote-authority" (identity/bytes->hex server-authority)]
+        builder (doto (ProcessBuilder. ^java.util.List arguments)
+                  (.redirectErrorStream true))
+        process (.start builder)
+        stream (.getInputStream process)
+        output (future (slurp stream))]
+    (try
+      (let [finished? (.waitFor process timeout-seconds TimeUnit/SECONDS)]
+        (when-not finished? (stop-process! process))
+        {:exit (when finished? (.exitValue process))
+         :output (deref output 5000 "process output did not close")
+         :timed-out? (not finished?)})
+      (finally
+        (stop-process! process)
+        (.close stream)
+        (future-cancel output)))))
+
+(defn- run-python-sync-sender [url server-authority timeout-seconds]
+  (let [python (or (System/getenv "NETZ_PYTHON") "python3")
+        arguments
+        [python "test-mixed/python/mixed_sync_sender.py"
          "--uri" url
          "--remote-authority" (identity/bytes->hex server-authority)]
         builder (doto (ProcessBuilder. ^java.util.List arguments)
@@ -452,5 +477,60 @@
             "JVM portable sync sender did not complete")
         (is (= 1 (get-in (overlay-runtime/overlay-state (:node server))
                          [:sync :stats :chunks-sent]))))
+      (finally
+        (stop-node! server)))))
+
+(deftest jvm-receiver-pulls-portable-sync-from-python
+  (let [port (swap! port-counter inc)
+        url (str "ws://localhost:" port)
+        capabilities (conj noise/default-capabilities
+                           wire/profile-capability
+                           overlay-runtime/extension-carrier-capability
+                           sync/capability)
+        server-identity (<?? S (identity/generate-identity))
+        server (start-server
+                url server-identity capabilities
+                {:sync {:profiles {"netz/join-semilattice/1"
+                                   (portable-join-profile)}
+                        :applications {"demo/join" #{"jvm"}}}})
+        server-authority
+        (identity/authority-id-bytes (:genesis server-identity))]
+    (try
+      (let [python-result
+            (future (run-python-sync-sender url server-authority 30))]
+        (is (wait-for
+             10000
+             #(contains? (overlay-runtime/connections (:peer server))
+                         python-sync-peer-id))
+            "Python sync sender did not authenticate")
+        (let [facts (overlay-runtime/connection-info
+                     (:peer server) python-sync-peer-id)]
+          (is (= python-sync-authority (:authority-id facts)))
+          (is (every? (:capabilities facts)
+                      [wire/profile-capability
+                       overlay-runtime/extension-carrier-capability
+                       sync/capability])))
+        (is (true? (overlay-runtime/start-sync!
+                    (:node server) python-sync-peer-id "demo/join"
+                    "netz/join-semilattice/1")))
+        (is (wait-for
+             10000
+             #(= #{"jvm" "python"}
+                  (get-in (overlay-runtime/overlay-state (:node server))
+                          [:sync :applications "demo/join"])))
+            "JVM receiver did not commit Python state")
+        (let [{:keys [exit output timed-out?]}
+              (deref python-result 35000
+                     {:exit nil :output "Python sender future timed out"
+                      :timed-out? true})]
+          (is (false? timed-out?) output)
+          (is (= 0 exit) output)
+          (is (= "NETZ_MIXED_SYNC_SERVED"
+                 (last (remove str/blank? (str/split-lines output))))))
+        (is (= :synchronized
+               (get-in (overlay-runtime/overlay-state (:node server))
+                       [:sync :status "demo/join"])))
+        (is (empty? (get-in (overlay-runtime/overlay-state (:node server))
+                            [:sync :sessions]))))
       (finally
         (stop-node! server)))))
