@@ -142,15 +142,15 @@ carrier, receiving-session and blob flow-control shapes. Named extensions now
 also have an exact capability-bound carrier fixture and the JVM runtime selects
 it after separate wire-profile and carrier negotiation; Python exposes both
 halves of that codec. The separately negotiated `netz/sync/1` path now carries
-strict portable sync frames, and a real Python receiver completes an atomic
-join-semilattice pull from the JVM. Portable sync support is not read
+strict portable sync frames, and real Python/JVM peers complete atomic
+join-semilattice pulls in both directions. Portable sync support is not read
 authorization: the JVM runtime rejects incoming opens by default and its
 `:authorize-sync?` hook receives the authenticated connection facts, topic and
 profile. The negotiated carrier is pinned for the session, preventing native
 schema downgrade or reinterpretation across reconnects. A complete portable
 runtime still needs base membership/dissemination/content codec routing, the
-reverse sync direction, subscription repair and reusable reconnect
-orchestration. A dedicated conformance process now drives a real Python
+subscription repair and reusable reconnect orchestration. A dedicated
+conformance process now drives a real Python
 blob sender through Noise/Kabel and the negotiated portable carrier into the
 JVM fsync receiver, including verified and durably persisted receipt evidence.
 The reverse authenticated fetch drives the JVM sender into Python's fsync
