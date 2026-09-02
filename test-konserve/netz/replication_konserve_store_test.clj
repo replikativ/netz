@@ -6,7 +6,9 @@
             [konserve.memory :refer [new-mem-store]]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.controller-storage :as controller-storage]
             [netz.replication.inventory :as inventory]
+            [netz.replication.intent :as intent]
             [netz.replication.konserve-store :as konserve-store]
             [netz.replication.layout :as layout]
             [netz.replication.layout-runtime :as layout-runtime]
@@ -103,6 +105,14 @@
    "members" [{"authority" authority "domains" {} "enabled" true}]
    "issued_at" 900 "signer" authority})
 
+(defn durable-intent [intent-revision attempt]
+  (intent/make-record
+   (sign-statement layout0)
+   (sign-statement (assoc retention "layout_epoch" 0))
+   (:manifest split)
+   {(identity/bytes->hex authority) attempt}
+   intent-revision))
+
 (deftest pieces-resume-and-install-through-konserve
   (let [underlying (<!! (new-mem-store))
         first-run (fresh-store underlying)
@@ -180,6 +190,60 @@
                                  :max-receipts 1})]
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"configured bound"
                               (await (storage/-recorded-receipts bounded))))))))
+
+(deftest controller-intents-survive-wrapper-restart-and-update
+  (let [underlying (<!! (new-mem-store))
+        store (fresh-store underlying)
+        first-record (durable-intent 0 0)
+        retry-record (durable-intent 1 1)]
+    (is (= :ok
+           (await (controller-storage/-persist-controller-intent!
+                   store (get retention "cluster") (:object-id split)
+                   first-record))))
+    (is (= 1 (count
+              (await (controller-storage/-load-controller-intents
+                      (fresh-store underlying) (get retention "cluster"))))))
+    (is (= :ok
+           (await (controller-storage/-persist-controller-intent!
+                   store (get retention "cluster") (:object-id split)
+                   retry-record))))
+    (let [loaded (first
+                  (await (controller-storage/-load-controller-intents
+                          (fresh-store underlying)
+                          (get retention "cluster"))))]
+      (is (intent/same-record? retry-record loaded))
+      (is (= 1 (get loaded "intent_revision"))))
+
+    (testing "restore scan and record identity fail closed"
+      (let [bounded (konserve-store/new-konserve-blob-store
+                     underlying {:persistence "netz/store/volatile/1"
+                                 :max-controller-intents 1})
+            another-split (blob/split (identity/seq->bytes (range 21))
+                                      {:piece-size 8})
+            another-retention
+            (assoc retention
+                   "object" (:object-id another-split)
+                   "manifest" (:manifest-id another-split)
+                   "layout_epoch" 0)
+            another-record
+            (intent/make-record
+             (sign-statement layout0) (sign-statement another-retention)
+             (:manifest another-split)
+             {(identity/bytes->hex authority) 0} 0)]
+        (is (= :ok
+               (await (controller-storage/-persist-controller-intent!
+                       bounded (get retention "cluster")
+                       (:object-id another-split) another-record))))
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"configured bound"
+             (await (controller-storage/-load-controller-intents
+                     bounded (get retention "cluster"))))))
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo #"Invalid durable controller intent"
+           (await (controller-storage/-persist-controller-intent!
+                   store (get retention "cluster")
+                   (identity/hex->bytes (apply str (repeat 32 "ff")))
+                   retry-record)))))))
 
 (deftest namespaces-and-durability-claims-are-explicit
   (let [underlying (<!! (new-mem-store))

@@ -329,6 +329,16 @@ object intent rather than assumed globally. Verified durable intents restore
 without emitting work, allowing receipt replay to rebuild quorum evidence
 before an explicit repair scan persists its next generation.
 
+`netz.replication.intent` defines the closed local CBOR record for that
+boundary. It embeds the exact signed layout and retention envelopes, transfer
+manifest, sorted per-target attempts and intent revision; restoration
+re-verifies both signatures, controller authorization, every address and the
+derived target set. `PBlobControllerStore` is the asynchronous persistence
+contract. The portable Konserve repository implements bounded, cluster-scoped
+load and atomic replacement and passes JVM/Node restart tests. The scheduler
+which serializes these operations and resolves target Authorities is still the
+next layer.
+
 This keeps Konserve as the common storage abstraction without making ordinary
 Konserve reads remote. An `ensure-local` or later tiered adapter can try local
 Konserve first and explicitly invoke `fetch!`; it must surface unavailable,
