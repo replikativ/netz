@@ -185,8 +185,8 @@ cross-language storage boundary rather than an interoperability claim.
 Session cleanup deliberately does not delete addressed pieces. This is what
 allows a new attempt to resume after a process crash or lost ACK, and it avoids
 deleting a piece shared by several manifests. Lease-aware orphan collection
-and network inventory exchange remain separate gates; until they land the
-reference adapter can accumulate uninstalled staged pieces. Local paginated
+remains a separate gate; until it lands the reference adapter can accumulate
+uninstalled staged pieces. Local paginated
 installed-manifest inventory and full-object scrubbing now exist for the JVM
 file, Python file and portable Konserve adapters. The JVM adapter remains the
 only executable end-to-end transfer reference; Node/browser durable storage
@@ -279,10 +279,11 @@ adapter to contact the deterministic target set and then other known providers.
 The first verified complete value is installed locally and returned. Missing or
 corrupt target replicas are scheduled for repair.
 
-Background repair compares desired placement with durable receipts and
-inventory. Profile 1 may use sorted, paginated object identifiers; a bucketed
-Merkle inventory can replace that representation without changing object
-transfer. Scrubbing re-reads local bytes and verifies their address.
+Background repair compares each durable retention intent with its current,
+fenced receipts. It re-offers that exact intent to a missing target selected by
+the accepted signed layout. This avoids making peer-wide object enumeration a
+dependency of correct repair. Scrubbing re-reads local bytes and verifies their
+address.
 
 `netz.replication.inventory` implements the local half of that contract. Pages
 contain sorted, distinct 32-byte manifest addresses and use an exclusive
@@ -297,8 +298,25 @@ a separate read policy, loads only an installed manifest from its
 Konserve/file repository, and reuses the ordinary
 offer/piece/install/receipt path. A pending request accepts a response only
 from that exact peer and Authority with the exact session, attempt and
-retention envelope. Network inventory exchange and automated repair scheduling
-remain later layers.
+retention envelope.
+
+The same authenticated `blob/offer` is the draft-00 remote repair and audit
+primitive. Offer authorization happens before the receiver checks storage. A
+missing or corrupt installation requests pieces normally. An already-installed
+object is re-verified by the durable store and produces a receipt for the fresh
+attempt without retransmitting its pieces. Only the exact verified receipt,
+after durable coordinator persistence, refreshes evidence. The resulting
+evidence is still point-in-time: periodic retries cannot make an authenticated
+Byzantine replica honest.
+
+The inventory API is deliberately local and administrative. Sending a
+store-wide list would disclose private manifest membership across tenants and
+clusters, while the current marker does not carry enough authority or privacy
+scope to make such disclosure safe. A later authorized batched or Merkle
+protocol can reduce audit traffic, but must define cluster/privacy scoping,
+freshness and replay rules, and resource bounds. It is not a release blocker.
+The durable, bounded scheduler that restores intents and issues targeted
+re-offers remains to be implemented.
 
 This keeps Konserve as the common storage abstraction without making ordinary
 Konserve reads remote. An `ensure-local` or later tiered adapter can try local
@@ -518,10 +536,11 @@ three process IDs represent three independent failure domains.
    best-effort completion. Python shares the JVM piece/marker format but not yet
    its receipt/runtime binding. The lifecycle-policy adapter now has JVM and
    Node Konserve restart tests; add real Node/browser durable-backend tests.
-6. [local store, provider fetch and explicit `ensure-local!` done] Add network
-   inventory exchange and background placement-repair scheduling;
-   authenticated local-first retrieval already reuses the receipt-producing
-   transfer runtime.
+6. [targeted repair protocol chosen; scheduler open] Add durable, bounded
+   background placement-repair scheduling. Authenticated targeted re-offer is
+   the baseline repair/audit primitive; broad or Merkle inventory is only a
+   later privacy-scoped optimization. Local-first retrieval already reuses the
+   receipt-producing transfer runtime.
 7. [portable binding and bounded materializer done] Add the streaming
    application-key/immutable-object adapter over the Konserve transfer
    repository; publish any tiered or transparent `konserve-netz` wrapper only

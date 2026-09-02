@@ -179,9 +179,13 @@ This extension is not part of the alpha interoperability claim yet.
       cluster identity. The procedure preserves the old transcript and
       lifecycle obligations, requires out-of-band authorization and fresh
       retention evidence, and never chooses a branch by arrival order or LWW.
-- [ ] Implement Node/browser durable storage, network inventory exchange,
-      automated repair scheduling, backend erasure, and operational
-      offline-peer reconciliation.
+- [x] Choose authenticated targeted re-offer as the draft remote repair/audit
+      primitive. Local inventory is not exposed over the network; broad or
+      Merkle inventory is a later optimization requiring explicit privacy
+      scope, authorization, freshness and resource bounds.
+- [ ] Implement Node/browser durable storage, durable automated repair
+      scheduling, backend erasure, and operational offline-peer
+      reconciliation.
 - [ ] Implement and validate any later transparent Konserve wrapper semantics
       for binary streams, multi-key root-last batches, nested updates and read
       repair.

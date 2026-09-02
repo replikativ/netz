@@ -215,10 +215,11 @@ placement. A worker can request a chunk from the cheapest observed peer, verify
 and install it in a local Konserve tier, and fall back to object storage or
 recomputation. A ready replica fact is published only after verification.
 
-The Netz receipt and inventory plane can replace ad-hoc peer-copy evidence,
-while pretrained retains model compatibility, scheduling, GPU page placement
-and recomputation policy. Approximate continuation matching never becomes an
-object-integrity rule.
+The Netz receipt and targeted re-offer plane can replace ad-hoc peer-copy
+evidence, while pretrained retains model compatibility, scheduling, GPU page
+placement and recomputation policy. Approximate continuation matching never
+becomes an object-integrity rule. Local inventory remains an administrative
+primitive; peer-wide disclosure is not part of draft-00.
 
 ## Lessons from Git-at-scale systems
 
@@ -367,8 +368,9 @@ reconciliation remain release gates.
 3. Demonstrate Dvergr/Simmis drive replication and one Geschichte pack closure.
 4. Add signed head reconciliation and materialization tests using the existing
    root-log and Spindel workspace gate.
-5. [local inventory/scrub, provider fetch and local-first retrieval done] Add
-   network inventory exchange and background repair scheduling, then expose a
-   tiered Konserve convenience adapter.
+5. [targeted repair protocol chosen; scheduler open] Add durable background
+   repair scheduling over authenticated re-offers, then expose a tiered
+   Konserve convenience adapter. Consider a privacy-scoped batched or Merkle
+   inventory only as a later optimization.
 6. Run independent JVM/Node/Python conformance before advertising the blob
    capability by default.

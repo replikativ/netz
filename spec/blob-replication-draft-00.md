@@ -494,8 +494,34 @@ unsigned bytewise order, without duplicates. Profile 1 pages contain at most
 exclusive cursor. Presence in this inventory is not a durability receipt or an
 integrity proof. `scrub` MUST separately verify the marker address, every piece
 address and length, and the complete domain-separated object address. A
-missing marker is distinct from corruption or IO failure. Network inventory
-exchange is not defined in draft-00.
+missing marker is distinct from corruption or IO failure. This interface is a
+local administrative and repair primitive. An implementation MUST NOT expose
+its results to a peer merely because that peer negotiated
+`netz/blob-replication/1`.
+
+Draft-00 uses an authenticated targeted re-offer as its remote repair and audit
+primitive. For one current retention intent, the coordinator selects an exact
+target from the accepted, non-forked layout and sends that Authority an
+ordinary `blob/offer` with a fresh session and attempt. The receiver MUST apply
+the normal controller, layout, lifecycle and authenticated-peer authorization
+before observing or revealing local storage state. Missing or corrupt pieces
+are then repaired through the ordinary `blob/need` exchange. If the object is
+already installed, the receiver MAY omit the need and piece exchange only
+after re-verifying the marker, pieces, complete object and claimed persistence
+boundary; it then signs a receipt for the new fenced attempt. The coordinator
+MUST verify and durably record that exact receipt before treating the audit or
+repair as successful. A receipt is point-in-time evidence, not proof that a
+Byzantine peer will retain the bytes afterward.
+
+Automatic repair scheduling MUST be driven from durable retention intents,
+resume after restart, bound concurrent sessions and queued work, and use
+bounded retry with backoff. Connection discovery resolves an already selected
+full Authority to a live peer; it MUST NOT change the target or grant storage
+authority. Network-wide inventory exchange is not defined in draft-00. A later
+batched or Merkle extension must define cluster and privacy-domain scoping,
+authorization before existence disclosure, freshness and replay behavior, and
+request, response and computation bounds. It is an optimization, not a
+prerequisite for correct repair.
 
 ## 8. Failure and privacy semantics
 

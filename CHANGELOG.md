@@ -43,7 +43,11 @@ may make incompatible protocol changes.
   Konserve adapter on JVM and JavaScript. The draft defines a detected signed
   controller fork as terminal for that cluster identity and specifies an
   audited rollover which preserves old lifecycle obligations and requires new
-  retention evidence.
+  retention evidence. Draft remote repair and audit now use authenticated
+  targeted re-offers: authorized receivers repair missing pieces or re-verify
+  an existing installation before issuing a freshly fenced receipt. Local
+  inventory is not a network disclosure surface; any later batched or Merkle
+  inventory requires explicit privacy scope and resource bounds.
   The explicit Konserve immutable-write seam now fails before network work when
   its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.
