@@ -90,6 +90,25 @@ jobs:
           command: clojure -X:secure-test :dirs '["test" "test-secure"]'
           no_output_timeout: 10m
 
+  test-mixed:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Install Python for mixed-runtime conformance
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y python3 python3-pip python3-venv
+            python3 -c 'import sys; assert sys.version_info >= (3, 10), sys.version'
+            python3 -m venv /tmp/netz-mixed-venv
+            /tmp/netz-mixed-venv/bin/python -m pip install '.[secure-client]'
+      - run:
+          name: Run JVM/Python durable transfer
+          command: |
+            NETZ_PYTHON=/tmp/netz-mixed-venv/bin/python clojure -X:secure-test:mixed-test :dirs '["test-mixed"]'
+          no_output_timeout: 10m
+
   test-cljs:
     executor: tools/clojurecli
     steps:
@@ -142,6 +161,9 @@ workflows:
           context: dockerhub-deploy
           requires: [setup]
       - test-secure:
+          context: dockerhub-deploy
+          requires: [setup]
+      - test-mixed:
           context: dockerhub-deploy
           requires: [setup]
       - test-cljs:

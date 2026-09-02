@@ -178,9 +178,10 @@ The dependency-free Python `netz_protocol.FileBlobStore` implements the same
 piece and manifest paths, closed marker schema, deterministic CBOR bytes,
 fsync/best-effort profiles, restart/resume, bounded inventory, scrubbing and
 bounded object reads through asynchronous methods. Both implementations pin
-the same `blob-file-store-marker-1.hex` fixture. Python does not yet implement
-the transfer machine, receipt journal or Kabel/Noise blob runtime, so this is a
-cross-language storage boundary rather than an interoperability claim.
+the same `blob-file-store-marker-1.hex` fixture. Python also implements both
+pure transfer machines. It does not yet provide a reusable receipt journal or
+reconnecting Kabel/Noise blob runtime; a dedicated conformance peer composes
+the secure carrier, sender and a fsynced receipt file against the JVM receiver.
 
 Session cleanup deliberately does not delete addressed pieces. This is what
 allows a new attempt to resume after a process crash or lost ACK, and it avoids
@@ -188,9 +189,10 @@ deleting a piece shared by several manifests. Lease-aware orphan collection
 remains a separate gate; until it lands the reference adapter can accumulate
 uninstalled staged pieces. Local paginated
 installed-manifest inventory and full-object scrubbing now exist for the JVM
-file, Python file and portable Konserve adapters. The JVM adapter remains the
-only executable end-to-end transfer reference; Node/browser durable storage
-and the Python transfer binding remain open.
+file, Python file and portable Konserve adapters. The JVM runtime remains the
+complete reusable end-to-end reference. A real Python-to-JVM sender path now
+passes in CI; Node/browser durable storage, the reverse JVM-to-Python path, and
+a reusable Python runtime remain open.
 
 ### Authenticated runtime binding
 
@@ -628,8 +630,9 @@ three process IDs represent three independent failure domains.
    staging/install, signed-receipt replay and the explicit capability-gated
    Kabel/Noise binding. The generic Konserve repository now passes JVM and Node
    memory-store restart/install tests and honestly exposes only volatile or
-   best-effort completion. Python shares the JVM piece/marker format but not yet
-   its receipt/runtime binding. The lifecycle-policy adapter now has JVM and
+   best-effort completion. Python shares the JVM piece/marker format and a real
+   sender-to-JVM conformance binding, but not yet a reusable receipt/runtime
+   layer. The lifecycle-policy adapter now has JVM and
    Node Konserve restart tests; add real Node/browser durable-backend tests.
 6. [known-missing scheduler done] The portable policy runtime reconstructs
    incomplete work from durable intents and receipts, with bounded issue rate,

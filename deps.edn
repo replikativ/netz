@@ -43,6 +43,11 @@
     org.clojure/test.check {:mvn/version "1.1.1"}}
    :exec-fn cognitect.test-runner.api/test}
 
+  ;; A separately provisioned gate starts the Python secure client against a
+  ;; real JVM/http-kit receiver. Keeping its path separate means ordinary JVM
+  ;; users and the secure-only CI job never require a Python installation.
+  :mixed-test {:extra-paths ["test-mixed"]}
+
   ;; The konserve-backed PPeerStore (netz.store.konserve). konserve is the
   ;; consumer's to provide, exactly as kabel keeps storage optional, so the
   ;; test lives on its own path and the default suite never loads it.
