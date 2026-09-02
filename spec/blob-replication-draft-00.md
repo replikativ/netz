@@ -29,12 +29,14 @@ Language bindings SHOULD expose asynchronous equivalents of:
 Placement.rank(layout, object_id) -> [Replica]
 Placement.place(layout, policy, object_id) -> [Replica]
 BlobStore.put(ciphertext, durability) -> DurabilityReceipt
-BlobStore.get(object_id) -> bytes
+BlobStore.ensure_local(binding, retention, providers) -> LocalityResult
+BlobStore.read_installed(binding, max_bytes) -> bytes
 BlobStore.status(object_id) -> ReplicaStatus
 BlobStore.inventory(cursor, limit) -> ManifestPage
 BlobStore.scrub(manifest_id) -> ScrubStatus
 BlobStore.repair(object_id) -> completion
 BlobStore.delete(object_id, authorization) -> DeletionStatus
+ApplicationStore.materialize(binding, verified_bytes) -> InstallResult
 ~~~
 
 The network object is the logical byte sequence presented at this boundary,
@@ -140,6 +142,54 @@ backend-private representation.
 Randomized AEAD ciphertext SHOULD be produced before content addressing when
 plaintext is personal, secret or guessable; a plain hash otherwise reveals
 equality and enables dictionary testing.
+
+### 5.1. Application-object binding
+
+An authenticated application catalog or root MAY bind its own immutable key to
+one Netz object without making that key part of the transfer manifest:
+
+~~~text
+{
+  "v": 1,
+  "type": "blob/application-object",
+  "store_id": <visible ASCII text, 1..256 bytes>,
+  "application_key": <opaque bytes, 1..4096 bytes>,
+  "codec": <visible ASCII text, 1..128 bytes>,
+  "object": <32-byte object address>,
+  "manifest": <32-byte manifest address>
+}
+~~~
+
+This is a closed deterministic-CBOR object. Its optional catalog address is:
+
+~~~text
+binding_id = SHA-256(UTF8("netz/application-object/v1\0") ||
+                        deterministic-CBOR(binding))
+~~~
+
+`store_id` is a logical application namespace, not a backend path or secret.
+`application_key` is deliberately opaque: a drive can use UTF-8 SHA-256 hex,
+while a Datahike profile can use deterministic-CBOR UUID bytes. `codec` names
+the application interpretation of the verified logical bytes.
+`bytes/identity` means the exact object bytes are installed unchanged; other
+codec identifiers require an application profile and allowlist.
+
+The binding MUST be carried by an authenticated and reconciled catalog/root or
+otherwise authorized by equivalent application policy. Possession of a binding
+or object address is not read or write authorization. Before retrieval, the
+binding's object and manifest MUST exactly match the verified retention
+statement. An installer MUST reject an unsupported codec and MUST NOT overwrite
+an existing different value at an immutable application key. It may report
+success only after reaching its claimed local persistence boundary.
+
+Ordinary Konserve `get` remains local. Materialization is an explicit sequence:
+scrub locally, fetch from a caller-authorized provider when needed, scrub the
+installed Netz object, reconstruct and verify its logical bytes, then invoke the
+application installer. The reference small-value API assembles at most 64 MiB
+by default; larger objects require the future bounded streaming source/sink.
+
+`fixtures/application-object-binding-1.json` pins the canonical binding and
+domain-separated address across JVM, JavaScript, and Python.
 
 ## 6. Signed retention and lifecycle statements
 

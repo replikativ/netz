@@ -293,6 +293,18 @@ Provider discovery and eligibility remain inputs from the reconciled signed
 layout; this helper does not turn possession of an object address into read
 authorization.
 
+The next explicit step is implemented by
+`netz.replication.materialization/materialize!`. Its deterministic-CBOR binding
+ties opaque application-key bytes and a codec to the exact object and manifest.
+After `ensure-local!`, it reconstructs and verifies the logical bytes under a
+configurable 64 MiB default bound, then calls an application installer. The
+installer owns codec allowlisting, local key decoding, immutable conflict
+checks and its persistence claim. The binding must be authenticated by the
+catalog/root; Netz does not infer authority from content possession.
+The optional Konserve binary installer implements the baseline
+`bytes/identity` policy with a configured logical-store check, application key
+decoder, serialized conflict detection, idempotence and post-write readback.
+
 Current `netz.content` remains discovery and bounded transfer state. Its working
 set is not a durability catalogue. The replica controller is a separate pure
 state machine which may use content and chunk transfer underneath it.
@@ -471,8 +483,9 @@ three process IDs represent three independent failure domains.
    inventory exchange and background placement-repair scheduling;
    authenticated local-first retrieval already reuses the receipt-producing
    transfer runtime.
-7. Build the explicit application-key/immutable-object adapter over the
-   Konserve transfer repository; publish any tiered or transparent
-   `konserve-netz` wrapper only after its stream/batch semantics are explicit.
+7. [portable binding and bounded materializer done] Add the streaming
+   application-key/immutable-object adapter over the Konserve transfer
+   repository; publish any tiered or transparent `konserve-netz` wrapper only
+   after its stream/batch semantics are explicit.
 8. Add the real JVM/Node/Python three-device conformance campaign.
 9. Enable automatic reclamation only after operational deletion tests.

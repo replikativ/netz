@@ -51,14 +51,25 @@ authenticated provider fetch backed by that installed-manifest operation. It
 does not intercept `konserve/get`: applications or a later tiered adapter
 select a provider and invoke retrieval deliberately.
 
-`netz.replication.read-repair/ensure-local!` is the first reusable distribution
+`netz.replication.read-repair/ensure-local!` provides the reusable distribution
 facade over this boundary. It accepts the same file or Konserve blob repository,
 the reconciled signed retention envelope and an ordered authorized-provider
 list. A healthy local scrub avoids network work; otherwise it tries bounded
 providers and only reports success after the installed object scrubs cleanly.
-It intentionally stops before application-key materialization: the catalog or
-root closure must authenticate the mapping from application key to Netz object
-and choose the application codec.
+
+`netz.replication.materialization/materialize!` adds the explicit application
+boundary. A closed portable binding records the logical store ID, opaque
+application-key bytes, codec, object and manifest. The binding must come from an
+already authenticated catalog/root and must match the retention statement
+before network work begins. Netz then ensures locality, reconstructs and
+re-verifies the logical bytes, and calls an application-owned asynchronous
+installer. This keeps codec allowlisting, immutable-key conflict checks and the
+actual Konserve key representation with the application that understands them.
+The optional `netz.store.konserve-materialization/binary-installer` supplies
+that policy for opaque binary values: it pins one logical store and codec
+allowlist, delegates key decoding to the application, serializes calls, treats
+identical bytes as idempotent, rejects conflicts and verifies each new write by
+reading it back.
 
 ## The object/ref split
 
@@ -350,8 +361,9 @@ reconciliation remain release gates.
    source/sink over a connected Konserve store. The small-value Konserve
    repository and authenticated provider-fetch path are implemented; bounded
    streaming remains.
-2. [generic `ensure-local!` done] Add explicit application-key mapping and
-   materialization; do not yet wrap every `PStore` operation.
+2. [done] Add explicit application-key mapping and bounded small-value
+   materialization; do not wrap every `PStore` operation. Large streams still
+   require the bounded source/sink in item 1.
 3. Demonstrate Dvergr/Simmis drive replication and one Geschichte pack closure.
 4. Add signed head reconciliation and materialization tests using the existing
    root-log and Spindel workspace gate.

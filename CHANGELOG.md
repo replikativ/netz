@@ -26,6 +26,9 @@ may make incompatible protocol changes.
   authorization and exact pending-request fencing. A portable bounded
   `ensure-local!` helper now scrubs local storage, retries caller-selected
   providers and requires a clean post-install scrub before reporting success.
+  A closed application-object binding and bounded explicit materializer now
+  connect authenticated catalog keys/codecs to verified local object bytes;
+  JVM, JavaScript and Python share its deterministic-CBOR fixture.
   The explicit Konserve immutable-write seam now fails before network work when
   its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.

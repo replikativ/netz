@@ -13,6 +13,13 @@ from netz_protocol.blob import (
 )
 from netz_protocol.replication import ReplicationError, place, rank, score
 from netz_protocol.identity import authority_id, genesis
+from netz_protocol.materialization import (
+    MaterializationError,
+    application_binding,
+    binding_address,
+    validate_binding,
+    validate_retention_binding,
+)
 from netz_protocol.replication_wire import (
     ReplicationWireError,
     encode_frame,
@@ -108,6 +115,45 @@ class PortableBlobTest(unittest.TestCase):
                              piece["index"]: piece["data"]
                              for piece in split["pieces"]
                          }))
+
+
+class ApplicationMaterializationBindingTest(unittest.TestCase):
+    def binding_fixture(self):
+        fixture = json.loads((
+            ROOT / "spec/fixtures/application-object-binding-1.json"
+        ).read_text())
+        diagnostic = fixture["diagnostic"]
+        binding = application_binding(
+            store_id=diagnostic["store_id"],
+            application_key=bytes.fromhex(diagnostic["application_key_hex"]),
+            codec=diagnostic["codec"],
+            object_id=bytes.fromhex(diagnostic["object_id_hex"]),
+            manifest_id=bytes.fromhex(diagnostic["manifest_id_hex"]),
+        )
+        return fixture, binding
+
+    def test_shared_binding_fixture(self):
+        fixture, binding = self.binding_fixture()
+        self.assertIs(binding, validate_binding(binding))
+        self.assertEqual(fixture["canonical_cbor_hex"], dumps(binding).hex())
+        self.assertEqual(fixture["binding_id_hex"],
+                         binding_address(binding).hex())
+
+    def test_binding_is_closed_and_must_match_authenticated_retention(self):
+        _, binding = self.binding_fixture()
+        retention = {
+            "type": "blob/retention",
+            "object": binding["object"],
+            "manifest": binding["manifest"],
+        }
+        self.assertIs(binding, validate_retention_binding(binding, retention))
+        with self.assertRaises(MaterializationError):
+            validate_binding({**binding, "extension": True})
+        with self.assertRaises(MaterializationError):
+            validate_binding({**binding, "store_id": "dvergr/drive/é"})
+        with self.assertRaises(MaterializationError):
+            validate_retention_binding(
+                binding, {**retention, "object": b"\x00" * 32})
 
 
 class SignedBlobProtocolTest(unittest.TestCase):

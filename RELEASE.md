@@ -156,6 +156,10 @@ This extension is not part of the alpha interoperability claim yet.
       authenticated providers, scrub after install, and report explicit local,
       fetched or unavailable outcomes. JVM/JavaScript cover retry and
       fail-closed post-install validation.
+- [x] Add the closed application-object binding and explicit bounded
+      materializer. The binding matches an authenticated catalog key/codec to
+      the exact retained object and manifest; JVM/JavaScript/Python share its
+      deterministic-CBOR and domain-separated-address fixture.
 - [ ] Implement Node/browser durable storage, network inventory exchange,
       automated repair scheduling, backend erasure, and operational
       offline-peer reconciliation.
