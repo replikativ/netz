@@ -28,6 +28,9 @@ Language bindings SHOULD expose asynchronous equivalents of:
 ~~~text
 Placement.rank(layout, object_id) -> [Replica]
 Placement.place(layout, policy, object_id) -> [Replica]
+Layout.address(statement) -> bytes32
+Layout.reconcile(state, verified_statement) -> ReconcileResult
+Layout.retention_authorized(state, local_authority, retention) -> boolean
 BlobStore.put(ciphertext, durability) -> DurabilityReceipt
 BlobStore.ensure_local(binding, retention, providers) -> LocalityResult
 BlobStore.read_installed(binding, max_bytes) -> bytes
@@ -43,23 +46,68 @@ The network object is the logical byte sequence presented at this boundary,
 not a Konserve backend's private serialized file. Application data is opaque
 bytes and is not restricted to the control-envelope CBOR subset.
 
-## 3. Verified layout and policy
+## 3. Signed layout, reconfiguration and policy
 
-The placement input is a layout whose authenticity and administrative signer
-have already been verified. A member has:
+Replica authority is carried by a closed `blob/layout` statement inside the
+signed Netz envelope defined in section 6. Its body is:
 
 ~~~text
 {
-  "id": <lowercase 64-hex full Netz Authority ID>,
-  "domains": {<text dimension>: <text value>, ...},
-  "enabled": <boolean, default true>
+  "v": 1, "type": "blob/layout",
+  "cluster": bytes,
+  "epoch": uint,
+  "previous": bytes32,
+  "members": [
+    {
+      "authority": authority_bytes32,
+      "domains": {<visible-ASCII dimension>: <visible-ASCII value>, ...},
+      "enabled": boolean
+    }, ...
+  ],
+  "issued_at": uint,
+  "signer": controller_authority_bytes32
 }
 ~~~
 
-The layout contains `epoch`, an unsigned integer, and at most 32 members with
-unique identifiers. Member array order carries no meaning. A deployment MUST
-bind the policy and layout epoch in its authenticated configuration; signature
-and reconfiguration authority are deployment policy in draft-00.
+There are 1..32 members with unique full Authority IDs. Each member has at most
+16 domain entries. Domain names and values are 1..128 bytes of visible ASCII;
+this deliberately avoids language-dependent Unicode normalization and ordering
+inside an authorization record. `enabled` is mandatory. Member order carries no
+placement priority, but the signed array MUST be sorted by unsigned Authority
+ID bytes so the same membership set has one canonical representation.
+
+The layout address is:
+
+~~~text
+layout_id = SHA-256(UTF8("netz/blob-layout/v1\0") ||
+                   deterministic-CBOR(layout_statement))
+~~~
+
+A deployment configures the exact cluster and controller Authority IDs outside
+peer discovery. After verifying the statement envelope, a replica reconciles
+the body as follows:
+
+1. The first accepted statement MUST have epoch zero and an all-zero
+   `previous` address.
+2. A successor MUST increment the accepted epoch by exactly one and its
+   `previous` value MUST equal the accepted `layout_id`.
+3. The same statement address at the current epoch is an idempotent duplicate.
+   Lower epochs are stale; skipped epochs and bad predecessor links fail closed.
+4. A different valid address at the current epoch is controller equivocation.
+   The replica MUST retain bounded fork evidence and MUST stop layout-based
+   retention admission and further reconfiguration until an operator resolves
+   the fork.
+
+Draft-00 signatures are single-Authority statements, not multisignatures. A
+deployment that permits several controller Authorities MUST externally fence
+them, for example with a single Urd/Raft leader. Learning an Authority through
+membership, pub/sub, or provider discovery never makes it a layout controller
+or replica. The accepted chain MUST cross the deployment's durable boundary
+before its new epoch authorizes retention; the reference pure reconciler does
+not itself provide that storage boundary.
+
+Placement converts each member Authority to its lowercase 64-hex spelling and
+uses the following policy:
 
 The policy contains:
 
@@ -103,7 +151,9 @@ sort by member ID, ascending. Select the first `N` ranked members if they meet
 every domain constraint. Otherwise enumerate rank-preserving `N`-combinations
 and choose the first satisfying set. Search is capped at 250,000 candidates.
 
-The known-answer corpus is `fixtures/blob-placement-1.json`. It pins the
+`fixtures/blob-layout-1.json` pins the closed statement, deterministic CBOR,
+layout address and Ed25519 signature across JVM, JavaScript and Python. The
+placement corpus is `fixtures/blob-placement-1.json`; it pins the
 canonical score input, all scores, complete ranking and selected target set for
 the JVM, JavaScript and Python implementations.
 
@@ -243,9 +293,11 @@ The initial controller statement is:
 }
 ~~~
 
-The configured deployment policy MUST authorize the controller signer and the
-named layout epoch. The retention statement does not make a discovered peer a
-replica and does not replace verification of the signed/configured layout.
+The configured deployment policy MUST authorize the controller signer. The
+current reconciled `blob/layout` MUST match the cluster and named layout epoch,
+and deterministic placement MUST select the receiving replica. The retention
+statement does not make a discovered peer a replica and does not replace the
+durable layout chain.
 
 A controller extends retention without retransmitting placement policy using
 `blob/lease`, which has the common namespace, manifest, object, layout epoch,
@@ -427,9 +479,11 @@ otherwise an offline replica could resurrect bytes from a stale offer.
 ## 9. Required conformance work
 
 Before advertising a durable-blob capability, implementations must additionally
-freeze and test:
+complete and test:
 
-1. the signed/configured layout and reconfiguration transcript;
+1. durable layout-chain restoration and explicit operator recovery from a
+   detected signed fork (the portable signed statement, hash chain, pure
+   reconciliation and admission fence are implemented);
 2. non-JVM durable piece-staging adapters (the bounded pure sender/receiver and
    JVM fsync/atomic-file reference adapter are implemented);
 3. restart recovery against real durable non-memory stores (the portable

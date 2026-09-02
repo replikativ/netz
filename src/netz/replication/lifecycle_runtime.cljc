@@ -7,6 +7,7 @@
   deletion-receipt signing and replay are driven through the same lane, keeping
   crash ordering identical to `netz.replication.lifecycle`."
   (:require [netz.identity :as identity]
+            [netz.replication.layout :as layout]
             [netz.replication.lifecycle :as lifecycle]
             [netz.replication.lifecycle-storage :as lifecycle-storage]
             [netz.replication.wire :as replication-wire]
@@ -117,6 +118,11 @@
       (and (map? request)
            (map? frame)
            (identity/bufs= local (get frame "replica"))
+           (if-let [layout-state-fn (:layout-state-fn ctx)]
+             (layout/retention-authorized? (layout-state-fn)
+                                           local
+                                           (:retention request))
+             true)
            (if-let [admit? (:admit-offer? ctx)]
              (true? (admit? request))
              true)))
@@ -199,14 +205,16 @@
 
   Required options are `:identity`, a `PBlobLifecycleStore`, and the configured
   controller Authority IDs. `:lifecycle-opts` are passed to the pure machine.
-  An optional synchronous `:admit-offer?` adds deployment/layout policy before
-  journal IO; it must not perform blocking work. `:on-deletion-receipt!`
+  An optional synchronous `:layout-state-fn` returns the current reconciled
+  signed-layout state and fails closed unless this replica is a deterministic
+  target. `:admit-offer?` may add further deployment policy before journal IO;
+  neither callback may perform blocking work. `:on-deletion-receipt!`
   receives replayed and newly signed durable deletion receipts.
 
   Call `ready` to observe journal restoration. `offer-authorizer` produces the
   callback expected by `netz.replication.runtime/start!`."
   [{:keys [identity store controllers lifecycle-opts now-fn
-           admit-offer? on-deletion-receipt!]}]
+           layout-state-fn admit-offer? on-deletion-receipt!]}]
   (when-not (and identity
                  (satisfies? lifecycle-storage/PBlobLifecycleStore store)
                  (seq controllers))
@@ -219,6 +227,7 @@
                                                 lifecycle-opts))
              :now-fn (or now-fn #?(:clj #(System/currentTimeMillis)
                                    :cljs #(.now js/Date)))
+             :layout-state-fn layout-state-fn
              :admit-offer? admit-offer?
              :on-deletion-receipt! on-deletion-receipt!
              :events (chan event-capacity)

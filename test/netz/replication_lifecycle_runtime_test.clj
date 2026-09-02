@@ -4,6 +4,7 @@
             [clojure.test :refer [deftest is testing]]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.layout :as layout]
             [netz.replication.lifecycle :as lifecycle]
             [netz.replication.lifecycle-runtime :as lifecycle-runtime]
             [netz.replication.lifecycle-storage :as lifecycle-storage]
@@ -97,6 +98,26 @@
     :retention statement
     :frame {"replica" target}}))
 
+(defn reconciled-layout [authorities]
+  (let [members (->> authorities
+                     (sort-by identity/bytes->hex)
+                     (map-indexed
+                      (fn [index authority]
+                        {"authority" authority
+                         "domains" {"owner" (str "owner-" index)}
+                         "enabled" true}))
+                     vec)
+        statement {"v" 1 "type" "blob/layout"
+                   "cluster" (get retention "cluster")
+                   "epoch" 0
+                   "previous" (identity/hex->bytes
+                               (apply str (repeat 32 "00")))
+                   "members" members "issued_at" 900
+                   "signer" controller}]
+    (:state (layout/reconcile
+             (layout/make-state (get retention "cluster") [controller])
+             statement))))
+
 (deftest authorization-crosses-the-durable-journal-before-success
   (let [gate (async/chan)
         store (memory-store (atom {}) gate)
@@ -160,6 +181,33 @@
                           runtime (request)))))
       (is (empty? @(:records store)))
       (lifecycle-runtime/stop! runtime))))
+
+(deftest reconciled-layout-fences-retention-before-journal-io
+  (let [statement (assoc retention "layout_epoch" 0)
+        included (reconciled-layout
+                  [replica
+                   (identity/hex->bytes (apply str (repeat 32 "01")))
+                   (identity/hex->bytes (apply str (repeat 32 "02")))])
+        excluded (reconciled-layout
+                  (mapv #(identity/hex->bytes (apply str (repeat 32 %)))
+                        ["01" "02" "03"]))]
+    (testing "a selected member accepts the retained object"
+      (let [runtime (start-runtime
+                     (memory-store)
+                     {:layout-state-fn (constantly included)})]
+        (await (lifecycle-runtime/ready runtime))
+        (is (true? (await (lifecycle-runtime/authorize-offer!
+                           runtime (request statement replica)))))
+        (lifecycle-runtime/stop! runtime)))
+    (testing "an authenticated but unselected member fails before persistence"
+      (let [store (memory-store)
+            runtime (start-runtime
+                     store {:layout-state-fn (constantly excluded)})]
+        (await (lifecycle-runtime/ready runtime))
+        (is (false? (await (lifecycle-runtime/authorize-offer!
+                            runtime (request statement replica)))))
+        (is (empty? @(:records store)))
+        (lifecycle-runtime/stop! runtime)))))
 
 (deftest corrupt-restored-journals-fail-startup-closed
   (let [key (str (identity/bytes->hex (get retention "cluster")) "/"

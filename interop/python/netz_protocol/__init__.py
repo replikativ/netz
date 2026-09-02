@@ -71,6 +71,15 @@ from .replication_wire import (
     validate_statement as validate_replication_statement,
     verify_envelope as verify_replication_envelope,
 )
+from .replication_layout import (
+    LayoutError,
+    layout_address as replication_layout_address,
+    make_state as make_replication_layout_state,
+    placement_layout as replication_placement_layout,
+    reconcile as reconcile_replication_layout,
+    retention_authorized as replication_retention_authorized,
+    validate_statement as validate_replication_layout,
+)
 from .materialization import (
     MaterializationError,
     application_binding,
@@ -90,6 +99,7 @@ __all__ = [
     "KABEL_CBOR_SERIALIZER_ID",
     "OrderedReceiver",
     "MaterializationError",
+    "LayoutError",
     "PublicationError",
     "Publisher",
     "ReceiveResult",
@@ -125,10 +135,15 @@ __all__ = [
     "identity_record_bytes",
     "loads",
     "make_replication_envelope",
+    "make_replication_layout_state",
     "open_frame",
     "place_replicas",
     "publication_signing_bytes",
     "rank_replicas",
+    "reconcile_replication_layout",
+    "replication_layout_address",
+    "replication_placement_layout",
+    "replication_retention_authorized",
     "replication_signing_bytes",
     "replica_score",
     "domain_counts",
@@ -139,6 +154,7 @@ __all__ = [
     "verify_publication",
     "verify_replication_envelope",
     "validate_replication_statement",
+    "validate_replication_layout",
     "validate_application_binding",
     "validate_retention_binding",
 ]

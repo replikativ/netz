@@ -8,6 +8,11 @@ from netz_codec import MAX_STRING_BYTES, dumps, loads
 
 from .blob import MAX_PIECES, manifest_address, validate_manifest
 from .identity import KEY_BYTES, authority_id, genesis_bytes
+from .replication_layout import (
+    LayoutError,
+    STATEMENT_TYPE as LAYOUT_STATEMENT_TYPE,
+    validate_statement as validate_layout_statement,
+)
 
 CAPABILITY = "netz/blob-replication/1"
 SIGNING_DOMAIN = b"netz/blob-statement/v1\x00"
@@ -88,6 +93,11 @@ def validate_statement(statement: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(statement, dict):
         raise ReplicationWireError("invalid durable-blob statement")
     kind = statement.get("type")
+    if kind == LAYOUT_STATEMENT_TYPE:
+        try:
+            return validate_layout_statement(statement)
+        except LayoutError as error:
+            raise ReplicationWireError("invalid durable-blob statement") from error
     fields = STATEMENT_FIELDS.get(kind)
     if (fields is None or set(statement) != fields or statement.get("v") != 1
             or not _namespace_id(statement.get("cluster"))

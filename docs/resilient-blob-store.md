@@ -204,6 +204,11 @@ A valid signature is evidence of who signed a statement, not authority to store
 it; the default callback therefore rejects every offer. Invalid signatures and
 malformed extension frames close the connection.
 
+`netz.replication.layout` provides the portable signed-layout body, address and
+pure hash-chain reconciliation used by that policy. Its output is trusted only
+after the ordinary `blob/signed` envelope verifies. A same-epoch fork freezes
+layout-based admission; it is not resolved by arrival order or LWW.
+
 Storage operations preserve machine backpressure. Each piece is ACKed only
 after the store's stage channel succeeds, a stored receipt is signed only after
 complete installation at the requested persistence level, and the sender's
@@ -225,6 +230,7 @@ implements both the transfer and lifecycle storage contracts:
               {:identity peer-identity
                :store store
                :controllers [controller-authority]
+               :layout-state-fn (fn [] @durable-layout-state)
                :lifecycle-opts
                {:persistence "netz/store/best-effort/1"
                 :accepted-persistence
@@ -340,9 +346,10 @@ laptop, home Pi and a privately controlled remote device and constrain sites
 without falsely claiming three independent owners. Storage-only custodians do
 not need plaintext keys.
 
-A changed layout has a new signed epoch. Receipts from an old epoch remain
-evidence that bytes existed, but do not by themselves satisfy placement under
-the current layout.
+A changed layout has the next signed epoch and links the exact previous layout
+address. Receipts from an old epoch remain evidence that bytes existed, but do
+not by themselves satisfy placement under the current layout. A same-epoch
+signed fork halts new admission until explicit operator recovery.
 
 ## Failure guarantees
 
@@ -465,8 +472,10 @@ three process IDs represent three independent failure domains.
 
 ## Implementation order
 
-1. [done] Freeze object, receipt, retention and deletion schemas with canonical
-   CBOR fixtures; signed layout/reconfiguration remains open.
+1. [wire done; durable restore open] Freeze object, receipt, retention,
+   deletion and signed layout/reconfiguration schemas with canonical CBOR
+   fixtures. Persist/restore the accepted layout chain and specify operator
+   recovery from signed controller forks.
 2. [done] Implement pure placement, receipt-controller, receiver-transfer and
    crash-safe lifecycle transitions.
 3. [done] Add simulated durable disks, faults, crash recovery, bulk expiry and

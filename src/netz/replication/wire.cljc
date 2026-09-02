@@ -8,6 +8,7 @@
   (:require [clojure.core.async :as async :refer [chan close! put!]]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.layout :as layout]
             [netz.wire :as wire]))
 
 (def capability "netz/blob-replication/1")
@@ -90,61 +91,63 @@
         fields (get statement-fields type)
         replica (get statement "replica")
         signer (get statement "signer")]
-    (and fields
-         (exact-map? fields statement)
-         (common-statement? statement)
-         (case type
-           "blob/retention"
-           (let [replicas (get statement "replicas")
-                 write-acks (get statement "write_acks")
-                 minima (get statement "minimum_domains")]
+    (if (= layout/statement-type type)
+      (layout/valid-statement? statement)
+      (and fields
+           (exact-map? fields statement)
+           (common-statement? statement)
+           (case type
+             "blob/retention"
+             (let [replicas (get statement "replicas")
+                   write-acks (get statement "write_acks")
+                   minima (get statement "minimum_domains")]
+               (and (positive-uint? (get statement "revision"))
+                    (positive-uint? replicas) (<= replicas 5)
+                    (positive-uint? write-acks) (<= write-acks replicas)
+                    (map? minima)
+                    (every? #(bounded-text? 128 %) (keys minima))
+                    (every? #(and (positive-uint? %) (<= % write-acks))
+                            (vals minima))
+                    (safe-uint? (get statement "issued_at"))
+                    (safe-uint? (get statement "retain_until"))
+                    (<= (get statement "issued_at")
+                        (get statement "retain_until"))))
+
+             "blob/lease"
              (and (positive-uint? (get statement "revision"))
-                  (positive-uint? replicas) (<= replicas 5)
-                  (positive-uint? write-acks) (<= write-acks replicas)
-                  (map? minima)
-                  (every? #(bounded-text? 128 %) (keys minima))
-                  (every? #(and (positive-uint? %) (<= % write-acks))
-                          (vals minima))
                   (safe-uint? (get statement "issued_at"))
                   (safe-uint? (get statement "retain_until"))
                   (<= (get statement "issued_at")
-                      (get statement "retain_until"))))
+                      (get statement "retain_until")))
 
-           "blob/lease"
-           (and (positive-uint? (get statement "revision"))
-                (safe-uint? (get statement "issued_at"))
-                (safe-uint? (get statement "retain_until"))
-                (<= (get statement "issued_at")
-                    (get statement "retain_until")))
+             "blob/deletion"
+             (and (positive-uint? (get statement "revision"))
+                  (safe-uint? (get statement "issued_at"))
+                  (safe-uint? (get statement "delete_after"))
+                  (<= (get statement "issued_at")
+                      (get statement "delete_after")))
 
-           "blob/deletion"
-           (and (positive-uint? (get statement "revision"))
-                (safe-uint? (get statement "issued_at"))
-                (safe-uint? (get statement "delete_after"))
-                (<= (get statement "issued_at")
-                    (get statement "delete_after")))
+             "blob/stored"
+             (and (positive-uint? (get statement "retention_revision"))
+                  (bytes-n? 32 replica)
+                  (identity/bufs= replica signer)
+                  (safe-uint? (get statement "attempt"))
+                  (contains? persistence-profiles
+                             (get statement "persistence"))
+                  (safe-uint? (get statement "stored_at"))
+                  (safe-uint? (get statement "retain_until"))
+                  (<= (get statement "stored_at")
+                      (get statement "retain_until")))
 
-           "blob/stored"
-           (and (positive-uint? (get statement "retention_revision"))
-                (bytes-n? 32 replica)
-                (identity/bufs= replica signer)
-                (safe-uint? (get statement "attempt"))
-                (contains? persistence-profiles
-                           (get statement "persistence"))
-                (safe-uint? (get statement "stored_at"))
-                (safe-uint? (get statement "retain_until"))
-                (<= (get statement "stored_at")
-                    (get statement "retain_until")))
+             "blob/deleted"
+             (and (positive-uint? (get statement "deletion_revision"))
+                  (bytes-n? 32 replica)
+                  (identity/bufs= replica signer)
+                  (contains? persistence-profiles
+                             (get statement "persistence"))
+                  (safe-uint? (get statement "deleted_at")))
 
-           "blob/deleted"
-           (and (positive-uint? (get statement "deletion_revision"))
-                (bytes-n? 32 replica)
-                (identity/bufs= replica signer)
-                (contains? persistence-profiles
-                           (get statement "persistence"))
-                (safe-uint? (get statement "deleted_at")))
-
-           false))))
+             false)))))
 
 (defn validate-statement [statement]
   (when-not (valid-statement? statement)
