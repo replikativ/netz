@@ -71,6 +71,13 @@ from .replication_wire import (
     validate_statement as validate_replication_statement,
     verify_envelope as verify_replication_envelope,
 )
+from .materialization import (
+    MaterializationError,
+    application_binding,
+    binding_address as application_binding_address,
+    validate_binding as validate_application_binding,
+    validate_retention_binding,
+)
 
 __all__ = [
     "CBORError",
@@ -82,6 +89,7 @@ __all__ = [
     "JoinSetProfile",
     "KABEL_CBOR_SERIALIZER_ID",
     "OrderedReceiver",
+    "MaterializationError",
     "PublicationError",
     "Publisher",
     "ReceiveResult",
@@ -95,6 +103,8 @@ __all__ = [
     "SyncResponse",
     "SyncSender",
     "authority_id",
+    "application_binding",
+    "application_binding_address",
     "assemble_blob",
     "blob_manifest_address",
     "blob_need_bitmap",
@@ -129,4 +139,6 @@ __all__ = [
     "verify_publication",
     "verify_replication_envelope",
     "validate_replication_statement",
+    "validate_application_binding",
+    "validate_retention_binding",
 ]

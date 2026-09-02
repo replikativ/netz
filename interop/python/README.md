@@ -23,8 +23,9 @@ placement for the experimental durable-blob extension. The companion
 deletion, replica-receipt and bounded transfer-frame schemas, including the
 authenticated-provider fetch request. Python and
 Clojure share the placement, blob-manifest and signed-statement known-answer
-corpora. The transfer runtime and Konserve adapter are not yet part of the
-Python API.
+corpora. `netz_protocol.materialization` validates and addresses the same closed
+application-key/object binding as the JVM/JavaScript implementation. The
+transfer runtime and Konserve adapter are not yet part of the Python API.
 
 This does not replace a full CBOR implementation for application values.
 Application payloads are opaque bytes and may use Boring's registered tags;
