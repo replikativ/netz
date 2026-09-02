@@ -5,8 +5,10 @@
             [clojure.string :as str]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.controller-storage :as controller-storage]
             [netz.replication.file-store :as file-store]
             [netz.replication.inventory :as inventory]
+            [netz.replication.intent :as intent]
             [netz.replication.sender :as sender]
             [netz.replication.storage :as storage]
             [netz.replication.transfer :as transfer]
@@ -78,6 +80,19 @@
                            (str/ends-with? (str %) ".cbor")))
              vec)))))
 
+(defn controller-intent-files [^Path root cluster]
+  (let [intents (.resolve (.resolve root "controller-intents")
+                          (identity/bytes->hex cluster))]
+    (if-not (Files/exists intents (make-array java.nio.file.LinkOption 0))
+      []
+      (with-open [paths (Files/walk
+                         intents
+                         (make-array java.nio.file.FileVisitOption 0))]
+        (->> (iterator-seq (.iterator paths))
+             (filter #(Files/isRegularFile
+                       ^Path % (make-array java.nio.file.LinkOption 0)))
+             vec)))))
+
 (defn stage! [store piece]
   (await (storage/-stage-piece!
           store session (:manifest-id split) (:manifest split)
@@ -116,6 +131,27 @@
            :operational {:public (identity/hex->bytes public-hex)
                          :private (identity/hex->bytes private-hex)}}
           statement)))
+
+(def retention
+  {"v" 1 "type" "blob/retention"
+   "cluster" (identity/hex->bytes (apply str (repeat 16 "10")))
+   "privacy_domain" (identity/hex->bytes (apply str (repeat 16 "20")))
+   "revision" 1 "manifest" (:manifest-id split)
+   "object" (:object-id split) "layout_epoch" 0
+   "replicas" 1 "write_acks" 1 "minimum_domains" {}
+   "issued_at" 1000 "retain_until" 5000 "signer" authority})
+
+(def layout0
+  {"v" 1 "type" "blob/layout"
+   "cluster" (get retention "cluster") "epoch" 0
+   "previous" (identity/hex->bytes (apply str (repeat 32 "00")))
+   "members" [{"authority" authority "domains" {} "enabled" true}]
+   "issued_at" 900 "signer" authority})
+
+(defn durable-intent [intent-revision attempt]
+  (intent/make-record
+   (sign-statement layout0) (sign-statement retention) (:manifest split)
+   {(identity/bytes->hex authority) attempt} intent-revision))
 
 (defn controller-event [receipt]
   {:type :replication/stored
@@ -242,6 +278,63 @@
           (is (thrown-with-msg? clojure.lang.ExceptionInfo
                                 #"configured bound"
                                 (await (storage/-recorded-receipts bounded)))))))))
+
+(deftest controller-intents-are-atomically-replaced-and-replayed
+  (with-store-root [root (temporary-directory)]
+    (let [store (file-store/new-file-store root)
+          cluster (get retention "cluster")
+          initial (durable-intent 0 0)
+          retry (durable-intent 1 1)]
+      (is (= :ok
+             (await (controller-storage/-persist-controller-intent!
+                     store cluster (:object-id split) initial))))
+      (is (intent/same-record?
+           initial
+           (first
+            (await (controller-storage/-load-controller-intents
+                    (file-store/new-file-store root) cluster)))))
+      (is (= :ok
+             (await (controller-storage/-persist-controller-intent!
+                     store cluster (:object-id split) retry))))
+      (let [loaded (await (controller-storage/-load-controller-intents
+                           (file-store/new-file-store root) cluster))]
+        (is (= 1 (count loaded)))
+        (is (intent/same-record? retry (first loaded))))
+
+      (testing "record identity and bounded restart scans fail closed"
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"Invalid durable controller intent"
+             (await (controller-storage/-persist-controller-intent!
+                     store cluster
+                     (identity/hex->bytes (apply str (repeat 32 "ff")))
+                     retry))))
+        (let [other-split (blob/split (identity/seq->bytes (range 21))
+                                      {:piece-size 8})
+              other-retention (assoc retention
+                                     "object" (:object-id other-split)
+                                     "manifest" (:manifest-id other-split))
+              other (intent/make-record
+                     (sign-statement layout0)
+                     (sign-statement other-retention)
+                     (:manifest other-split)
+                     {(identity/bytes->hex authority) 0} 0)]
+          (is (= :ok
+                 (await (controller-storage/-persist-controller-intent!
+                         store cluster (:object-id other-split) other))))
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo #"configured bound"
+               (await (controller-storage/-load-controller-intents
+                       (file-store/new-file-store
+                        root {:max-controller-intents 1})
+                       cluster))))
+          (Files/write (first (controller-intent-files root cluster))
+                       (identity/seq->bytes [0 1 2])
+                       (into-array OpenOption
+                                   [StandardOpenOption/WRITE
+                                    StandardOpenOption/TRUNCATE_EXISTING]))
+          (is (thrown? Throwable
+                       (await (controller-storage/-load-controller-intents
+                               store cluster)))))))))
 
 (deftest corrupted-receipt-records-never-become-quorum-events
   (with-store-root [root (temporary-directory)]

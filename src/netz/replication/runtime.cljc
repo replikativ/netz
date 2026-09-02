@@ -395,6 +395,8 @@
   - `:on-installed!` receives locally installed replica events;
   - `:on-failed!` receives sender failure records;
   - `:on-fetch-failed!` receives requester-side fetch failures;
+  - `:replay-receipts?` defaults true; set false when a controller runtime owns
+    ordered intent-first receipt restoration from the same store;
   - `:sender-opts`, `:receiver-opts`, and `:now-fn` configure pure machines.
 
   Noise must be constructed with `netz/blob-replication/1` in its supported
@@ -403,8 +405,9 @@
   [{:keys [identity] :as node}
    {:keys [store authorize-offer! authorize-fetch!
            on-stored! on-installed! on-failed! on-fetch-failed!
-           sender-opts receiver-opts now-fn max-fetches fetch-timeout-ms]
-    :or {max-fetches 64 fetch-timeout-ms 30000}}]
+           sender-opts receiver-opts now-fn max-fetches fetch-timeout-ms
+           replay-receipts?]
+    :or {max-fetches 64 fetch-timeout-ms 30000 replay-receipts? true}}]
   (when-not (satisfies? storage/PBlobTransferStore store)
     (throw (ex-info "Durable-blob runtime requires a transfer store"
                     {:type :netz.replication.runtime/missing-store})))
@@ -456,12 +459,13 @@
     (reset! (:cleanup ctx) cleanup)
     (run-loop! ctx)
     (overlay-runtime/on-stop! node #(stop! ctx))
-    (go
-      (let [receipts (<! (storage/-recorded-receipts store))]
-        (if (failure? receipts)
-          (swap! (:stats ctx) update :storage-errors inc)
-          (doseq [event receipts]
-            (callback! ctx on-stored! event :stored)))))
+    (when replay-receipts?
+      (go
+        (let [receipts (<! (storage/-recorded-receipts store))]
+          (if (failure? receipts)
+            (swap! (:stats ctx) update :storage-errors inc)
+            (doseq [event receipts]
+              (callback! ctx on-stored! event :stored))))))
     ctx))
 
 (defn fetch!

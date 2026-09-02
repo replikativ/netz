@@ -424,6 +424,16 @@ intents release no network work until durable receipts have replayed and a
 repair event has persisted its next intent revision. An implementation may use
 another local representation only if it preserves those semantics.
 
+The reference runtime serializes begin, explicit repair and receipt events for
+one controller process. It loads intents before receipts and exposes readiness
+only after both have completed. A failed outbox write emits no offer; retrying
+the operation writes the identical pending generation. The JVM file repository
+atomically replaces this record at an fsync boundary, while the portable
+Konserve repository supports an explicitly accepted best-effort boundary.
+When the transfer and controller runtimes share a repository, receipt replay
+MUST have one owner so that transfer startup cannot race ahead of intent
+restoration.
+
 The `netz/blob-replication/1` capability selects these transfer frames. It MUST
 only be used over a connection that authenticates both full Netz Authority IDs.
 An implementation MUST NOT send or accept these frames merely because a local

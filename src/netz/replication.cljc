@@ -27,6 +27,27 @@
            :repair-scans 0
            :repaired 0}})
 
+(defn make-empty-state
+  "Create a controller with no global placement default.
+
+  Every begin event must supply its own `:layout` and `:policy`. This shape is
+  used by a multi-policy runtime which restores or validates each intent
+  independently."
+  []
+  {:layout nil
+   :policy nil
+   :objects {}
+   :stats {:begun 0
+           :intents-stored 0
+           :stored 0
+           :duplicates 0
+           :invalid-acks 0
+           :durable 0
+           :complete 0
+           :lost 0
+           :repair-scans 0
+           :repaired 0}})
+
 (defn- store-action [entry target]
   [:store target (:manifest entry)
    {:layout-epoch (:layout-epoch entry)
