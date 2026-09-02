@@ -151,8 +151,9 @@ The reverse authenticated fetch drives the JVM sender into Python's fsync
 repository and returns its signed receipt to the JVM journal. Its minimal
 test-only controller fsyncs the exact admitted retention envelope before the
 fetch, and the JVM provider separately pins the authorized requester, cluster,
-manifest and layout epoch. A reusable Python lifecycle/carrier runtime remains
-future work.
+manifest and layout epoch. The mixed test also restarts the Python process after
+the first piece is durable but before ACK; the new session requests only the
+missing tail. A reusable Python lifecycle/carrier runtime remains future work.
 
 ## Boring and the CBOR data model
 

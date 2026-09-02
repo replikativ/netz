@@ -15,7 +15,8 @@ the Clojure ecosystem.
 > share deterministic CBOR and authenticated Noise/Kabel fixtures. The secure
 > JVM overlay passes a real three-peer rejoin test, and a Python sender now
 > completes a real authenticated, fsync-backed transfer into the JVM runtime;
-> the reverse JVM-provider/Python-receiver path is tested as well.
+> the reverse JVM-provider/Python-receiver path also survives a process restart
+> after a durable piece but before its ACK.
 > Exact configured
 > `wss` gateways have a supported dial policy. Arbitrary public discovery still
 > waits on socket-level resolved-IP pinning. The authenticated transport uses

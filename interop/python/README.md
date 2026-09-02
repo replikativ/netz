@@ -58,7 +58,8 @@ successfully. `mixed_blob_receiver.py` tests the reverse fetch path through the
 Python fsync repository and sends its signed receipt to the JVM journal. Its
 minimal test-only controller fsyncs the exact admitted retention envelope before
 requesting bytes; it does not replace the reusable lifecycle/carrier runtime
-described above.
+described above. The same test stops one process after a piece fsync but before
+ACK, then proves that a fresh process/session requests only the missing tail.
 
 This does not replace a full CBOR implementation for application values.
 Application payloads are opaque bytes and may use Boring's registered tags;

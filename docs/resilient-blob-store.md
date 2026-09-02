@@ -191,9 +191,10 @@ uninstalled staged pieces. Local paginated
 installed-manifest inventory and full-object scrubbing now exist for the JVM
 file, Python file and portable Konserve adapters. The JVM runtime remains the
 complete reusable end-to-end reference. Both Python/JVM transfer directions now
-pass in CI and the JVM reopens Python's repository; Node/browser durable
-storage, reconnect/resume conformance, and a reusable Python runtime remain
-open.
+pass in CI, the JVM reopens Python's repository, and a fresh Python process
+resumes an interrupted pre-ACK transfer from its durable pieces. Node/browser
+durable storage and reusable reconnecting Python orchestration remain separate
+work.
 
 ### Authenticated runtime binding
 

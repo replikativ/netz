@@ -128,14 +128,18 @@
         (future-cancel output)))))
 
 (defn- run-python-receiver
-  [url server-authority store-path completion-path timeout-seconds]
+  [url server-authority store-path completion-path timeout-seconds
+   {:keys [attempt stop-after-pieces]
+    :or {attempt 0 stop-after-pieces 0}}]
   (let [python (or (System/getenv "NETZ_PYTHON") "python3")
         arguments
         [python "test-mixed/python/mixed_blob_receiver.py"
          "--uri" url
          "--remote-authority" (identity/bytes->hex server-authority)
          "--store" (str store-path)
-         "--completion" (str completion-path)]
+         "--completion" (str completion-path)
+         "--attempt" (str attempt)
+         "--stop-after-pieces" (str stop-after-pieces)]
         builder (doto (ProcessBuilder. ^java.util.List arguments)
                   (.redirectErrorStream true))
         process (.start builder)
@@ -262,6 +266,7 @@
                             {:piece-size (bit-shift-left 1 20)})
           fetches (atom [])
           stored (atom [])
+          failed (atom [])
           completion-path (.resolve source-root "receipt-journaled")
           admission-path
           (.resolve target-root ".netz-test-lifecycle-admission.cbor")
@@ -286,12 +291,34 @@
             #(do
                (swap! stored conj %)
                (Files/write completion-path (byte-array [1])
-                            (make-array java.nio.file.OpenOption 0)))})]
+                            (make-array java.nio.file.OpenOption 0)))
+            :on-failed! #(swap! failed conj %)})]
       (install-source! source (identity/seq->bytes (range 16 32)) split)
       (try
         (let [{:keys [exit output timed-out?]}
               (run-python-receiver
-               url server-authority target-root completion-path 30)]
+               url server-authority target-root completion-path 30
+               {:attempt 0 :stop-after-pieces 1})]
+          (is (false? timed-out?) output)
+          (is (= 0 exit) output)
+          (is (= (str "NETZ_MIXED_FETCH_INTERRUPTED "
+                      (identity/bytes->hex (:manifest-id split)))
+                 (last (remove str/blank? (str/split-lines output)))))
+          (is (wait-for 10000 #(= 1 (count @failed)))
+              "JVM sender did not observe the interrupted Python process")
+          (is (= :disconnected (:code (first @failed))))
+          (let [python-store (file-store/new-file-store target-root)
+                inventory
+                (await (storage/-load-staging
+                        python-store (identity/seq->bytes (range 32 48))
+                        (:manifest-id split) (:manifest split)))]
+            (is (nil? (:installed inventory)))
+            (is (= 1 (count (:held inventory)))
+                "the interrupted process did not leave one durable piece")))
+        (let [{:keys [exit output timed-out?]}
+              (run-python-receiver
+               url server-authority target-root completion-path 30
+               {:attempt 1})]
           (is (false? timed-out?) output)
           (is (= 0 exit) output)
           (is (= (str "NETZ_MIXED_FETCH_OK "
@@ -299,14 +326,19 @@
                  (last (remove str/blank? (str/split-lines output)))))
           (is (wait-for 10000 #(= 1 (count @stored)))
               "JVM did not durably persist the Python replica receipt")
-          (is (= 1 (count @fetches)))
+          (is (= 2 (count @fetches)))
+          (is (= [0 1] (mapv #(get-in % [:frame "attempt"]) @fetches)))
+          (is (not (identity/bufs=
+                    (get-in (first @fetches) [:frame "session"])
+                    (get-in (last @fetches) [:frame "session"])))
+              "the retry reused its failed transfer session")
           (is (identity/bufs=
-               python-authority (:from-authority (first @fetches))))
+               python-authority (:from-authority (last @fetches))))
           (is (Files/isRegularFile
                admission-path (make-array java.nio.file.LinkOption 0))
               "Python did not durably record its admitted controller intent")
           (let [admitted (wire/decode (Files/readAllBytes admission-path))
-                fetched (get-in (first @fetches) [:frame "retention"])]
+                fetched (get-in (last @fetches) [:frame "retention"])]
             (is (true? (await (replication-wire/verify-envelope admitted))))
             (is (identity/bufs=
                  (wire/encode-canonical fetched)
@@ -320,9 +352,16 @@
             (is (= "netz/store/fsync/1"
                    (get-in inventory [:installed :persistence])))
             (is (= (count (:pieces split)) (count (:held inventory)))))
-          (is (= 1 (count (await (storage/-recorded-receipts source)))))
-          (is (= 1 (:fetch-served (replication-runtime/stats runtime))))
+          (let [receipts (await (storage/-recorded-receipts source))]
+            (is (= 1 (count receipts)))
+            (is (= 1 (get-in (first receipts)
+                             [:receipt "statement" "attempt"]))))
+          (is (= 2 (:fetch-served (replication-runtime/stats runtime))))
           (is (= 1 (:stored (replication-runtime/stats runtime))))
+          (is (= 1 (:failed (replication-runtime/stats runtime))))
+          (is (= 2 (get-in (replication-runtime/states runtime)
+                           [:sender :stats :pieces-sent]))
+              "the resumed session retransmitted an already durable piece")
           (is (= 0 (:invalid-signatures
                     (replication-runtime/stats runtime)))))
         (finally
