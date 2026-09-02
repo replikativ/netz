@@ -213,6 +213,119 @@
       (is (= :sync/abort (:type (nth (first (:actions result)) 2))))
       (is (= #{} (sync/application (:state result) :doc))))))
 
+(deftest byte-sessions-are-keyed-by-content
+  (let [session (identity/seq->bytes (range 16))
+        decoded-copy (identity/hex->bytes (identity/bytes->hex session))
+        [receiver _]
+        (sync/start
+         (sync-node :client join-profile-id join-profile :doc #{:local})
+         :server :doc join-profile-id session)
+        chunked
+        (sync/handler receiver
+                      {:type :message :from :server
+                       :payload {:type :sync/chunk :session decoded-copy
+                                 :index 0 :data #{:remote}}}
+                      {:now 1})
+        done
+        (sync/handler (:state chunked)
+                      {:type :message :from :server
+                       :payload {:type :sync/done :session decoded-copy
+                                 :count 1 :topic :doc
+                                 :checkpoint #{:remote} :frontiers {}}}
+                      {:now 2})]
+    (is (= #{:local :remote} (sync/application (:state done) :doc)))
+    (is (= :synchronized (sync/status (:state done) :doc)))
+    (is (empty? (:sessions (:state done))))))
+
+(deftest byte-and-string-session-identifiers-cannot-collide
+  (let [session (identity/seq->bytes (range 16))
+        same-text (identity/bytes->hex session)
+        base (sync-node :client join-profile-id join-profile :doc #{})
+        [with-bytes _] (sync/start base :server :doc join-profile-id session)
+        [with-both _] (sync/start with-bytes :server :doc join-profile-id
+                                  same-text)
+        aborted-text
+        (sync/handler with-both
+                      {:type :message :from :server
+                       :payload {:type :sync/abort :session same-text
+                                 :code :cancelled}}
+                      {:now 1})]
+    (is (= 2 (count (:sessions with-both))))
+    (is (= 1 (count (:sessions (:state aborted-text))))
+        "aborting the legacy string must retain the byte session")
+    (is (= :sync/ack
+           (-> (sync/handler
+                (:state aborted-text)
+                {:type :message :from :server
+                 :payload {:type :sync/chunk :session session
+                           :index 0 :data #{:remote}}}
+                {:now 2})
+               :actions first (nth 2) :type)))))
+
+(deftest transport-mode-is-pinned-through-a-sync-session
+  (let [session (identity/seq->bytes (range 16))
+        opened
+        (sync/handler
+         (sync-node :client join-profile-id join-profile :doc #{})
+         {:type :message :from :app
+          :payload (sync/with-transport-mode
+                     {:type :sync/start :peer :server :topic :doc
+                      :profile join-profile-id :session session}
+                     :portable)}
+         {:now 0})
+        open-frame (-> opened :actions first (nth 2))
+        chunked
+        (sync/handler
+         (:state opened)
+         {:type :message :from :server
+          :payload (sync/with-transport-mode
+                     {:type :sync/chunk :session session
+                      :index 0 :data #{:remote}}
+                     :portable)}
+         {:now 1})
+        ack-frame (-> chunked :actions first (nth 2))]
+    (is (= :portable (sync/transport-mode open-frame)))
+    (is (= :portable (sync/transport-mode ack-frame)))
+    (is (= :portable
+           (get-in (:state chunked)
+                   [:sessions [:bytes (identity/bytes->hex session)]
+                    :transport-mode])))))
+
+(deftest an-inbound-carrier-change-cannot-drive-or-commit-a-session
+  (let [session (identity/seq->bytes (range 16))
+        opened
+        (sync/handler
+         (sync-node :client join-profile-id join-profile :doc #{:local})
+         {:type :message :from :app
+          :payload (sync/with-transport-mode
+                     {:type :sync/start :peer :server :topic :doc
+                      :profile join-profile-id :session session}
+                     :portable)}
+         {:now 0})
+        downgraded-chunk
+        (sync/handler
+         (:state opened)
+         {:type :message :from :server
+          :payload (sync/with-transport-mode
+                     {:type :sync/chunk :session session
+                      :index 0 :data #{:remote}}
+                     :native)}
+         {:now 1})
+        downgraded-done
+        (sync/handler
+         (:state opened)
+         {:type :message :from :server
+          :payload (sync/with-transport-mode
+                     {:type :sync/done :session session :count 0 :topic :doc
+                      :checkpoint #{:remote} :frontiers {}}
+                     :native)}
+         {:now 2})]
+    (is (= [[:disconnect :server]] (:actions downgraded-chunk)))
+    (is (= [[:disconnect :server]] (:actions downgraded-done)))
+    (is (= #{:local} (sync/application (:state downgraded-done) :doc))
+        "a downgraded terminal frame must not reach profile commit")
+    (is (= :synchronizing (sync/status (:state downgraded-done) :doc)))))
+
 (deftest application-receipts-not-network-admission-advance-frontiers
   (let [state (sync/make-state :reader {})
         publication {:origin :writer :epoch 0 :seq 0 :topic :doc}

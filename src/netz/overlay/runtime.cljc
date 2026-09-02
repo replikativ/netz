@@ -54,6 +54,7 @@
             [netz.publication :as publication]
             [netz.ratelimit :as rl]
             [netz.overlay :as overlay]
+            [netz.sync :as sync]
             [netz.wire :as wire]
             [kabel.peer :as peer]
             [netz.sim.rng :as rng]
@@ -471,6 +472,13 @@
   [peer peer-id capability]
   (boolean (contains? (:capabilities (connection-info peer peer-id)) capability)))
 
+(defn portable-sync-connection?
+  "Whether `peer-id` selected every capability needed for portable sync."
+  [peer peer-id]
+  (every? #(connection-supports? peer peer-id %)
+          [wire/profile-capability extension-carrier-capability
+           sync/capability]))
+
 (defn register-extension!
   "Register one capability-gated direct protocol on a running node.
 
@@ -486,6 +494,11 @@
     (throw (ex-info "Invalid overlay extension handler"
                     {:type :netz.overlay.runtime/invalid-extension
                      :extension extension-id})))
+  (when (= sync/capability capability)
+    (throw (ex-info "The portable sync capability is reserved by Netz"
+                    {:type :netz.overlay.runtime/reserved-extension-capability
+                     :extension extension-id
+                     :capability capability})))
   (swap! (:extensions ctx)
          (fn [extensions]
            (when (contains? extensions extension-id)
@@ -506,15 +519,16 @@
   wire profile and dedicated extension-carrier capability receives the portable
   carrier; older Clojure peers retain the transitional native overlay frame."
   [{:keys [ctx peer]} to capability payload]
-  (if (connection-supports? peer to capability)
+  (if (or (= sync/capability capability)
+          (not (connection-supports? peer to capability)))
+    false
     (do ((get-in ctx [:effects :send!])
          to
          (if (and (connection-supports? peer to wire/profile-capability)
                   (connection-supports? peer to extension-carrier-capability))
            (extension-carrier capability payload)
            (frame payload)))
-        true)
-    false))
+        true)))
 
 (defn disconnect-peer!
   "Close the current connection to `peer-id`. The normal socket cleanup path
@@ -773,6 +787,10 @@
                     (or (not (contains? payload k)) (pred (get payload k))))
                   optional)))))
 
+(defn- sync-payload? [payload]
+  (contains? #{:sync/open :sync/chunk :sync/ack :sync/done :sync/abort}
+             (:type payload)))
+
 (defn- accept-or-drop!
   "Submit an event, or close the connection if the machine cannot keep up.
 
@@ -824,11 +842,13 @@
   connection under their peer id, and funnel overlay frames into the runtime.
   Everything else passes through."
   [{:keys [ctx identity addresses seq-no require-signed? handshake-max-attempts
-           handshake-timeout-ms authenticated-context-fn]
+           handshake-timeout-ms authenticated-context-fn authorize-sync?]
     :or {require-signed? true handshake-max-attempts 4
-         handshake-timeout-ms 15000}}]
+         handshake-timeout-ms 15000
+         authorize-sync? (constantly false)}}]
   (fn [[S peer [in out] :as connection]]
-    (let [pass-in (chan)
+    (let [authorize-sync? (or authorize-sync? (constantly false))
+          pass-in (chan)
           pass-out (chan)
           authenticated-context (when authenticated-context-fn
                                   (authenticated-context-fn connection))
@@ -1037,14 +1057,54 @@
                                    (when decoded
                                      (if (= :reject verdict)
                                        (log-rejected ctx from)
-                                       (case (dispatch-extension!
-                                              ctx peer from capability payload)
-                                         :accepted true
-                                       ;; A named portable extension can
-                                       ;; never be an overlay or application
-                                       ;; frame. Unknown, malformed and
-                                       ;; handler-refused values fail closed.
-                                         (:rejected :unmatched) (close! out)))))))
+                                       (if (= sync/capability capability)
+                                         (if-not (connection-supports?
+                                                  peer from sync/capability)
+                                           (close! out)
+                                           (let [frame
+                                                 (sync/with-transport-mode
+                                                   (try
+                                                     (wire/sync-frame-from-wire
+                                                      payload)
+                                                     (catch #?(:clj Throwable
+                                                               :cljs :default) e
+                                                       (close! out)
+                                                       (throw e)))
+                                                   :portable)
+                                                 authorized?
+                                                 (or
+                                                  (not= :sync/open (:type frame))
+                                                  (try
+                                                    (true?
+                                                     (authorize-sync?
+                                                      {:peer-id from
+                                                       :connection
+                                                       (connection-info peer from)
+                                                       :topic (:topic frame)
+                                                       :profile (:profile frame)}))
+                                                    (catch #?(:clj Throwable
+                                                              :cljs :default) e
+                                                      (close! out)
+                                                      (throw e))))]
+                                             (if authorized?
+                                               (accept-or-drop!
+                                                S ctx peer out from frame
+                                                (:kabel/encoded-bytes (meta m)))
+                                               ;; Supporting a protocol is not
+                                               ;; permission to read an
+                                               ;; application's state. Avoid
+                                               ;; disclosing whether the topic
+                                               ;; or profile exists.
+                                               (close! out))))
+                                         (case (dispatch-extension!
+                                                ctx peer from capability payload)
+                                           :accepted true
+                                         ;; A named portable extension can
+                                         ;; never be an overlay or application
+                                         ;; frame. Unknown, malformed and
+                                           ;; handler-refused values fail closed.
+                                           (:rejected :unmatched)
+                                           (close! out))))))))
 
                              (= frame-type (:type m))
                              ;; The connection's own peer id, remembered when
@@ -1059,23 +1119,36 @@
                                      verdict (<? S (meter-frame! S ctx from))]
                                  (if (= :reject verdict)
                                    (log-rejected ctx from)
-                                   (case (dispatch-extension!
-                                          ctx peer from nil payload)
-                                     :accepted true
-                                     :rejected (close! out)
-                                     :unmatched
-                                     (if (and require-signed? (= :gossip (:type payload)))
-                                       ;; Checked at EVERY hop, not only at the
-                                       ;; destination: a single authorised relay
-                                       ;; would otherwise be able to inject anything
-                                       ;; into the rest of the network.
-                                       (when (<? S (verify-gossip S payload))
-                                         (accept-or-drop!
-                                          S ctx peer out from payload
-                                          (:kabel/encoded-bytes (meta m))))
-                                       (accept-or-drop!
-                                        S ctx peer out from payload
-                                        (:kabel/encoded-bytes (meta m))))))))
+                                   (if (and (sync-payload? payload)
+                                            (portable-sync-connection? peer from))
+                                     ;; Once selected, the strict portable
+                                     ;; carrier is the only sync grammar on
+                                     ;; this connection. Native input would be
+                                     ;; a schema downgrade.
+                                     (close! out)
+                                     (case (dispatch-extension!
+                                            ctx peer from nil payload)
+                                       :accepted true
+                                       :rejected (close! out)
+                                       :unmatched
+                                       (let [payload
+                                             (if (sync-payload? payload)
+                                               (sync/with-transport-mode
+                                                 payload :native)
+                                               payload)]
+                                         (if (and require-signed?
+                                                  (= :gossip (:type payload)))
+                                           ;; Checked at EVERY hop, not only at the
+                                           ;; destination: a single authorised relay
+                                           ;; would otherwise be able to inject anything
+                                           ;; into the rest of the network.
+                                           (when (<? S (verify-gossip S payload))
+                                             (accept-or-drop!
+                                              S ctx peer out from payload
+                                              (:kabel/encoded-bytes (meta m))))
+                                           (accept-or-drop!
+                                            S ctx peer out from payload
+                                            (:kabel/encoded-bytes (meta m))))))))))
 
                              :else
                              (if (= :complete @handshake-state)
@@ -1114,6 +1187,11 @@
 
 (defn- gossip? [m] (= :gossip (:type (:payload m))))
 
+(defn- close-peer-connection! [peer peer-id]
+  (when-let [out (get-in @(registry peer) [:by-id peer-id])]
+    (close! out))
+  false)
+
 (defn- outgoing
   "Send `m` to `to`, signing it first if we are its origin.
 
@@ -1129,7 +1207,30 @@
     (go
       (let [signed (<? S (sign-gossip S identity (:payload m)))]
         (send-frame! S peer to (assoc m :payload signed))))
-    (send-frame! S peer to m)))
+    (let [payload (:payload m)]
+      (if-not (and (= frame-type (:type m)) (sync-payload? payload))
+        (send-frame! S peer to m)
+        ;; A synchronization session pins its carrier when it opens. Never
+        ;; reinterpret a queued or later frame using mutable reconnect facts.
+        (case (sync/transport-mode payload)
+          :portable
+          (if (portable-sync-connection? peer to)
+            (send-frame! S peer to
+                         (extension-carrier
+                          sync/capability
+                          (wire/sync-frame->wire payload)))
+            (close-peer-connection! peer to))
+
+          :native
+          (if (and (connection-info peer to)
+                   (not (portable-sync-connection? peer to)))
+            (send-frame! S peer to m)
+            (close-peer-connection! peer to))
+
+          ;; Runtime-originated sync always carries a pinned mode. An
+          ;; unmarked frame is an implementation error, not permission to
+          ;; guess a wire format.
+          (close-peer-connection! peer to))))))
 
 (defn websocket-address?
   "Is `address` an absolute ws/wss URL without embedded credentials?
@@ -1310,6 +1411,9 @@
   - `:authenticated-context-fn` — secure transport context accessor; when set,
                                   use its verified identity instead of the
                                   transitional public hello/proof exchange
+  - `:authorize-sync?` — synchronous portable `sync/open` authorization over
+                         authenticated connection facts, topic and profile;
+                         omitted or non-true results reject the connection
   - `:seed`      — rng seed; derived from the peer id when absent
 
   Returns a channel yielding a context map with `:ctx` (the runtime) and
@@ -1317,7 +1421,7 @@
   [S peer {:keys [identity addresses seeds topics store recovery-store seed
                   overlay-opts require-signed? allow-address?
                   handshake-max-attempts handshake-timeout-ms
-                  authenticated-context-fn]}]
+                  authenticated-context-fn authorize-sync?]}]
   (go-try S
           (let [stored-identity (when (and (nil? identity) store)
                                   (<? S (store/-load store :identity)))
@@ -1378,6 +1482,8 @@
                                       :seq-no epoch
                                       :authenticated-context-fn
                                       authenticated-context-fn
+                                      :authorize-sync?
+                                      (or authorize-sync? (constantly false))
                                       :handshake-max-attempts (or handshake-max-attempts 4)
                                       :handshake-timeout-ms (or handshake-timeout-ms 15000)
                                       :require-signed? (if (nil? require-signed?)
@@ -1489,13 +1595,27 @@
 
 (defn start-sync!
   "Open a transport-independent synchronization session. Returns the same
-  immediate bounded-queue acceptance boolean as `publish!`."
-  [{:keys [ctx]} peer topic profile & [session]]
-  (submit! ctx {:type :message
-                :from :app
-                :payload (cond-> {:type :sync/start :peer peer :topic topic
-                                  :profile profile}
-                           session (assoc :session session))}))
+  immediate bounded-queue acceptance boolean as `publish!`. A live
+  authenticated connection is required because the negotiated carrier is
+  pinned for the lifetime of the session."
+  [{:keys [ctx peer] :as _running} remote topic profile & [session]]
+  (if-not (connection-info peer remote)
+    false
+    (let [portable? (portable-sync-connection? peer remote)
+          mode (if portable? :portable :native)
+          session (or session (when portable? (id/random-bytes 16)))]
+      (if (and portable?
+               (not (and (wire/byte-buffer? session)
+                         (= 16 (id/buf-length session)))))
+        false
+        (submit! ctx {:type :message
+                      :from :app
+                      :payload
+                      (sync/with-transport-mode
+                        (cond-> {:type :sync/start :peer remote :topic topic
+                                 :profile profile}
+                          session (assoc :session session))
+                        mode)})))))
 
 (defn provide!
   "Make an immutable content-addressed `value` servable under `key`.

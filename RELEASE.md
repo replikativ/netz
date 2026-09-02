@@ -263,11 +263,11 @@ This extension is not part of the alpha interoperability claim yet.
       host-language values for signature verification. Strict encode/decode,
       self-verifying envelope, and bounded Python ordered receiver now exist.
 - [ ] Route handshake, dissemination, content, and sync runtime messages through
-      `netz.wire` rather than native Clojure values. Strict sync-frame conversion
-      exists, but is not enabled without capability negotiation. Named extension
-      traffic now uses the portable carrier when both the wire profile and its
-      dedicated carrier capability are selected; this does not overstate the
-      remaining base-overlay work.
+      `netz.wire` rather than native Clojure values. Sync now selects its strict
+      frame conversion through the separately negotiated `netz/sync/1` named
+      extension, wire-profile and carrier capabilities; byte-array sessions are
+      keyed by tagged content on the JVM. Named extension traffic uses the same
+      portable carrier. Base membership, dissemination and content remain.
 - [x] Add canonical identity, publication signature and malformed-input
       fixtures.
 - [x] Implement cryptographically bound capability/version negotiation in the
@@ -275,13 +275,16 @@ This extension is not part of the alpha interoperability claim yet.
       `wire/netz-cbor/1` is not aliased to the transitional `netz/1` token.
 - [ ] Complete a Python identity/handshake/dissemination/sync client. The
       identity, secure carrier, signed publisher, bounded ordered receiver, and
-      bounded cumulative-ACK sync sender/atomic receiver exist; subscription
-      repair, content exchange and reconnect orchestration remain.
+      bounded cumulative-ACK sync sender/atomic receiver exist. A real Python
+      receiver now opens and completes a negotiated sync against the JVM;
+      reusable subscription repair, content exchange and reconnect orchestration
+      remain.
 - [x] The optional Python secure-client prototype signs and verifies identity
       records, binds Authority IDs to authenticated Noise statics, enforces the
       expected dial target, fragments bounded inner frames, and passes a real
       asyncio WebSocket round trip plus the same Cacophony vector as Geheimnis.
-      Dissemination and outbound sync orchestration remain before calling it a
+      A one-shot outbound sync receiver now runs over that carrier;
+      dissemination and reusable orchestration remain before calling it a
       complete application client.
 - [x] JVM and Python consume the same deterministic direct-binding fixture,
       covering both identity records and binding signatures, the offer, all
@@ -291,8 +294,9 @@ This extension is not part of the alpha interoperability claim yet.
       part of the three-runtime gate below.
 - [ ] Pass independent JVM/JS/Python two-peer conformance tests. The durable
       blob subset now runs both Python/JVM directions and process-level resume;
-      base dissemination/sync reconnect orchestration and a JavaScript peer
-      remain.
+      one Python-initiated JVM-to-Python state transfer also runs. Base
+      dissemination, the reverse sync direction/reconnect orchestration, and a
+      JavaScript peer remain.
 - [x] Pass a real three-peer offline/rejoin test over http-kit, Kabel CBOR and
       authenticated Noise for both a fenced single-writer root and a
       multiwriter join-semilattice.

@@ -393,6 +393,14 @@ field is a sender claim, not a receipt. Buffered publications are subsumed only
 by the bounded frontier returned from the receiver's successful local commit.
 Bindings for legacy profiles MUST return an empty frontier.
 
+Negotiating `netz/sync/1` proves protocol support, not read authorization. A
+node implementing this portable profile MUST authorize every incoming
+`sync/open` against the authenticated full Authority ID, requested topic and
+requested profile before it invokes profile code or discloses whether that
+state exists. Missing, non-true or exceptional authorization fails closed.
+Implementations SHOULD keep authorization policy outside the profile so the
+same profile can serve distinct trust domains.
+
 `fixtures/sync-open-1.json` pins a complete join-semilattice `sync/open` frame.
 The profile summary is itself deterministic CBOR, carried as an opaque byte
 string by the outer frame. JVM, JavaScript and Python MUST emit the fixture's
@@ -406,11 +414,16 @@ The Clojure reference keeps profile state as idiomatic maps internally and
 uses `netz.wire/sync-frame->wire` and `sync-frame-from-wire` as a strict
 boundary. These functions require opaque profile fields to be byte strings and
 convert the internal frontier map to the canonical array; they never stringify
-arbitrary Clojure values. Transport adapters MUST cross this boundary only
-after negotiating profile 1. The native Kabel runtime currently applies this
-boundary to named extension traffic; its base overlay, dissemination, content,
-and synchronization frames remain transitional native values, so the existence
-of these codecs is not yet a complete runtime interoperability claim.
+arbitrary Clojure values. Kabel peers cross this boundary only after
+negotiating `wire/netz-cbor/1`, `netz/extension-cbor/1`, and `netz/sync/1`.
+They carry the wire-shaped sync frame as the named-extension payload described
+in Section 11.1. The selected carrier is pinned for the complete session. A
+peer MUST reject a native sync frame after all three portable capabilities are
+selected, and MUST fail the session or close the connection rather than change
+carrier after reconnect or changed negotiation. Peers without all three
+capabilities retain the transitional native sync path and MUST NOT reinterpret
+it. Base overlay, dissemination, and content frames remain transitional native
+values, so this is not yet a complete runtime interoperability claim.
 The Python reference exposes the same pure receiver plus a bounded sender that
 accepts exact `sync/open` frames, enforces the cumulative-ACK chunk window, and
 emits `sync/done` only after all transmitted chunks are acknowledged.

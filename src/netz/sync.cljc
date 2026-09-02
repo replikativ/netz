@@ -17,10 +17,51 @@
    :max-frontier-streams 1024
    :max-frontier-bytes (* 256 1024)})
 
+(def capability
+  "Capability selecting profile-1 synchronization over the portable named
+  extension carrier. It is separate from the CBOR profile and carrier
+  capabilities so peers never reinterpret transitional native sync frames."
+  "netz/sync/1")
+
 (def max-safe-integer 9007199254740991)
+
+(defn with-transport-mode
+  "Attach the runtime-pinned transport mode to an internal sync frame.
+
+  This metadata is never serialized. It prevents an established session from
+  changing between the transitional native carrier and the portable carrier
+  when a connection is replaced or its negotiated facts change."
+  [frame mode]
+  (with-meta frame (assoc (meta frame) ::transport-mode mode)))
+
+(defn transport-mode
+  "Return the runtime-pinned transport mode on an internal sync frame."
+  [frame]
+  (::transport-mode (meta frame)))
 
 (defn- safe-uint? [value]
   (and (integer? value) (<= 0 value max-safe-integer)))
+
+(defn- session-key [session]
+  ;; JVM byte arrays use reference identity as map keys. Portable frames decode
+  ;; each bytes16 into a fresh array, so key those sessions by byte content.
+  ;; The tag keeps their hex representation distinct from a valid legacy
+  ;; string session. Historical Clojure session values retain their equality.
+  (if (wire/byte-buffer? session)
+    [:bytes (identity/bytes->hex session)]
+    session))
+
+(defn- mark-sync-actions [actions mode]
+  (if-not mode
+    actions
+    (mapv (fn [[op peer payload :as action]]
+            (if (and (= :send op)
+                     (contains? #{:sync/open :sync/chunk :sync/ack
+                                  :sync/done :sync/abort}
+                                (:type payload)))
+              [op peer (with-transport-mode payload mode)]
+              action))
+          actions)))
 
 (defn- validated-receipt
   [state topic {:keys [frontiers] :as receipt}]
@@ -114,12 +155,14 @@
      (throw (ex-info "Too many synchronization sessions"
                      {:type :netz.sync/session-limit})))
    (let [impl (profile-for state profile-id)
+         key (session-key session)
          value (application state topic)
          summary (profile/describe impl value topic)
          receiver {:role :receiver :peer peer :topic topic :profile profile-id
+                   :session session
                    :next-index 0 :staging (profile/begin impl value topic)}]
      [(-> state
-          (assoc-in [:sessions session] receiver)
+          (assoc-in [:sessions key] receiver)
           (assoc-in [:status topic] :synchronizing)
           (update :next-session inc)
           (update-in [:stats :opened] inc))
@@ -146,16 +189,17 @@
 
 (defn- abort [state session peer code]
   [(-> state
-       (update :sessions dissoc session)
+       (update :sessions dissoc (session-key session))
        (update-in [:stats :aborted] inc))
    [[:send peer {:type :sync/abort :session session :code code}]]])
 
 (defn- on-open [state from payload _ctx]
   (let [{:keys [session topic summary] profile-id :profile} payload
+        key (session-key session)
         impl (profile-for state profile-id)]
     (cond
       (nil? impl) (abort state session from :unknown-profile)
-      (contains? (:sessions state) session) (abort state session from :duplicate-session)
+      (contains? (:sessions state) key) (abort state session from :duplicate-session)
       (>= (count (:sessions state)) (get-in state [:opts :max-sessions]))
       (abort state session from :session-limit)
       :else
@@ -166,26 +210,29 @@
           (if (> (count chunks) (get-in state [:opts :max-chunks]))
             (abort state session from :too-many-chunks)
             (let [sender {:role :sender :peer from :topic topic :profile profile-id
+                          :session session
+                          :transport-mode (transport-mode payload)
                           :chunks chunks :checkpoint checkpoint
                           :frontiers (frontiers state topic)
                           :acked -1 :next-to-send 0}
                   [sender actions] (sender-actions state session sender)
                   done? (some #(= :sync/done (:type (nth % 2 nil))) actions)
                   state (-> state
-                            (assoc-in [:sessions session] sender)
+                            (assoc-in [:sessions key] sender)
                             (update-in [:stats :chunks-sent]
                                        + (count (filter #(= :sync/chunk
                                                             (:type (nth % 2 nil)))
                                                         actions))))]
-              [(cond-> state done? (update :sessions dissoc session))
+              [(cond-> state done? (update :sessions dissoc key))
                (cond-> actions
                  (seq chunks) (conj (timer-action state session)))])))
         (catch #?(:clj Throwable :cljs :default) _
           (abort state session from :profile-rejected))))))
 
 (defn- on-chunk [state from {:keys [session index data]}]
-  (let [{:keys [role peer topic profile next-index staging] :as receiver}
-        (get-in state [:sessions session])]
+  (let [key (session-key session)
+        {:keys [role peer topic profile next-index staging] :as receiver}
+        (get-in state [:sessions key])]
     (cond
       (or (not= role :receiver) (not= peer from))
       (abort state session from :unknown-session)
@@ -203,7 +250,7 @@
         (let [impl (profile-for state profile)
               staging (profile/apply-chunk impl staging topic data)]
           [(-> state
-               (assoc-in [:sessions session]
+               (assoc-in [:sessions key]
                          (assoc receiver :staging staging :next-index (inc index)))
                (update-in [:stats :chunks-applied] inc))
            [[:send from {:type :sync/ack :session session :through index}]]])
@@ -211,8 +258,9 @@
           (abort state session from :profile-rejected))))))
 
 (defn- on-ack [state from {:keys [session through]}]
-  (let [{:keys [role peer next-to-send] :as sender}
-        (get-in state [:sessions session])]
+  (let [key (session-key session)
+        {:keys [role peer next-to-send] :as sender}
+        (get-in state [:sessions key])]
     (cond
       (or (not= role :sender) (not= peer from))
       (abort state session from :unknown-session)
@@ -225,16 +273,17 @@
             [sender actions] (sender-actions state session sender)
             done? (some #(= :sync/done (:type (nth % 2 nil))) actions)
             state (-> state
-                      (assoc-in [:sessions session] sender)
+                      (assoc-in [:sessions key] sender)
                       (update-in [:stats :chunks-sent]
                                  + (count (filter #(= :sync/chunk
                                                       (:type (nth % 2 nil)))
                                                   actions))))]
-        [(cond-> state done? (update :sessions dissoc session)) actions]))))
+        [(cond-> state done? (update :sessions dissoc key)) actions]))))
 
 (defn- on-done [state from {:keys [session count checkpoint frontiers]}]
-  (let [{:keys [role peer topic profile next-index staging]}
-        (get-in state [:sessions session])]
+  (let [key (session-key session)
+        {:keys [role peer topic profile next-index staging]}
+        (get-in state [:sessions key])]
     (cond
       (or (not= role :receiver) (not= peer from))
       (abort state session from :unknown-session)
@@ -258,7 +307,7 @@
                  (update-in [:frontiers topic] #(merge-with max (or % {})
                                                             (:frontiers receipt)))
                  (assoc-in [:status topic] :synchronized)
-                 (update :sessions dissoc session)
+                 (update :sessions dissoc key)
                  (update-in [:stats :completed] inc))
              [[:sync-committed (:frontiers receipt)]]]))
         (catch #?(:clj Throwable :cljs :default) _
@@ -267,47 +316,67 @@
 (defn handler [state event ctx]
   (case (:type event)
     :init {:state state :actions []}
-    :timer (let [{:keys [type session]} (:payload event)]
-             (if (and (= type :sync/timeout) (contains? (:sessions state) session))
-               (let [{:keys [role peer topic]} (get-in state [:sessions session])]
+    :timer (let [{:keys [type session]} (:payload event)
+                 key (session-key session)
+                 mode (get-in state [:sessions key :transport-mode])]
+             (if (and (= type :sync/timeout) (contains? (:sessions state) key))
+               (let [{:keys [role peer topic]} (get-in state [:sessions key])]
                  {:state (-> state
-                             (update :sessions dissoc session)
+                             (update :sessions dissoc key)
                              (cond-> (= role :receiver)
                                (assoc-in [:status topic] :desynchronized))
                              (update-in [:stats :aborted] inc))
-                  :actions [[:send peer {:type :sync/abort :session session
-                                         :code :timeout}]]})
+                  :actions (mark-sync-actions
+                            [[:send peer {:type :sync/abort :session session
+                                          :code :timeout}]]
+                            mode)})
                {:state state :actions []}))
     :message
     (let [from (:from event) payload (:payload event)]
       (if (= from :app)
         (case (:type payload)
           :sync/start
-          (let [[state actions] (if-let [session (:session payload)]
+          (let [mode (transport-mode payload)
+                [state actions] (if-let [session (:session payload)]
                                   (start state (:peer payload) (:topic payload)
                                          (:profile payload) session)
                                   (start state (:peer payload) (:topic payload)
-                                         (:profile payload)))]
-            {:state state :actions actions})
+                                         (:profile payload)))
+                session (:session (nth (first actions) 2))
+                state (cond-> state
+                        mode (assoc-in [:sessions (session-key session)
+                                        :transport-mode] mode))]
+            {:state state :actions (mark-sync-actions actions mode)})
 
           :application-committed
           {:state (record-application-commit state (:publication payload))
            :actions []}
 
           {:state state :actions []})
-        (let [[state actions]
-              (case (:type payload)
-                :sync/open (on-open state from payload ctx)
-                :sync/chunk (on-chunk state from payload)
-                :sync/ack (on-ack state from payload)
-                :sync/done (on-done state from payload)
-                :sync/abort (let [{:keys [role topic]}
-                                  (get-in state [:sessions (:session payload)])]
-                              [(-> state
-                                   (update :sessions dissoc (:session payload))
-                                   (cond-> (= role :receiver)
-                                     (assoc-in [:status topic] :desynchronized))
-                                   (update-in [:stats :aborted] inc)) []])
-                [state []])]
-          {:state state :actions actions})))
+        (let [key (session-key (:session payload))
+              incoming-mode (transport-mode payload)
+              stored-mode (get-in state [:sessions key :transport-mode])]
+          (if (and incoming-mode stored-mode
+                   (not= incoming-mode stored-mode))
+            ;; A reconnect may negotiate a different capability tuple, but an
+            ;; existing session never changes grammar. Reject before even a
+            ;; terminal `done` can reach profile commit.
+            {:state state :actions [[:disconnect from]]}
+            (let [mode (or stored-mode incoming-mode)
+                  [state actions]
+                  (case (:type payload)
+                    :sync/open (on-open state from payload ctx)
+                    :sync/chunk (on-chunk state from payload)
+                    :sync/ack (on-ack state from payload)
+                    :sync/done (on-done state from payload)
+                    :sync/abort (let [key (session-key (:session payload))
+                                      {:keys [role topic]}
+                                      (get-in state [:sessions key])]
+                                  [(-> state
+                                       (update :sessions dissoc key)
+                                       (cond-> (= role :receiver)
+                                         (assoc-in [:status topic] :desynchronized))
+                                       (update-in [:stats :aborted] inc)) []])
+                    [state []])]
+              {:state state :actions (mark-sync-actions actions mode)})))))
     {:state state :actions []}))
