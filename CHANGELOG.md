@@ -23,7 +23,11 @@ may make incompatible protocol changes.
   bounded sorted installed-manifest inventory and full-address object scrubs.
   Authenticated providers can now serve an explicitly requested installed
   manifest through the same offer/piece/receipt path, with independent read
-  authorization and exact pending-request fencing.
+  authorization and exact pending-request fencing. A portable bounded
+  `ensure-local!` helper now scrubs local storage, retries caller-selected
+  providers and requires a clean post-install scrub before reporting success.
+  The explicit Konserve immutable-write seam now fails before network work when
+  its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.
   The remaining storage and network bindings stay gated in `RELEASE.md`.
 - Added the exact `Noise_XX_25519_AESGCM_SHA256` direct Kabel carrier with

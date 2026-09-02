@@ -21,9 +21,9 @@
             [netz.replication.wire :as replication-wire]
             [netz.wire :as wire]
             #?(:clj [clojure.core.async :as async
-                     :refer [chan close! go go-loop <! timeout]]
+                     :refer [chan close! go go-loop <! put! timeout]]
                :cljs [clojure.core.async :as async
-                      :refer [chan close! <! timeout]
+                      :refer [chan close! <! put! timeout]
                       :refer-macros [go go-loop]])))
 
 (def ^:private extension-id ::durable-blob)
@@ -69,6 +69,7 @@
 
 (defn- fetch-failure [entry code]
   {:type :replication/fetch-failed
+   :status :failed
    :session (:session entry)
    :object-id
    (identity/bytes->hex
@@ -79,13 +80,18 @@
    :provider-id (identity/bytes->hex (:authority entry))
    :code code})
 
+(defn- deliver-fetch! [entry result]
+  (when-let [result-channel (::result-channel entry)]
+    (put! result-channel result (fn [_] (close! result-channel)))))
+
 (defn- fail-fetch! [ctx session code]
   (when-let [key (session-hex session)]
     (let [entry (get @(:fetches ctx) key)]
       (when entry
         (swap! (:fetches ctx) dissoc key)
-        (callback! ctx (:on-fetch-failed! ctx)
-                   (fetch-failure entry code) :fetch-failed)
+        (let [failure (fetch-failure entry code)]
+          (deliver-fetch! entry failure)
+          (callback! ctx (:on-fetch-failed! ctx) failure :fetch-failed))
         true))))
 
 (defn- apply-action! [ctx side [op & args :as action]]
@@ -135,10 +141,16 @@
 
     (= :replica-installed op)
     (let [event (first args)
-          key (session-hex (:session event))]
-      (when (and key (contains? @(:fetches ctx) key))
+          key (session-hex (:session event))
+          entry (when key (get @(:fetches ctx) key))]
+      (when entry
         (swap! (:fetches ctx) dissoc key)
-        (swap! (:stats ctx) update :fetched inc))
+        (swap! (:stats ctx) update :fetched inc)
+        (deliver-fetch!
+         entry
+         (assoc event
+                :status :installed
+                :provider-id (identity/bytes->hex (:authority entry)))))
       (callback! ctx (:on-installed! ctx) event :installed))
 
     (= :transfer-failed op)
@@ -466,7 +478,8 @@
   ([ctx peer authority retention-envelope]
    (fetch! ctx peer authority retention-envelope {}))
   ([ctx peer authority retention-envelope {:keys [attempt session]
-                                           :or {attempt 0}}]
+                                           :or {attempt 0}
+                                           :as opts}]
    (try
      (let [statement (:statement
                       (replication-wire/parse-envelope retention-envelope))
@@ -475,7 +488,8 @@
            frame {"v" 1 "type" "blob/fetch" "session" session
                   "attempt" attempt "retention" retention-envelope}
            entry {:session session :peer peer :authority authority
-                  :attempt attempt :retention retention-envelope}]
+                  :attempt attempt :retention retention-envelope
+                  ::result-channel (::result-channel opts)}]
        (replication-wire/validate-frame frame)
        (if-not (and (= "blob/retention" (get statement "type"))
                     key
@@ -504,6 +518,25 @@
                  session))))))
      (catch #?(:clj Throwable :cljs :default) _ false))))
 
+(defn fetch-result!
+  "Start `fetch!` and return a one-value channel for its terminal outcome.
+
+  Success yields the local `:replication/installed` event extended with
+  `:status :installed` and the selected `:provider-id`. Remote abort,
+  disconnect, timeout and shutdown yield `:replication/fetch-failed`. Immediate
+  input, capacity or capability refusal yields `{:status :refused}`."
+  ([ctx peer authority retention-envelope]
+   (fetch-result! ctx peer authority retention-envelope {}))
+  ([ctx peer authority retention-envelope opts]
+   (let [result-channel (chan 1)]
+     (when-not (fetch! ctx peer authority retention-envelope
+                       (assoc opts ::result-channel result-channel))
+       (put! result-channel {:type :replication/fetch-failed
+                             :status :refused
+                             :code :refused}
+             (fn [_] (close! result-channel))))
+     result-channel)))
+
 (defn replicate!
   "Start one already-signed offer after the controller's durable outbox step.
   Returns false when the target connection did not negotiate the capability or
@@ -523,7 +556,9 @@
 (defn states [ctx]
   {:sender @(:sender-state ctx)
    :receiver @(:receiver-state ctx)
-   :fetches @(:fetches ctx)})
+   :fetches (reduce-kv (fn [result key entry]
+                         (assoc result key (dissoc entry ::result-channel)))
+                       {} @(:fetches ctx))})
 
 (defn stats [ctx] @(:stats ctx))
 
