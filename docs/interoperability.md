@@ -135,11 +135,13 @@ against the JVM/JavaScript implementation.
 The independent seam is now concrete: strict Clojure codecs and the installable
 `netz-protocol` Python core emit the same identity, Noise binding, signed
 publication, `sync/open`, and `sync/done` fixtures. The Python package also has
-a real secure WebSocket round trip and bounded ordered publication receiver.
-This proves the byte, signature, carrier, and receiving-session shapes. A
-complete portable runtime still needs negotiated codec routing, outbound Python
-sync/repair orchestration, content exchange, and independent JVM/Python
-application-session tests.
+a real secure WebSocket round trip, bounded ordered publication receiver, and
+one-session durable-blob sender/receiver. JVM, JavaScript and Python pin the
+same canonical need/piece/ACK/commit trace. This proves the byte, signature,
+carrier, receiving-session and blob flow-control shapes. A complete portable
+runtime still needs negotiated codec routing, outbound Python sync/repair
+orchestration, content exchange, transfer carrier orchestration, and
+independent JVM/Python application-session tests.
 
 ## Boring and the CBOR data model
 

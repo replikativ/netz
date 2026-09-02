@@ -132,8 +132,13 @@ This extension is not part of the alpha interoperability claim yet.
 - [x] Implement a dependency-free asynchronous Python filesystem repository
       with JVM-compatible piece paths and deterministic installation markers,
       explicit fsync/best-effort claims, restart/resume, bounded inventory,
-      scrubbing and bounded reads. The transfer and receipt runtimes remain
-      separate gates.
+      scrubbing and bounded reads.
+- [x] Implement independent one-session Python sender and receiver machines.
+      They expose typed carrier/storage/signing actions, preserve one-piece
+      staging backpressure and authenticated session/attempt fences, and gate
+      controller delivery on durable receipt persistence. JVM, JavaScript and
+      Python pin the same need/piece/ACK/commit trace bytes. A reconnecting
+      Python carrier runtime remains a separate gate.
 - [x] Implement a journal-first lifecycle machine with monotone leases,
       same-revision equivocation evidence, expiry, deletion retry, absorbing
       tombstones, and persist-before-emit deletion receipts. Simulator tests

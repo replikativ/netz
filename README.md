@@ -8,7 +8,8 @@ an application-defined state-synchronization boundary.
 The reference implementation runs on the JVM and in JavaScript through shared
 Clojure/ClojureScript sources. A language-neutral protocol draft and a small
 dependency-free Python CBOR/session core plus a durable filesystem blob
-repository define the path to implementations outside the Clojure ecosystem.
+repository and transfer machines define the path to implementations outside
+the Clojure ecosystem.
 
 > **Release status: `0.1.0-alpha.1`.** The JVM, JavaScript, and Python paths now
 > share deterministic CBOR and authenticated Noise/Kabel fixtures, and the
@@ -88,7 +89,8 @@ The experimental durable-blob profile uses signed, hash-chained replica layouts
 and treats owner and physical site as explicit failure domains. A detected
 controller fork stops new retention admission. Its explicit controller runtime
 restores durable intents and signed receipts before readiness, then persists
-each begin or repair generation before handing offers to the transfer runtime.
+each begin, signed revision, or repair generation before handing offers to the
+transfer runtime.
 An optional portable scheduler now scans that durable evidence, waits an
 initial grace period, and retries known-missing targets with bounded concurrency
 and backoff. It does not treat a receipt as proof of future or Byzantine
@@ -111,7 +113,8 @@ clojure -M:blob-demo
   [extension draft](spec/blob-replication-draft-00.md) — optional private replicas
 - [Konserve-backed object exchange](docs/konserve-object-exchange.md) — stack
   integration, object/ref publication boundary, and Git-like materialization
-- [Python interoperability core](interop/python/README.md) — CBOR and sync seed
+- [Python interoperability core](interop/python/README.md) — CBOR, sync, and
+  durable-blob session API
 - [Release readiness](RELEASE.md), [security policy](SECURITY.md), and
   [changelog](CHANGELOG.md)
 

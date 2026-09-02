@@ -30,6 +30,18 @@
   "b089b87f09f1d1c9f7cee7d6ef8b8a14138b814518a9b54c893111acdf6de2cc")
 (def fetch-hash-hex
   "6a8ee720984025a398f9d60135509e80941333ed3afaddf25bc9945e46eeb18a")
+(def need-hash-hex
+  "3f796a327746eb456ff78368e5924220777d5de74e71e5d625c27a3799d25709")
+(def piece-hash-hexes
+  ["1e51bd8f1d4097b970e746ffef7dca9729ac8c4d5d83ad93e1e3d5804863a808"
+   "3db39ba3dd8c59f30a9349b75860e3295a1a74e6cef1fde760c4a254b5687c99"
+   "64f23eee5c9b25ce1a9506eb74b5bd8692e024b04783e0923a405ca6ac247226"])
+(def ack-hash-hexes
+  ["889f03fee2c9b4a037d8c6579a7a20e3db7c24c3e75bad2371456b0116921f3f"
+   "a0b0454cc4380105aa9e83bd1d8adf781d221f0d306e1a979d03475c7421baf6"
+   "82a0bc0b98c22a8fb5c4b06085dde2e1571669222e9ed9c48a720e19e6179bbb"])
+(def commit-hash-hex
+  "d6796cacf36b17019fe24486aced3ec2c3f5a61175ac1bfedacab8bf3a939915")
 
 (def split
   (blob/split (identity/seq->bytes (range 20)) {:piece-size 8}))
@@ -123,6 +135,30 @@
     (is (not (replication-wire/valid-frame?
               {"v" 1 "type" "blob/abort" "session" session
                "code" ""})))))
+
+(deftest transfer-trace-bytes-match-python
+  (let [hash-frame #(-> % replication-wire/encode-frame identity/sha256
+                        identity/bytes->hex)
+        need {"v" 1 "type" "blob/need" "session" session
+              "manifest" (:manifest-id split)
+              "need" (blob/need-bitmap (:manifest split) #{})}
+        piece-frames
+        (mapv (fn [{:keys [index data]}]
+                {"v" 1 "type" "blob/piece" "session" session
+                 "manifest" (:manifest-id split) "index" index "data" data})
+              (:pieces split))
+        ack-frames
+        (mapv (fn [{:keys [index]}]
+                {"v" 1 "type" "blob/ack" "session" session
+                 "manifest" (:manifest-id split) "through" index})
+              (:pieces split))
+        commit {"v" 1 "type" "blob/commit" "session" session
+                "manifest" (:manifest-id split)
+                "count" (count (:pieces split))}]
+    (is (= need-hash-hex (hash-frame need)))
+    (is (= piece-hash-hexes (mapv hash-frame piece-frames)))
+    (is (= ack-hash-hexes (mapv hash-frame ack-frames)))
+    (is (= commit-hash-hex (hash-frame commit)))))
 
 (deftest fetch-frames-bind-the-signed-retention-request
   (let [fetch {"v" 1 "type" "blob/fetch" "session" session
