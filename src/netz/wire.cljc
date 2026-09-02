@@ -25,7 +25,7 @@
    :tolerate-unknown-tags false
    :on-unknown-record :error})
 
-(def ^:private max-frame-bytes (* 5 1024 1024))
+(def max-frame-bytes (* 5 1024 1024))
 (def ^:private max-string-bytes (* 1024 1024))
 
 #?(:clj (def ^:private byte-array-class (Class/forName "[B")))
@@ -73,7 +73,12 @@
 (defn encode-canonical
   "Encode a wire-profile value using RFC 8949 deterministic CBOR."
   [value]
-  (boring/encode (assert-portable! value) canonical-options))
+  (let [encoded (boring/encode (assert-portable! value) canonical-options)]
+    (when (> (identity/buf-length encoded) max-frame-bytes)
+      (throw (ex-info "Netz CBOR frame exceeds the profile-1 limit"
+                      {:type :netz.wire/frame-too-large
+                       :bytes (identity/buf-length encoded)})))
+    encoded))
 
 (defn decode
   "Decode exactly one deterministic profile-1 value.

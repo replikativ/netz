@@ -5,7 +5,12 @@ control-envelope subset in `spec/netz-draft-00.md`. `netz_sync.py` adds both
 transport-independent halves of an acknowledged, windowed synchronization
 session plus the reference join-set and fenced-root profiles. The packaged
 `netz_protocol.framing` module implements both raw WebSocket-CBOR frames and
-Kabel's four-byte serializer-14 prefix.
+Kabel's four-byte serializer-14 prefix. `netz_protocol.extension` adds the
+exact portable named-extension carrier used after `wire/netz-cbor/1` and
+`netz/extension-cbor/1` negotiation. Its frame bytes can be passed directly to
+`SecureWebSocket.send_frame`; encoding and decoding take the authenticated
+peer's selected capability set and require the wire, carrier, and named
+extension capabilities before returning the closed profile-1 payload.
 
 `netz_protocol.identity` derives the full 32-byte Authority ID and its compact
 routing projection from the same deterministic genesis fixture as the JVM and
@@ -43,7 +48,9 @@ signed retention statement before constructing a receiver, and must verify the
 receipt signature plus authenticated remote Authority before calling
 `BlobSender.verified_stored`. A carrier owns the bounded session table,
 timeouts, and reconnect policy. There is no Python WebSocket transfer runtime
-or Konserve adapter yet.
+or Konserve adapter yet; the secure WebSocket, extension codec, filesystem
+repository, and pure transfer machines are the separate pieces needed to build
+that bounded reconnecting adapter.
 
 This does not replace a full CBOR implementation for application values.
 Application payloads are opaque bytes and may use Boring's registered tags;

@@ -54,6 +54,7 @@
             [netz.publication :as publication]
             [netz.ratelimit :as rl]
             [netz.overlay :as overlay]
+            [netz.wire :as wire]
             [kabel.peer :as peer]
             [netz.sim.rng :as rng]
             [netz.store.protocol :as store]
@@ -96,8 +97,97 @@
 
 (defn frame [payload] {:type frame-type :payload payload})
 
+(def extension-carrier-capability
+  "Capability selecting the portable named-extension carrier."
+  "netz/extension-cbor/1")
+
+(def extension-carrier-type
+  "Reserved Kabel value identifying one portable extension envelope."
+  extension-carrier-capability)
+
+(def extension-envelope-type "netz/extension")
+
+(defn- capability-name? [value]
+  (and (string? value)
+       (<= 1 (count value) 128)
+       (every? (fn [ch]
+                 (let [n #?(:clj (int ch)
+                            :cljs (.charCodeAt ch 0))]
+                   (<= 0x21 n 0x7e)))
+               value)))
+
+(defn encode-extension-envelope
+  "Encode one named extension payload as deterministic Netz-CBOR bytes.
+
+  These bytes are carried inside `extension-carrier-type`; keeping the closed
+  text-key envelope canonical makes its representation identical in Clojure,
+  ClojureScript and independent implementations even though Kabel's general
+  Clojure-value serializer is intentionally not a canonicalization boundary."
+  [capability payload]
+  (when-not (capability-name? capability)
+    (throw (ex-info "Invalid extension capability"
+                    {:type :netz.overlay.runtime/invalid-capability
+                     :capability capability})))
+  (wire/encode-canonical
+   {"v" 1
+    "type" extension-envelope-type
+    "capability" capability
+    "payload" payload}))
+
+(defn decode-extension-envelope
+  "Decode and validate deterministic bytes produced by
+  `encode-extension-envelope`. Returns the named capability and payload."
+  [bytes]
+  (let [envelope (wire/decode bytes)
+        capability (get envelope "capability")]
+    (when-not (and (map? envelope)
+                   (= #{"v" "type" "capability" "payload"}
+                      (set (keys envelope)))
+                   (= 1 (get envelope "v"))
+                   (= extension-envelope-type (get envelope "type"))
+                   (capability-name? capability))
+      (throw (ex-info "Invalid portable extension envelope"
+                      {:type :netz.overlay.runtime/invalid-extension-envelope})))
+    {:capability capability :payload (get envelope "payload")}))
+
+(defn- cbor-head-bytes [length]
+  (cond
+    (< length 24) 1
+    (<= length 0xff) 2
+    (<= length 0xffff) 3
+    (<= length 0xffffffff) 5
+    :else 9))
+
+(defn extension-carrier
+  "Build the reserved Kabel value for one portable extension envelope."
+  [capability payload]
+  (let [inner (encode-extension-envelope capability payload)
+        marker-bytes (id/buf-length (id/utf8-bytes extension-carrier-type))
+        inner-bytes (id/buf-length inner)
+        ;; The secure carrier's 5 MiB limit includes Kabel's four-byte
+        ;; serializer prefix. The outer array adds one head for itself and one
+        ;; each for the marker and inner byte string.
+        envelope-bytes (+ 4 1
+                          (cbor-head-bytes marker-bytes) marker-bytes
+                          (cbor-head-bytes inner-bytes) inner-bytes)]
+    (when (> envelope-bytes wire/max-frame-bytes)
+      (throw (ex-info "Portable extension exceeds the Kabel frame limit"
+                      {:type :netz.overlay.runtime/extension-frame-too-large
+                       :bytes envelope-bytes
+                       :max wire/max-frame-bytes})))
+    [extension-carrier-type inner]))
+
+(defn extension-carrier?
+  "Whether `value` has the unambiguous portable extension carrier shape."
+  [value]
+  (and (vector? value)
+       (= 2 (count value))
+       (= extension-carrier-type (first value))
+       (wire/byte-buffer? (second value))))
+
 (defn overlay-message? [m]
-  (and (map? m) (#{frame-type hello-type proof-type} (:type m))))
+  (or (extension-carrier? m)
+      (and (map? m) (#{frame-type hello-type proof-type} (:type m)))))
 
 ;; =============================================================================
 ;; Runtime
@@ -412,10 +502,18 @@
 (defn send-extension!
   "Send a direct extension payload only on a connection that negotiated its
   exact capability. Returns false instead of queueing across an unauthenticated
-  or incompatible connection."
+  or incompatible connection. A peer that also negotiated the language-neutral
+  wire profile and dedicated extension-carrier capability receives the portable
+  carrier; older Clojure peers retain the transitional native overlay frame."
   [{:keys [ctx peer]} to capability payload]
   (if (connection-supports? peer to capability)
-    (do ((get-in ctx [:effects :send!]) to (frame payload)) true)
+    (do ((get-in ctx [:effects :send!])
+         to
+         (if (and (connection-supports? peer to wire/profile-capability)
+                  (connection-supports? peer to extension-carrier-capability))
+           (extension-carrier capability payload)
+           (frame payload)))
+        true)
     false))
 
 (defn disconnect-peer!
@@ -426,9 +524,11 @@
 
 (declare bounded-value?)
 
-(defn- matching-extension [ctx payload]
+(defn- matching-extension [ctx capability payload]
   (reduce-kv (fn [found _id handler]
-               (if ((:match? handler) payload)
+               (if (and (or (nil? capability)
+                            (= capability (:capability handler)))
+                        ((:match? handler) payload))
                  (if found
                    (throw (ex-info "More than one extension accepted a frame"
                                    {:type :netz.overlay.runtime/ambiguous-extension}))
@@ -436,16 +536,41 @@
                  found))
              nil @(:extensions ctx)))
 
-(defn- dispatch-extension! [ctx peer from payload]
-  (if-let [{:keys [capability valid? receive!]} (matching-extension ctx payload)]
-    (let [facts (connection-info peer from)]
-      (if (and (contains? (:capabilities facts) capability)
-               (bounded-value? payload)
-               (valid? payload)
-               (receive! from facts payload))
-        :accepted
-        :rejected))
-    :unmatched))
+(defn- dispatch-extension! [ctx peer from capability payload]
+  (try
+    (if-let [{handler-capability :capability :keys [valid? receive!]}
+             (matching-extension ctx capability payload)]
+      (let [facts (connection-info peer from)]
+        (if (and (contains? (:capabilities facts) handler-capability)
+                 (bounded-value? payload)
+                 (valid? payload)
+                 (receive! from facts payload))
+          :accepted
+          :rejected))
+      :unmatched)
+    (catch #?(:clj Throwable :cljs :default) e
+      ;; Predicates and handlers see hostile wire input. A throw must have the
+      ;; same fail-closed result as `false`, while remaining observable.
+      (swap! (:dropped ctx) inc)
+      (log/warn :overlay/extension-rejected
+                {:from from
+                 :capability capability
+                 :error #?(:clj (.getMessage ^Throwable e)
+                           :cljs (str e))})
+      :rejected)))
+
+(defn- meter-frame! [S ctx from]
+  (go-try S
+          (let [verdict (::verdict
+                         (swap! (:limiter ctx)
+                                (fn [st]
+                                  (let [[st' v] (rl/check st from (now-ms))]
+                                    (assoc st' ::verdict v)))))]
+            (case verdict
+              :slow (<? S (timeout 25))
+              :queue (<? S (timeout 250))
+              nil)
+            verdict)))
 
 (defn- extension-disconnected! [ctx peer-id]
   (doseq [{:keys [disconnected!]} (vals @(:extensions ctx))]
@@ -882,6 +1007,45 @@
                                  (when-let [record @pending-record]
                                    (<? S (complete! record @pending-nonce (:sig m))))))
 
+                             ;; A reserved carrier is claimed only after the
+                             ;; authenticated session negotiated profile 1.
+                             ;; Other vectors (including ordinary application
+                             ;; values) still pass through untouched.
+                             (and (vector? m)
+                                  (= extension-carrier-type (first m))
+                                  (when-let [from @conn-peer-id]
+                                    (and (connection-supports?
+                                          peer from wire/profile-capability)
+                                         (connection-supports?
+                                          peer from
+                                          extension-carrier-capability))))
+                             (if-not (extension-carrier? m)
+                               (close! out)
+                               (when-let [from @conn-peer-id]
+                                 (let [{:keys [capability payload] :as decoded}
+                                       (try
+                                         (decode-extension-envelope (second m))
+                                         (catch #?(:clj Throwable :cljs :default) e
+                                           ;; The reserved marker means this
+                                           ;; is protocol input, not an
+                                           ;; application value. Decoding
+                                           ;; failure is therefore fatal to
+                                           ;; the offending connection.
+                                           (close! out)
+                                           (throw e)))
+                                       verdict (<? S (meter-frame! S ctx from))]
+                                   (when decoded
+                                     (if (= :reject verdict)
+                                       (log-rejected ctx from)
+                                       (case (dispatch-extension!
+                                              ctx peer from capability payload)
+                                         :accepted true
+                                       ;; A named portable extension can
+                                       ;; never be an overlay or application
+                                       ;; frame. Unknown, malformed and
+                                       ;; handler-refused values fail closed.
+                                         (:rejected :unmatched) (close! out)))))))
+
                              (= frame-type (:type m))
                              ;; The connection's own peer id, remembered when
                              ;; its hello verified. This used to invert the
@@ -892,31 +1056,11 @@
                              ;; loop has known the answer since registration.
                              (when-let [from @conn-peer-id]
                                (let [payload (:payload m)
-                                     ;; `swap!`, not read-modify-write. The old
-                                     ;; `(rl/check @limiter …)` then `reset!`
-                                     ;; lost every concurrent update, so the
-                                     ;; limit was bypassable by parallelism --
-                                     ;; and the `reset!` also discarded the
-                                     ;; drop counters other paths `swap!` in,
-                                     ;; so the metering under-reported exactly
-                                     ;; when it mattered most.
-                                     verdict (::verdict
-                                              (swap! (:limiter ctx)
-                                                     (fn [st]
-                                                       (let [[st' v] (rl/check st from (now-ms))]
-                                                         (assoc st' ::verdict v)))))]
-                               ;; Synapse's shape: slow, then queue, then
-                               ;; reject. Sleeping here IS the backpressure —
-                               ;; it stops draining `in`, which backs up the
-                               ;; socket, so a busy peer is throttled rather
-                               ;; than dropped and a hostile one is cut off.
-                                 (case verdict
-                                   :slow (<? S (timeout 25))
-                                   :queue (<? S (timeout 250))
-                                   nil)
+                                     verdict (<? S (meter-frame! S ctx from))]
                                  (if (= :reject verdict)
                                    (log-rejected ctx from)
-                                   (case (dispatch-extension! ctx peer from payload)
+                                   (case (dispatch-extension!
+                                          ctx peer from nil payload)
                                      :accepted true
                                      :rejected (close! out)
                                      :unmatched
