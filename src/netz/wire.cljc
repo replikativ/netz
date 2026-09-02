@@ -226,7 +226,7 @@
                            (string? topic) (seq topic)
                            (byte-buffer? checkpoint)
                            (map? frontiers))
-           :sync/abort (or (keyword? code) (string? code))
+           :sync/abort (or (keyword? code) (and (string? code) (seq code)))
            false))))
 
 (defn sync-frame->wire

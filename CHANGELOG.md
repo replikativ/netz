@@ -6,6 +6,14 @@ may make incompatible protocol changes.
 
 ## 0.1.0-alpha.1 — unreleased
 
+- Added a separately negotiated portable `netz/sync/1` carrier path and a real
+  Python receiver/JVM sender synchronization test. Portable bytes16 sessions
+  are now keyed by tagged content rather than JVM array identity, and malformed
+  negotiated sync payloads close the connection. Portable reads are
+  deny-by-default behind authenticated Authority/topic/profile authorization;
+  each session pins its negotiated carrier and rejects native schema downgrade
+  or reconnect-time reinterpretation.
+
 - Added an experimental private durable-blob extension: deterministic
   Authority-ID placement across owner/site failure domains, explicit durable
   outbox and receipt fencing, portable piece manifests/resume bitmaps with

@@ -7,6 +7,7 @@
             [clojure.test :refer [deftest testing is are]]
             [netz.identity :as id]
             [netz.overlay.runtime :as rt]
+            [netz.sync :as sync]
             [netz.wire :as wire]
             #?@(:clj [[netz.dissemination :as d]
                       [superv.async :refer [S <??]]
@@ -184,9 +185,100 @@
       (let [cleanup-again (rt/register-extension! node :example handler)]
         (is (true? (cleanup-again)))))
 
+    (testing "the built-in portable sync capability cannot be shadowed"
+      (is (thrown-with-msg?
+           #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+           #"reserved"
+           (rt/register-extension!
+            node :fake-sync (assoc handler :capability "netz/sync/1")))))
+
+    (testing "the generic sender cannot bypass the built-in sync machine"
+      (swap! (:netz.overlay/connections @peer)
+             update-in [:facts :remote :capabilities]
+             conj "netz/sync/1")
+      (reset! log [])
+      (is (false? (rt/send-extension!
+                   node :remote "netz/sync/1" {"type" "sync/open"})))
+      (is (empty? @log)))
+
     (testing "extensions use the overlay's ordinary disconnect effect"
       (rt/disconnect-peer! node :remote)
       (is (= [:disconnect :remote] (last @log))))))
+
+#?(:clj
+   (deftest synchronization-carrier-is-pinned-before-queueing
+     (let [ctx (runtime-with [] (atom []))
+           peer (atom {})
+           node {:ctx ctx :peer peer}
+           capabilities #{wire/profile-capability
+                          rt/extension-carrier-capability
+                          "netz/sync/1"}]
+       (testing "a disconnected request is refused instead of queued"
+         (is (false? (rt/start-sync! node :remote "doc" "example/sync/1"))))
+
+       (rt/connections peer)
+       (swap! (:netz.overlay/connections @peer)
+              assoc-in [:facts :remote]
+              {:authenticated? true :capabilities capabilities})
+       (testing "the live negotiation selects and pins portable mode"
+         (is (true? (rt/start-sync! node :remote "doc" "example/sync/1")))
+         (let [event (<!! (:events ctx))
+               payload (:payload event)]
+           (is (= :portable (sync/transport-mode payload)))
+           (is (= 16 (id/buf-length (:session payload))))
+           (swap! (:netz.overlay/connections @peer)
+                  assoc-in [:facts :remote :capabilities]
+                  #{wire/profile-capability "netz/sync/1"})
+           (is (= :portable (sync/transport-mode payload))
+               "later capability changes cannot reinterpret the session")))
+
+       (testing "portable mode rejects a legacy caller-supplied session"
+         (swap! (:netz.overlay/connections @peer)
+                assoc-in [:facts :remote :capabilities]
+                capabilities)
+         (is (false? (rt/start-sync! node :remote "doc" "example/sync/1"
+                                     :legacy)))))))
+
+#?(:clj
+   (deftest outbound-sync-refuses-a-reconnected-carrier-change
+     (let [ctx (runtime-with [] (atom []))
+           peer (atom {})
+           out (chan 1)
+           capabilities #{wire/profile-capability
+                          rt/extension-carrier-capability
+                          "netz/sync/1"}
+           effects (rt/kabel-effects S peer ctx nil nil {})
+           session (id/seq->bytes (range 16))]
+       (rt/connections peer)
+       (swap! (:netz.overlay/connections @peer)
+              (fn [registry]
+                (-> registry
+                    (assoc-in [:by-id :remote] out)
+                    (assoc-in [:facts :remote]
+                              {:authenticated? true
+                               :capabilities capabilities}))))
+       ((:send! effects)
+        :remote
+        (rt/frame
+         (sync/with-transport-mode
+           {:type :sync/open :session session :topic "doc"
+            :profile "example/sync/1" :summary (id/seq->bytes [])}
+           :portable)))
+       (is (rt/extension-carrier? (<!! out)))
+
+       ;; The session remains portable even if the same routing id reconnects
+       ;; with a different selection. Its next frame closes instead of being
+       ;; emitted through the legacy grammar.
+       (swap! (:netz.overlay/connections @peer)
+              assoc-in [:facts :remote :capabilities]
+              #{wire/profile-capability "netz/sync/1"})
+       ((:send! effects)
+        :remote
+        (rt/frame
+         (sync/with-transport-mode
+           {:type :sync/ack :session session :through 0}
+           :portable)))
+       (is (nil? (<!! out))))))
 
 (def extension-fixture
   {"v" 1
@@ -269,6 +361,87 @@
          (is (nil? value))))))
 
 #?(:clj
+   (defn- assert-native-sync-admitted! [capabilities payload]
+     (let [local (<!! (id/generate-identity))
+           remote (<!! (id/generate-identity))
+           remote-record (<!! (id/sign-record remote [] 1))
+           remote-id (id/peer-id (:genesis remote))
+           authenticated-context
+           (atom {:netz.transport.noise/authenticated-record remote-record
+                  :netz.transport.noise/authenticated-routing-id remote-id
+                  :kabel.transport/authenticated-authority
+                  (id/authority-id (:genesis remote))
+                  :kabel.transport/negotiated-capabilities capabilities})
+           ctx (runtime-with [] (atom []))
+           peer (atom {})
+           in (chan)
+           out (chan)]
+       ((rt/middleware
+         {:ctx ctx :identity local :addresses [] :seq-no 1
+          :authenticated-context-fn (constantly authenticated-context)})
+        [S peer [in out]])
+       ;; Allow the authenticated transport facts to be registered before the
+       ;; test frame enters the data plane.
+       (loop [attempt 0]
+         (when (and (< attempt 200)
+                    (nil? (rt/connection-info peer remote-id)))
+           (Thread/sleep 5)
+           (recur (inc attempt))))
+       (is (some? (rt/connection-info peer remote-id)))
+       (>!! in {:type rt/frame-type :payload payload})
+       (let [[event port] (alts!! [(:events ctx) (timeout 1000)])]
+         (is (= (:events ctx) port) "legacy native sync was not admitted")
+         (is (= :native
+                (sync/transport-mode (:payload event))))))))
+
+#?(:clj
+   (deftest public-start-defaults-portable-sync-authorization-to-deny
+     (let [local (<!! (id/generate-identity))
+           remote (<!! (id/generate-identity))
+           remote-record (<!! (id/sign-record remote [] 1))
+           remote-id (id/peer-id (:genesis remote))
+           capabilities #{wire/profile-capability
+                          rt/extension-carrier-capability
+                          "netz/sync/1"}
+           authenticated-context
+           (atom {:netz.transport.noise/authenticated-record remote-record
+                  :netz.transport.noise/authenticated-routing-id remote-id
+                  :kabel.transport/authenticated-authority
+                  (id/authority-id (:genesis remote))
+                  :kabel.transport/negotiated-capabilities capabilities})
+           peer (atom {})
+           node (<!! (rt/start!
+                      S peer
+                      {:identity local :addresses []
+                       :authenticated-context-fn
+                       (constantly authenticated-context)}))
+           in (chan)
+           out (chan)]
+       (try
+         ((:middleware node) [S peer [in out]])
+         (loop [attempt 0]
+           (when (and (< attempt 200)
+                      (nil? (rt/connection-info peer remote-id)))
+             (Thread/sleep 5)
+             (recur (inc attempt))))
+         (>!! in
+              (rt/extension-carrier
+               "netz/sync/1"
+               (wire/sync-frame->wire
+                {:type :sync/open
+                 :session (id/seq->bytes (range 16))
+                 :topic "private/document"
+                 :profile "example/sync/1"
+                 :summary (id/seq->bytes [])})))
+         (let [[value port] (alts!! [out (timeout 1000)])]
+           (is (= out port))
+           (is (nil? value))
+           (is (zero? @(:dropped (:ctx node)))
+               "default denial must not be an exception path"))
+         (finally
+           (rt/stop! node))))))
+
+#?(:clj
    (deftest hostile-portable-extension-input-fails-closed
      (let [base-capabilities
            #{wire/profile-capability rt/extension-carrier-capability}
@@ -292,6 +465,40 @@
          (assert-portable-extension-closes!
           normal-handler (conj base-capabilities "example/1")
           [rt/extension-carrier-type (id/hex->bytes "00")]))
+
+       (testing "malformed negotiated portable sync closes the connection"
+         (assert-portable-extension-closes!
+          normal-handler (conj base-capabilities "netz/sync/1")
+          (rt/extension-carrier "netz/sync/1"
+                                {"v" 1 "type" "sync/ack"
+                                 "session" (id/seq->bytes (range 16))
+                                 "through" -1})))
+
+       (testing "portable sync reads are denied unless explicitly authorized"
+         (assert-portable-extension-closes!
+          normal-handler (conj base-capabilities "netz/sync/1")
+          (rt/extension-carrier
+           "netz/sync/1"
+           (wire/sync-frame->wire
+            {:type :sync/open
+             :session (id/seq->bytes (range 16))
+             :topic "private/document"
+             :profile "example/sync/1"
+             :summary (id/seq->bytes [])}))))
+
+       (testing "negotiated portable sync rejects the native schema downgrade"
+         (assert-portable-extension-closes!
+          normal-handler (conj base-capabilities "netz/sync/1")
+          {:type rt/frame-type
+           :payload {:type :sync/open :session :legacy
+                     :topic :doc :profile "example/sync/1"
+                     :summary #{}}}))
+
+       (testing "a peer missing a portable capability retains native sync"
+         (assert-native-sync-admitted!
+          #{wire/profile-capability "netz/sync/1"}
+          {:type :sync/open :session :legacy :topic :doc
+           :profile "example/sync/1" :summary #{}}))
 
        (testing "malformed reserved outer carrier shapes are rejected"
          (assert-portable-extension-closes!

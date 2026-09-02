@@ -15,6 +15,7 @@ from netz_codec import dumps, loads
 
 JOIN_PROFILE = "netz/join-semilattice/1"
 ROOT_PROFILE = "netz/root-log/1"
+SYNC_CAPABILITY = "netz/sync/1"
 MAX_SAFE_INTEGER = (1 << 53) - 1
 
 

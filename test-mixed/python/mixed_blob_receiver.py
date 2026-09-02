@@ -145,13 +145,13 @@ async def transfer(uri: str, remote_authority: bytes, store_path: Path,
                     )
                     pending.extend(receiver.staging_loaded(**loaded, now=NOW))
                 elif action.kind == "stage_piece":
-                    result = await store.stage_piece(
+                    stage_result = await store.stage_piece(
                         values["session"], values["manifest_id"],
                         values["manifest"], values["index"],
                         values["piece_id"], values["data"],
                     )
                     pending.extend(receiver.piece_staged(
-                        values["index"], result
+                        values["index"], stage_result
                     ))
                     staged_pieces += 1
                     if (stop_after_pieces > 0
@@ -160,14 +160,15 @@ async def transfer(uri: str, remote_authority: bytes, store_path: Path,
                         # process/session must discover this addressed piece.
                         raise _IntentionalInterruption
                 elif action.kind == "install_object":
-                    result = await store.install_object(
+                    install_result = await store.install_object(
                         values["session"], values["manifest_id"],
                         values["manifest"], values["retention"],
                         values["persistence"],
                     )
                     pending.extend(receiver.installed(
-                        result["result"], result["persistence"],
-                        result["stored_at"], now=1_200,
+                        install_result["result"],
+                        install_result["persistence"],
+                        install_result["stored_at"], now=1_200,
                     ))
                 elif action.kind == "sign_receipt":
                     envelope = sign_statement(
