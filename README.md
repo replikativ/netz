@@ -89,7 +89,10 @@ and treats owner and physical site as explicit failure domains. A detected
 controller fork stops new retention admission. Its explicit controller runtime
 restores durable intents and signed receipts before readiness, then persists
 each begin or repair generation before handing offers to the transfer runtime.
-Automatic repair cadence and backoff remain application policy for this alpha.
+An optional portable scheduler now scans that durable evidence, waits an
+initial grace period, and retries known-missing targets with bounded concurrency
+and backoff. It does not treat a receipt as proof of future or Byzantine
+retention.
 The small executable walkthrough models encrypted data held by three private
 home devices, quorum at two copies, and repair after one device is lost:
 

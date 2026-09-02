@@ -556,6 +556,15 @@ retry; stale persistence completions and receipts from earlier attempts MUST
 NOT release or satisfy the retry. Connection discovery resolves an already
 selected full Authority to a live peer; it MUST NOT change the target or grant
 storage authority. Network-wide inventory exchange is not defined in draft-00.
+A scheduler MUST NOT issue a second concurrent repair for the same intent
+generation. A result from an older layout epoch, intent revision, or target set
+MUST NOT mutate the replacement generation. Implementations MAY keep cadence
+and backoff timestamps in volatile memory when the durable controller intent
+retains the attempt fence; after restart they MUST reconstruct incomplete work
+from durable intents and current receipts and apply an initial grace interval
+before issuing another generation. This scheduling repairs targets lacking
+current receipts. It does not establish continuing possession by an already
+acknowledged or Byzantine replica.
 A later batched or Merkle extension must define cluster and privacy-domain
 scoping, authorization before existence disclosure, freshness and replay
 behavior, and request, response and computation bounds. It is an optimization,

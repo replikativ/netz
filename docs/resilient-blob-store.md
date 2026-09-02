@@ -2,8 +2,8 @@
 
 Status: experimental implementation draft. Portable placement, manifests,
 signed lifecycle statements, bounded sender/receiver transfer machines, a
-crash-safe lifecycle journal, a JVM Kabel/Noise runtime and JVM/Python durable
-filesystem repositories exist.
+crash-safe lifecycle journal, bounded known-missing repair scheduling, a JVM
+Kabel/Noise runtime and JVM/Python durable filesystem repositories exist.
 The capability remains explicit opt-in and is not advertised by default. This
 is not yet a durability or data-protection claim of the Netz release.
 
@@ -317,8 +317,24 @@ protocol can reduce audit traffic, but must define cluster/privacy scoping,
 freshness and replay rules, and resource bounds. It is not a release blocker.
 The serialized controller runtime now restores a bounded intent set, replays
 durable receipts before readiness, and issues explicit targeted re-offers. The
-automatic scheduling policy which decides cadence, backoff and concurrency is
-still separate and remains to be implemented.
+separate `netz.replication.repair-scheduler-runtime` waits for that readiness
+gate and periodically compares the restored target set with current receipts.
+It waits an initial grace interval so attempt-zero offers can complete, issues
+at most the configured batch and global outstanding-controller-call bound, and
+retries accepted repairs on a bounded backoff ladder until receipts make the
+intent complete. The transfer runtime separately bounds live network sessions
+and queued frames.
+Busy controller generations retry at the scan cadence; a missing or stale
+layout blocks that generation instead of hammering it. A changed durable intent
+fingerprint starts a fresh grace interval, and late results for the old
+fingerprint are ignored.
+
+Only the controller intent and attempt fence are durable. Scheduler timestamps
+are deliberately volatile: after process restart it reconstructs incomplete
+work from restored intents and waits the initial grace period again. This
+avoids a second policy journal without releasing any offer before the durable
+controller transition. It automates known-missing receipts, not periodic proof
+that an acknowledged or Byzantine peer still retains bytes.
 
 The pure receipt controller now treats each retry as a new durable outbox
 generation. It increments the selected targets' attempts and the intent
@@ -360,8 +376,25 @@ Authority to exactly one authenticated connected routing peer before calling
 reachable; it must not substitute another replica. Await the layout runtime,
 lifecycle runtime and controller runtime readiness gates before admitting new
 retention work. This gives applications an explicit crash-safe operation now;
-the later scheduler will call the same `repair!` operation under bounded timer
-and backoff policy rather than changing its persistence semantics.
+the scheduler calls the same `repair!` operation under bounded timer and
+backoff policy rather than changing its persistence semantics. Start that
+optional policy after constructing the controller:
+
+```clojure
+(def repairs
+  (repair-scheduler-runtime/start!
+   {:controller controller
+    :scheduler-opts {:scan-ms 5000
+                     :initial-grace-ms 30000
+                     :backoff-ms [30000 60000 300000 1800000]
+                     :max-repairs-per-scan 32
+                     :max-in-flight 32}}))
+
+(async/<! (repair-scheduler-runtime/ready repairs))
+```
+
+An operator may request an immediate best-effort pass with `request-scan!`;
+timer generations are deduplicated, so this does not multiply periodic loops.
 
 This keeps Konserve as the common storage abstraction without making ordinary
 Konserve reads remote. An `ensure-local` or later tiered adapter can try local
@@ -581,11 +614,12 @@ three process IDs represent three independent failure domains.
    best-effort completion. Python shares the JVM piece/marker format but not yet
    its receipt/runtime binding. The lifecycle-policy adapter now has JVM and
    Node Konserve restart tests; add real Node/browser durable-backend tests.
-6. [targeted repair protocol chosen; scheduler open] Add durable, bounded
-   background placement-repair scheduling. Authenticated targeted re-offer is
-   the baseline repair/audit primitive; broad or Merkle inventory is only a
-   later privacy-scoped optimization. Local-first retrieval already reuses the
-   receipt-producing transfer runtime.
+6. [known-missing scheduler done] The portable policy runtime reconstructs
+   incomplete work from durable intents and receipts, with bounded issue rate,
+   global controller-call concurrency, backoff and generation-fenced results.
+   Authenticated targeted re-offer is the baseline primitive; broad or Merkle
+   inventory and periodic retention audits remain later privacy-scoped
+   optimizations.
 7. [portable binding and bounded materializer done] Add the streaming
    application-key/immutable-object adapter over the Konserve transfer
    repository; publish any tiered or transparent `konserve-netz` wrapper only

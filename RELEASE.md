@@ -196,9 +196,13 @@ This extension is not part of the alpha interoperability claim yet.
       runtime can delegate receipt replay to this single owner. The JVM file
       repository supplies the default atomic/fsync controller store, while
       Konserve is an explicitly accepted best-effort option.
-- [ ] Implement Node/browser durable storage, durable automated repair
-      scheduling, backend erasure, and operational offline-peer
-      reconciliation.
+- [x] Implement portable bounded scheduling for controller-known missing
+      replicas. It waits for controller recovery, protects initial transfers
+      with a grace interval, globally bounds outstanding controller repair
+      calls, backs off retries, and fences late results by the exact intent
+      generation. Transfer-runtime session bounds remain independently active.
+- [ ] Implement Node/browser durable storage, backend erasure, and operational
+      offline-peer reconciliation.
 - [ ] Implement and validate any later transparent Konserve wrapper semantics
       for binary streams, multi-key root-last batches, nested updates and read
       repair.
