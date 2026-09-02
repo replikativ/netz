@@ -163,13 +163,20 @@
   (and (wire/byte-buffer? a) (wire/byte-buffer? b)
        (identity/bufs= a b)))
 
-(defn- same-object-version? [current incoming]
+(defn- same-object-stream? [current incoming]
   (and (same-bytes? (get-in current [:statement "manifest"])
                     (get incoming "manifest"))
-       (= (get-in current [:statement "layout_epoch"])
-          (get incoming "layout_epoch"))
        (= (:controller current)
           (identity/bytes->hex (get incoming "signer")))))
+
+(defn- valid-layout-transition? [current incoming]
+  (let [current-epoch (get-in current [:statement "layout_epoch"])
+        incoming-epoch (get incoming "layout_epoch")]
+    (case (get incoming "type")
+      "blob/lease" (= current-epoch incoming-epoch)
+      "blob/retention" (<= current-epoch incoming-epoch)
+      "blob/deletion" (<= current-epoch incoming-epoch)
+      false)))
 
 (defn- persist-action [key record]
   [:persist [:blob/lifecycle key] record
@@ -243,7 +250,14 @@
            (#{:deleting :expiring :deleted} (:status current)))
       {:state (update-in state [:stats :rejected] inc) :actions []}
 
-      (not (same-object-version? current statement))
+      (not (same-object-stream? current statement))
+      {:state (update-in state [:stats :rejected] inc) :actions []}
+
+      (not (valid-layout-transition? current statement))
+      {:state (update-in state [:stats :rejected] inc) :actions []}
+
+      (< (get statement "issued_at")
+         (get-in current [:statement "issued_at"]))
       {:state (update-in state [:stats :rejected] inc) :actions []}
 
       (and (not= type "blob/deletion")

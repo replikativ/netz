@@ -91,6 +91,27 @@
       (is (not (intent/valid-record?
                 (assoc-in record ["manifest" "length"] 21)))))))
 
+(deftest successor-record-renews-policy-and-fences-every-target
+  (let [current (intent/make-record fake-layout fake-retention
+                                    (:manifest split) attempts 7)
+        renewal (assoc retention "revision" 2 "issued_at" 1100
+                       "retain_until" 6000 "replicas" 3)
+        successor (intent/make-successor-record
+                   current fake-layout (fake-envelope renewal))
+        next-attempts (:attempts (intent/record->intent successor))
+        added-target (first (remove (set targets) (keys next-attempts)))]
+    (is (intent/valid-successor-record? current successor))
+    (is (= 8 (get successor "intent_revision")))
+    (is (= (inc (get attempts (first targets)))
+           (get next-attempts (first targets))))
+    (is (= 8 (get next-attempts added-target)))
+    (is (not (intent/valid-successor-record?
+              current
+              (intent/make-record
+               fake-layout
+               (fake-envelope (assoc renewal "retain_until" 4000))
+               (:manifest split) next-attempts 8))))))
+
 #?(:clj
    (deftest signatures-and-controller-authorization-are-reverified
      (let [layout-envelope (<!! (replication-wire/sign-statement

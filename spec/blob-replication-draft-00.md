@@ -38,6 +38,7 @@ BlobStore.status(object_id) -> ReplicaStatus
 BlobStore.inventory(cursor, limit) -> ManifestPage
 BlobStore.scrub(manifest_id) -> ScrubStatus
 BlobStore.repair(object_id) -> completion
+BlobStore.revise(layout_envelope, retention_envelope) -> completion
 BlobStore.delete(object_id, authorization) -> DeletionStatus
 ApplicationStore.materialize(binding, verified_bytes) -> InstallResult
 ~~~
@@ -345,11 +346,31 @@ and deterministic placement MUST select the receiving replica. The retention
 statement does not make a discovered peer a replica and does not replace the
 durable layout chain.
 
-A controller extends retention without retransmitting placement policy using
-`blob/lease`, which has the common namespace, manifest, object, layout epoch,
-time and signer fields plus `revision` and `retain_until`. It requests deletion
-using `blob/deletion`, replacing `retain_until` with `delete_after`. Revisions
-form one monotonically increasing controller stream per
+A controller may extend already admitted replicas without retransmitting
+placement policy using `blob/lease`, which has the common namespace, manifest,
+object, layout epoch, time and signer fields plus `revision` and
+`retain_until`. A lease MUST name the replica's currently retained layout
+epoch; it cannot migrate placement or authorize a fresh `blob/offer` because it
+does not carry `N`, `W`, or domain constraints. A coordinator that needs
+continued repair or fresh receipts MUST issue a higher complete
+`blob/retention` statement instead.
+
+A higher complete retention statement MAY retain the same layout while
+changing policy, or name a later accepted layout epoch. It MUST preserve the
+object, manifest, privacy domain and controller stream, MUST NOT reduce the
+retention deadline, and MUST have a nondecreasing issue time. The new policy is
+placed against the named layout and requires newly fenced receipts from its
+entire target set. A new target starts at an attempt that cannot collide with a
+prior remove/re-add cycle. The complete successor intent MUST cross the durable
+outbox before any new offer.
+
+The controller requests global deletion using `blob/deletion`, replacing
+`retain_until` with `delete_after`. A deletion at a later layout epoch applies
+to replicas still retaining an older epoch; removed replicas otherwise retain
+under their old finite deadline until expiry. New retention is admitted only
+on members selected by its current reconciled layout, so dissemination alone
+cannot extend a removed replica. Revisions form one monotonically increasing
+controller stream per
 `(cluster, privacy_domain, object)`. A replica MUST reject stale revisions and
 retain evidence of same-revision conflicts. A lease may only extend the
 accepted retention time. An accepted deletion is absorbing for that tuple: a
@@ -433,6 +454,15 @@ Konserve repository supports an explicitly accepted best-effort boundary.
 When the transfer and controller runtimes share a repository, receipt replay
 MUST have one owner so that transfer startup cannot race ahead of intent
 restoration.
+
+Signed intent revision is serialized on the same lane. The replacement MUST
+keep the immutable manifest and monotonically advance the controller retention
+stream and local intent revision. It invalidates all old receipt authority,
+advances retained-target attempts, derives the new target set from the signed
+policy and layout, and persists that complete record before dispatch. The
+currently reconciled non-forked layout MUST equal the replacement layout at
+dispatch time. An exact repeated request is idempotent; a conflicting or stale
+successor fails closed.
 
 The `netz/blob-replication/1` capability selects these transfer frames. It MUST
 only be used over a connection that authenticates both full Netz Authority IDs.

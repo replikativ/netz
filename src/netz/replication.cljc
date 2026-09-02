@@ -24,6 +24,7 @@
            :durable 0
            :complete 0
            :lost 0
+           :revised 0
            :repair-scans 0
            :repaired 0}})
 
@@ -45,6 +46,7 @@
            :durable 0
            :complete 0
            :lost 0
+           :revised 0
            :repair-scans 0
            :repaired 0}})
 
@@ -233,6 +235,52 @@
       {:state state :actions []})
     {:state state :actions []}))
 
+(defn- revise [state intent]
+  (let [{:keys [manifest layout policy attempts intent-revision]} intent
+        object-id (:object-id manifest)]
+    (if-let [existing (get-in state [:objects object-id])]
+      (let [layout (placement/validate-layout layout)
+            policy (placement/validate-policy layout policy)
+            targets (mapv :id (placement/place layout policy object-id))]
+        (when-not (and (:intent-stored? existing)
+                       (:manifest-id manifest)
+                       (= (:manifest-id (:manifest existing))
+                          (:manifest-id manifest))
+                       (<= (:layout-epoch existing) (:epoch layout))
+                       (= intent-revision (inc (:intent-revision existing)))
+                       (<= intent-revision 9007199254740991)
+                       (= (set targets) (set (keys attempts)))
+                       (every? (fn [target]
+                                 (if-let [old-attempt
+                                          (get (:attempts existing) target)]
+                                   (= (inc old-attempt) (get attempts target))
+                                   (= intent-revision (get attempts target))))
+                               targets))
+          (throw (ex-info "Invalid replication intent revision"
+                          {:type :netz.replication/invalid-intent-revision
+                           :object-id object-id})))
+        (let [entry {:manifest manifest
+                     :layout layout
+                     :policy policy
+                     :layout-epoch (:epoch layout)
+                     :targets targets
+                     :attempts attempts
+                     :acks #{}
+                     :receipts {}
+                     :intent-revision intent-revision
+                     :intent-stored? false
+                     :pending-targets targets
+                     :durable-emitted? false
+                     :complete-emitted? false
+                     :repairing? false}]
+          {:state (-> state
+                      (assoc-in [:objects object-id] entry)
+                      (update-in [:stats :revised] inc))
+           :actions [(persist-action object-id entry)]}))
+      (throw (ex-info "Cannot revise an unknown replication intent"
+                      {:type :netz.replication/missing-intent
+                       :object-id object-id})))))
+
 (defn- restored-entry
   [{:keys [manifest layout policy attempts intent-revision]}]
   (let [object-id (:object-id manifest)
@@ -296,14 +344,16 @@
       :layout-epoch ... :attempt ... :receipt <verified-envelope>}`
   - `{:type :replication/lost :object-id ... :replica-id ...
       :layout-epoch ...}`
-  - `{:type :replication/repair :object-id ...}`"
-  [state {:keys [type manifest layout policy] :as event} _context]
+  - `{:type :replication/repair :object-id ...}`
+  - `{:type :replication/revise :intent <verified-successor-intent>}`"
+  [state {:keys [type manifest layout policy intent] :as event} _context]
   (case type
     :replication/begin (begin state manifest layout policy)
     :replication/intent-stored (intent-stored state event)
     :replication/stored (stored state event)
     :replication/lost (lost state event)
     :replication/repair (repair state event)
+    :replication/revise (revise state intent)
     (throw (ex-info "Unknown replication event"
                     {:type :netz.replication/unknown-event
                      :event event}))))

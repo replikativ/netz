@@ -196,6 +196,11 @@ This extension is not part of the alpha interoperability claim yet.
       runtime can delegate receipt replay to this single owner. The JVM file
       repository supplies the default atomic/fsync controller store, while
       Konserve is an explicitly accepted best-effort option.
+- [x] Implement crash-safe signed intent revision for repairable retention and
+      non-forked layout/policy migration. The immutable manifest and controller
+      stream remain fixed, prior receipts are invalidated, target attempts are
+      fenced, and the complete replacement persists before re-offer. Compact
+      leases remain limited to already admitted replicas.
 - [x] Implement portable bounded scheduling for controller-known missing
       replicas. It waits for controller recovery, protects initial transfers
       with a grace interval, globally bounds outstanding controller repair

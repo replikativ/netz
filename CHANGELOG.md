@@ -67,7 +67,14 @@ may make incompatible protocol changes.
   grace interval, globally bounds outstanding controller calls, applies a
   bounded backoff ladder, and ignores late results from replaced intent
   generations. Its pure 1,000-object test exercises bounded deterministic
-  scheduling without starting additional peers or JVMs.
+  scheduling without starting additional peers or JVMs. Signed full-retention
+  successors can now renew a repairable object, change placement policy, or
+  migrate it to a later reconciled layout. The controller atomically replaces
+  the durable intent before re-offer, clears prior receipt authority, and
+  fences retained and newly added targets. Replica lifecycle accepts monotone
+  full-retention/layout advances and later-layout global deletion, while
+  control-stream retention is refused on members outside current placement;
+  compact leases remain scoped to already admitted replicas.
   The explicit Konserve immutable-write seam now fails before network work when
   its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.

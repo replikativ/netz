@@ -128,6 +128,16 @@
              true)))
     (catch #?(:clj Throwable :cljs :default) _ false)))
 
+(defn- control-statement-admitted? [ctx statement]
+  (try
+    (if (and (= "blob/retention" (get statement "type"))
+             (:layout-state-fn ctx))
+      (layout/retention-authorized? ((:layout-state-fn ctx))
+                                    (get @(:state ctx) :local-authority)
+                                    statement)
+      true)
+    (catch #?(:clj Throwable :cljs :default) _ false)))
+
 (defn- initialize! [ctx]
   (go
     (let [result
@@ -186,11 +196,13 @@
           (close! reply))
 
         :statement
-        (let [statement (:statement request)]
-          (when-not @(:startup-error ctx)
+        (let [statement (:statement request)
+              admitted? (and (nil? @(:startup-error ctx))
+                             (control-statement-admitted? ctx statement))]
+          (when admitted?
             (<! (drive-event! ctx {:type :lifecycle/verified-statement
                                    :statement statement})))
-          (let [accepted? (and (nil? @(:startup-error ctx))
+          (let [accepted? (and admitted?
                                (lifecycle/accepted-statement?
                                 @(:state ctx) statement))]
             (swap! (:stats ctx) update

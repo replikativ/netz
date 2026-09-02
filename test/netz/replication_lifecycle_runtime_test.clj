@@ -206,6 +206,11 @@
         (await (lifecycle-runtime/ready runtime))
         (is (false? (await (lifecycle-runtime/authorize-offer!
                             runtime (request statement replica)))))
+        (is (false? (await (lifecycle-runtime/apply-envelope!
+                            runtime
+                            (await (replication-wire/sign-statement
+                                    controller-identity statement)))))
+            "control-stream retention cannot retain on a removed replica")
         (is (empty? @(:records store)))
         (lifecycle-runtime/stop! runtime)))))
 
