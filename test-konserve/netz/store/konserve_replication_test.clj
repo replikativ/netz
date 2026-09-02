@@ -6,6 +6,26 @@
             [netz.store.konserve-replication :as durable]
             [netz.store.protocol :as peer-store]))
 
+(deftest local-failure-prevents-network-replication
+  (let [store (<!! (new-mem-store))
+        cause (ex-info "disk full" {:type :test/disk-full})
+        calls (atom [])
+        result
+        (with-redefs [k/assoc (fn [& _] (peer-store/chan-of cause))]
+          (<!! (durable/assoc-immutable!
+                store #(do (swap! calls conj %) (peer-store/chan-of :never))
+                :node 42)))]
+    (is (identical? cause result))
+    (is (empty? @calls))))
+
+(deftest thrown-replicator-failure-is-delivered-on-the-result-channel
+  (let [store (<!! (new-mem-store))
+        cause (ex-info "outbox failed" {:type :test/outbox-failed})
+        result (<!! (durable/assoc-immutable!
+                     store (fn [_] (throw cause)) :node 42))]
+    (is (identical? cause result))
+    (is (= 42 (<!! (k/get store :node nil {:sync? false}))))))
+
 (deftest immutable-write-awaits-local-commit-and-replica-receipt
   (let [store (<!! (new-mem-store))
         calls (atom [])
@@ -36,4 +56,3 @@
       (is (true? (get-in result [:receipt :local-committed?])))
       (is (= :netz.replication/quorum-unavailable
              (get-in result [:receipt :error]))))))
-

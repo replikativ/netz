@@ -11,6 +11,7 @@
             [netz.replication.blob :as blob]
             [netz.replication.file-store :as file-store]
             [netz.replication.inventory :as inventory]
+            [netz.replication.read-repair :as read-repair]
             [netz.replication.runtime :as replication-runtime]
             [netz.replication.storage :as storage]
             [netz.replication.wire :as replication-wire]
@@ -288,11 +289,13 @@
                                      fetch-session provider-split)
                        "retention")]
               (install-source! target provider-session provider-split)
-              (is (identity/bufs=
-                   fetch-session
-                   (replication-runtime/fetch!
-                    client-runtime (:id server) server-authority
-                    retention-envelope {:session fetch-session})))
+              (is (= :fetched
+                     (:status
+                      (await
+                       (read-repair/ensure-local!
+                        source client-runtime
+                        [{:peer (:id server) :authority server-authority}]
+                        retention-envelope)))))
               (is (wait-for 10000 #(= 1 (count @installed)))
                   "requester never installed the fetched object")
               (is (wait-for 10000 #(= 1 (count @provider-stored)))
@@ -316,10 +319,13 @@
 
               (reset! allow-fetches? false)
               (let [denied-fetch-session
-                    (identity/seq->bytes (range 112 128))]
-                (is (replication-runtime/fetch!
-                     client-runtime (:id server) server-authority
-                     retention-envelope {:session denied-fetch-session}))
+                    (identity/seq->bytes (range 112 128))
+                    denied-result
+                    (await
+                     (replication-runtime/fetch-result!
+                      client-runtime (:id server) server-authority
+                      retention-envelope {:session denied-fetch-session}))]
+                (is (= "fetch-unauthorized" (:code denied-result)))
                 (is (wait-for 10000 #(= 1 (count @fetch-failures)))
                     "requester did not observe provider read-policy rejection")
                 (is (= "fetch-unauthorized"
@@ -405,7 +411,9 @@
           split (blob/split (identity/utf8-bytes "not sent")
                             {:piece-size 4})
           server-authority
-          (identity/authority-id-bytes (:genesis server-identity))]
+          (identity/authority-id-bytes (:genesis server-identity))
+          client-authority
+          (identity/authority-id-bytes (:genesis client-identity))]
       (try
         (is (wait-for 10000
                       #(contains? (overlay-runtime/connections (:peer client))
@@ -415,6 +423,14 @@
              (replication-runtime/replicate!
               source-runtime (:id server) server-authority
               (signed-offer client-identity server-authority session split))))
+        (is (= :refused
+               (:status
+                (await
+                 (replication-runtime/fetch-result!
+                  source-runtime (:id server) server-authority
+                  (get (signed-offer client-identity client-authority
+                                     session split)
+                       "retention"))))))
         (is (empty? (get-in (replication-runtime/states source-runtime)
                             [:sender :sessions])))
         (is (zero? (:inbound (replication-runtime/stats target-runtime))))

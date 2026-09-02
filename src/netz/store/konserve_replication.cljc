@@ -15,6 +15,9 @@
             #?(:clj [clojure.core.async :refer [go <!]]
                :cljs [clojure.core.async :refer [<!] :refer-macros [go]])))
 
+(defn- failure? [value]
+  (instance? #?(:clj Throwable :cljs js/Error) value))
+
 (defn assoc-immutable!
   "Store one immutable EDN value locally, then request Netz durability.
 
@@ -22,6 +25,10 @@
   and returns a channel yielding a durability receipt. The result channel
   yields `{:local-result [old new] :receipt receipt}`. A quorum timeout should
   be represented honestly in `receipt`, including `:local-committed? true`.
+
+  A local Konserve failure is delivered unchanged and `replicate!` is not
+  invoked. A thrown or channel-delivered replication failure is likewise
+  delivered as the terminal channel value.
 
   This function always uses Konserve's async API. `meta` is extended with
   `:immutable? true`; callers cannot accidentally label the durable-network
@@ -31,8 +38,14 @@
   ([store replicate! key value meta]
    (let [meta (assoc (or meta {}) :immutable? true)]
      (go
-       (let [local-result (<! (k/assoc store key value meta {:sync? false}))
-             receipt (<! (replicate! {:key key :value value :meta meta}))]
-         {:local-result local-result
-          :receipt receipt})))))
-
+       (try
+         (let [local-result (<! (k/assoc store key value meta {:sync? false}))]
+           (if (failure? local-result)
+             local-result
+             (let [receipt
+                   (<! (replicate! {:key key :value value :meta meta}))]
+               (if (failure? receipt)
+                 receipt
+                 {:local-result local-result
+                  :receipt receipt}))))
+         (catch #?(:clj Throwable :cljs :default) cause cause))))))

@@ -278,10 +278,20 @@ retention envelope. Network inventory exchange and automated repair scheduling
 remain later layers.
 
 This keeps Konserve as the common storage abstraction without making ordinary
-Konserve reads remote. A future `ensure-local` or tiered adapter can try local
+Konserve reads remote. An `ensure-local` or later tiered adapter can try local
 Konserve first and explicitly invoke `fetch!`; it must surface unavailable,
-denied, pending and verified-local outcomes instead of hiding them behind a
-plain map lookup.
+denied and verified-local outcomes instead of hiding them behind a plain map
+lookup.
+
+That first explicit adapter now exists as
+`netz.replication.read-repair/ensure-local!`. It scrubs the local file or
+Konserve blob repository, tries at most 32 caller-selected authenticated
+providers sequentially through the result-bearing fetch API, and performs a
+complete post-install scrub before returning `:fetched`. It reports
+`:local`, `:fetched`, or `:unavailable` with bounded per-provider failures.
+Provider discovery and eligibility remain inputs from the reconciled signed
+layout; this helper does not turn possession of an object address into read
+authorization.
 
 Current `netz.content` remains discovery and bounded transfer state. Its working
 set is not a durability catalogue. The replica controller is a separate pure
@@ -457,9 +467,10 @@ three process IDs represent three independent failure domains.
    memory-store restart/install tests and honestly exposes only volatile or
    best-effort completion. The lifecycle-policy adapter now has JVM and Node
    Konserve restart tests; add real Node/browser durable-backend tests.
-6. [local store and provider fetch done] Add network inventory exchange and
-   repair scheduling; authenticated provider retrieval already reuses the
-   receipt-producing transfer runtime.
+6. [local store, provider fetch and explicit `ensure-local!` done] Add network
+   inventory exchange and background placement-repair scheduling;
+   authenticated local-first retrieval already reuses the receipt-producing
+   transfer runtime.
 7. Build the explicit application-key/immutable-object adapter over the
    Konserve transfer repository; publish any tiered or transparent
    `konserve-netz` wrapper only after its stream/batch semantics are explicit.

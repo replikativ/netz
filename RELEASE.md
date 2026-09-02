@@ -151,6 +151,11 @@ This extension is not part of the alpha interoperability claim yet.
       and reuse of the receipt-producing transfer path. JVM and Python pin the
       fetch frame, JavaScript runs the same fixture, and a real Kabel/Noise test
       covers success and policy denial.
+- [x] Add a result-bearing fetch API and portable, bounded local-first
+      `ensure-local!`: scrub local storage, try only caller-selected
+      authenticated providers, scrub after install, and report explicit local,
+      fetched or unavailable outcomes. JVM/JavaScript cover retry and
+      fail-closed post-install validation.
 - [ ] Implement Node/browser durable storage, network inventory exchange,
       automated repair scheduling, backend erasure, and operational
       offline-peer reconciliation.

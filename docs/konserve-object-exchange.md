@@ -51,6 +51,15 @@ authenticated provider fetch backed by that installed-manifest operation. It
 does not intercept `konserve/get`: applications or a later tiered adapter
 select a provider and invoke retrieval deliberately.
 
+`netz.replication.read-repair/ensure-local!` is the first reusable distribution
+facade over this boundary. It accepts the same file or Konserve blob repository,
+the reconciled signed retention envelope and an ordered authorized-provider
+list. A healthy local scrub avoids network work; otherwise it tries bounded
+providers and only reports success after the installed object scrubs cleanly.
+It intentionally stops before application-key materialization: the catalog or
+root closure must authenticate the mapping from application key to Netz object
+and choose the application codec.
+
 ## The object/ref split
 
 A publication has two phases.
@@ -341,13 +350,13 @@ reconciliation remain release gates.
    source/sink over a connected Konserve store. The small-value Konserve
    repository and authenticated provider-fetch path are implemented; bounded
    streaming remains.
-2. Add explicit application-key mapping and `ensure-local`; do not yet wrap
-   every `PStore` operation.
+2. [generic `ensure-local!` done] Add explicit application-key mapping and
+   materialization; do not yet wrap every `PStore` operation.
 3. Demonstrate Dvergr/Simmis drive replication and one Geschichte pack closure.
 4. Add signed head reconciliation and materialization tests using the existing
    root-log and Spindel workspace gate.
-5. [local inventory/scrub and explicit provider fetch done] Add network
-   inventory exchange and repair scheduling, then expose `ensure-local` and a
+5. [local inventory/scrub, provider fetch and local-first retrieval done] Add
+   network inventory exchange and background repair scheduling, then expose a
    tiered Konserve convenience adapter.
 6. Run independent JVM/Node/Python conformance before advertising the blob
    capability by default.
