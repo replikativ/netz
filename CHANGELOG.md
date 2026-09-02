@@ -29,6 +29,11 @@ may make incompatible protocol changes.
   A closed application-object binding and bounded explicit materializer now
   connect authenticated catalog keys/codecs to verified local object bytes;
   JVM, JavaScript and Python share its deterministic-CBOR fixture.
+  Signed replica layouts now have a closed portable statement, a
+  domain-separated address and an exact predecessor chain. Reconciliation
+  rejects gaps and bad links, preserves bounded same-epoch fork evidence, and
+  freezes deterministic-target admission after a fork; JVM, JavaScript and
+  Python share the layout/address/signature vector.
   The explicit Konserve immutable-write seam now fails before network work when
   its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.

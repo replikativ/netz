@@ -12,6 +12,16 @@ from netz_protocol.blob import (
     split_blob,
 )
 from netz_protocol.replication import ReplicationError, place, rank, score
+from netz_protocol.replication_layout import (
+    LayoutError,
+    ZERO_ADDRESS,
+    layout_address,
+    make_state as make_layout_state,
+    placement_layout,
+    reconcile,
+    retention_authorized,
+    validate_statement as validate_layout_statement,
+)
 from netz_protocol.identity import authority_id, genesis
 from netz_protocol.materialization import (
     MaterializationError,
@@ -87,6 +97,120 @@ class ReplicationPlacementTest(unittest.TestCase):
         with self.assertRaises(ReplicationError):
             place(layout, {"replicas": 3, "write_acks": 1,
                            "minimum_domains": {"owner": 2}}, object_id)
+
+
+class SignedLayoutTest(unittest.TestCase):
+    def values(self):
+        fixture = json.loads(
+            (ROOT / "spec/fixtures/blob-layout-1.json").read_text())
+        diagnostic = fixture["diagnostic"]
+        public_key = bytes.fromhex(diagnostic["public_key_hex"])
+        identity_genesis = genesis(
+            [bytes.fromhex(diagnostic["rotation_key_hex"])], 1,
+            [public_key],
+            bytes.fromhex(diagnostic["revocation_commit_hex"]))
+        statement = {
+            "v": 1,
+            "type": "blob/layout",
+            "cluster": bytes.fromhex(diagnostic["cluster_hex"]),
+            "epoch": diagnostic["epoch"],
+            "previous": bytes.fromhex(diagnostic["previous_hex"]),
+            "members": [
+                {
+                    "authority": bytes.fromhex(member["authority_hex"]),
+                    "domains": member["domains"],
+                    "enabled": member["enabled"],
+                }
+                for member in diagnostic["members"]
+            ],
+            "issued_at": diagnostic["issued_at"],
+            "signer": bytes.fromhex(diagnostic["signer_hex"]),
+        }
+        return fixture, diagnostic, identity_genesis, statement
+
+    def test_shared_layout_address_and_signature_fixture(self):
+        fixture, diagnostic, identity_genesis, statement = self.values()
+        self.assertIs(statement, validate_layout_statement(statement))
+        self.assertIs(statement, validate_statement(statement))
+        self.assertEqual(fixture["canonical_cbor_hex"], dumps(statement).hex())
+        self.assertEqual(fixture["layout_address_hex"],
+                         layout_address(statement).hex())
+        if find_spec("cryptography"):
+            envelope = sign_statement(
+                identity_genesis,
+                bytes.fromhex(diagnostic["private_key_hex"]), statement)
+            self.assertEqual(fixture["signature_hex"],
+                             envelope["signature"].hex())
+            self.assertTrue(verify_envelope(envelope))
+
+    def test_schema_is_closed_sorted_and_ascii(self):
+        _, _, _, statement = self.values()
+        with self.assertRaises(LayoutError):
+            validate_layout_statement({**statement, "extension": True})
+        with self.assertRaises(LayoutError):
+            validate_layout_statement({
+                **statement, "members": list(reversed(statement["members"]))})
+        malformed = {**statement, "members": [
+            {**statement["members"][0], "domains": {"site": "Montréal"}},
+            *statement["members"][1:],
+        ]}
+        with self.assertRaises(LayoutError):
+            validate_layout_statement(malformed)
+
+    def test_chain_reconciliation_and_placement_authorization(self):
+        _, _, _, genesis_layout = self.values()
+        accepted = reconcile(
+            make_layout_state(genesis_layout["cluster"],
+                              [genesis_layout["signer"]]),
+            genesis_layout)
+        self.assertEqual("accepted", accepted["status"])
+        state = accepted["state"]
+        self.assertEqual("duplicate", reconcile(state, genesis_layout)["status"])
+        fork = {**genesis_layout, "issued_at": 1001}
+        conflict = reconcile(state, fork)
+        self.assertEqual("conflict", conflict["status"])
+        self.assertEqual(1, len(conflict["state"]["conflicts"]))
+        successor = {
+            **genesis_layout,
+            "epoch": 1,
+            "previous": layout_address(genesis_layout),
+            "issued_at": 1001,
+        }
+        self.assertEqual("accepted", reconcile(state, successor)["status"])
+        self.assertEqual("forked",
+                         reconcile(conflict["state"], successor)["status"])
+        self.assertEqual("gap", reconcile(state, {
+            **successor, "epoch": 2,
+            "previous": layout_address(successor),
+        })["status"])
+        self.assertEqual("rejected", reconcile(state, {
+            **successor, "previous": b"\xff" * 32,
+        })["status"])
+
+        object_id = b"\xa0" * 32
+        retention = {
+            "type": "blob/retention",
+            "cluster": genesis_layout["cluster"],
+            "layout_epoch": 0,
+            "object": object_id,
+            "replicas": 2,
+            "write_acks": 2,
+            "minimum_domains": {"owner": 2},
+        }
+        targets = place(
+            placement_layout(genesis_layout),
+            {"replicas": 2, "write_acks": 2,
+             "minimum_domains": {"owner": 2}}, object_id)
+        selected = bytes.fromhex(targets[0]["id"])
+        unselected = next(
+            member["authority"] for member in genesis_layout["members"]
+            if member["authority"].hex() not in {target["id"] for target in targets})
+        self.assertTrue(retention_authorized(state, selected, retention))
+        self.assertFalse(retention_authorized(
+            conflict["state"], selected, retention))
+        self.assertFalse(retention_authorized(state, unselected, retention))
+        self.assertFalse(retention_authorized(
+            state, selected, {**retention, "layout_epoch": 1}))
 
 
 class PortableBlobTest(unittest.TestCase):

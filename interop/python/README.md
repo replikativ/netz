@@ -21,9 +21,12 @@ an application-specific format.
 placement for the experimental durable-blob extension. The companion
 `netz_protocol.replication_wire` module validates the frozen retention, lease,
 deletion, replica-receipt and bounded transfer-frame schemas, including the
-authenticated-provider fetch request. Python and
-Clojure share the placement, blob-manifest and signed-statement known-answer
-corpora. `netz_protocol.materialization` validates and addresses the same closed
+authenticated-provider fetch request. `netz_protocol.replication_layout`
+validates and addresses the signed replica layout, reconciles its exact
+predecessor chain, freezes on controller forks, and checks deterministic target
+admission. Python and Clojure share the placement, blob-manifest and
+signed-statement known-answer corpora. `netz_protocol.materialization`
+validates and addresses the same closed
 application-key/object binding as the JVM/JavaScript implementation. The
 transfer runtime and Konserve adapter are not yet part of the Python API.
 

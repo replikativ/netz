@@ -160,6 +160,14 @@ This extension is not part of the alpha interoperability claim yet.
       materializer. The binding matches an authenticated catalog key/codec to
       the exact retained object and manifest; JVM/JavaScript/Python share its
       deterministic-CBOR and domain-separated-address fixture.
+- [x] Freeze a closed signed replica-layout statement and domain-separated
+      address, exact hash-chained epoch reconciliation, bounded fork evidence,
+      and fail-closed deterministic-target admission. JVM/JavaScript/Python
+      share the layout/address/signature vector. The lifecycle runtime exposes
+      a migration-safe synchronous layout-state fence.
+- [ ] Persist and restore the accepted layout chain before it authorizes an
+      epoch, and define the explicit operator procedure for resolving a signed
+      controller fork. The pure reconciler intentionally freezes on a fork.
 - [ ] Implement Node/browser durable storage, network inventory exchange,
       automated repair scheduling, backend erasure, and operational
       offline-peer reconciliation.

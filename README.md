@@ -84,10 +84,11 @@ A Kademlia DHT is deliberately not required. Bounded peer exchange and
 two-hop provider discovery cover the current deployments; a DHT can later be
 added as another routing provider without changing application sync.
 
-The experimental durable-blob profile treats owner and physical site as
-explicit failure domains. Its small executable walkthrough models encrypted
-data held by three private home devices, quorum at two copies, and repair after
-one device is lost:
+The experimental durable-blob profile uses signed, hash-chained replica layouts
+and treats owner and physical site as explicit failure domains. A detected
+controller fork stops new retention admission. Its small executable walkthrough
+models encrypted data held by three private home devices, quorum at two copies,
+and repair after one device is lost:
 
 ```sh
 clojure -M:blob-demo
