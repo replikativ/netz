@@ -14,7 +14,9 @@
             [clojure.string :as str]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.controller-storage :as controller-storage]
             [netz.replication.inventory :as inventory]
+            [netz.replication.intent :as intent]
             [netz.replication.storage :as storage]
             [netz.replication.wire :as replication-wire]
             [netz.wire :as wire])
@@ -38,6 +40,7 @@
 (def ^:private no-links (make-array LinkOption 0))
 (def ^:private max-marker-bytes (* 2 1024 1024))
 (def ^:private max-receipt-bytes (* 64 1024))
+(def ^:private max-controller-intent-bytes (* 5 1024 1024))
 
 (defn- byte-array? [value]
   (wire/byte-buffer? value))
@@ -67,6 +70,13 @@
     :else (throw (ex-info "Invalid file-store address"
                           {:type :netz.replication/invalid-file-address}))))
 
+(defn- cluster-hex [value]
+  (if (and (byte-array? value)
+           (<= 1 (identity/buf-length value) 64))
+    (identity/bytes->hex value)
+    (throw (ex-info "Invalid file-store cluster"
+                    {:type :netz.replication/invalid-file-cluster}))))
+
 (defn- addressed-path
   ^Path [^Path root directory address suffix]
   (let [hex (hex-address address)]
@@ -81,6 +91,14 @@
 (defn- receipt-path [store record]
   (addressed-path (:root store) "receipts"
                   (identity/sha256 (wire/encode-canonical record)) ".cbor"))
+
+(defn- controller-intent-root [store cluster]
+  (path (:root store) "controller-intents" (cluster-hex cluster)))
+
+(defn- controller-intent-path [store cluster object-id]
+  (let [hex (hex-address object-id)]
+    (path (controller-intent-root store cluster)
+          (subs hex 0 2) (str (subs hex 2) ".cbor"))))
 
 (defn- exists? [^Path value]
   (Files/exists value no-links))
@@ -397,6 +415,21 @@
                            {:type type :limit limit})))
          files)))))
 
+(defn- sharded-address! [^Path root ^Path target entry-type error-type]
+  (let [segments (vec (iterator-seq (.iterator (.relativize root target))))
+        directory (some-> (first segments) str)
+        filename (some-> (second segments) str)
+        hex (when (and (= 2 (count segments))
+                       (re-matches #"[0-9a-f]{2}" directory)
+                       (str/ends-with? filename ".cbor"))
+              (str directory (subs filename 0 (- (count filename) 5))))]
+    (when-not (and hex (re-matches #"[0-9a-f]{64}" hex))
+      (throw (ex-info (str "Invalid " entry-type " path")
+                      {:type error-type
+                       :entry-type entry-type
+                       :path (str target)})))
+    hex))
+
 (defn- load-receipts! [store]
   (mapv (fn [^Path target]
           (let [bytes (read-bounded target max-receipt-bytes)
@@ -418,19 +451,37 @@
         (regular-cbor-files (path (:root store) "receipts")
                             (:max-receipts store))))
 
+(defn- load-controller-intents! [store cluster]
+  (let [root (controller-intent-root store cluster)]
+    (->> (regular-cbor-files
+          root (:max-controller-intents store)
+          :netz.replication/too-many-controller-intents
+          "Controller intent journal")
+         (map (fn [^Path target]
+                (let [object-hex
+                      (sharded-address!
+                       root target "controller-intent"
+                       :netz.replication/invalid-controller-intent-path)
+                      record (wire/decode
+                              (read-bounded target
+                                            max-controller-intent-bytes))]
+                  (when-not (and (intent/valid-record? record)
+                                 (= object-hex
+                                    (identity/bytes->hex
+                                     (get record "object")))
+                                 (same-bytes? cluster
+                                              (get record "cluster")))
+                    (throw (ex-info "Invalid durable controller intent"
+                                    {:type
+                                     :netz.replication/invalid-intent-record
+                                     :path (str target)})))
+                  [object-hex record])))
+         (sort-by first)
+         (mapv second))))
+
 (defn- manifest-address! [^Path root ^Path target]
-  (let [segments (vec (iterator-seq (.iterator (.relativize root target))))
-        directory (some-> (first segments) str)
-        filename (some-> (second segments) str)
-        hex (when (and (= 2 (count segments))
-                       (re-matches #"[0-9a-f]{2}" directory)
-                       (str/ends-with? filename ".cbor"))
-              (str directory (subs filename 0 (- (count filename) 5))))]
-    (when-not (and hex (re-matches #"[0-9a-f]{64}" hex))
-      (throw (ex-info "Invalid installed-manifest path"
-                      {:type :netz.replication/invalid-manifest-path
-                       :path (str target)})))
-    hex))
+  (sharded-address! root target "installed-manifest"
+                    :netz.replication/invalid-manifest-path))
 
 (defn- installed-addresses! [store]
   (let [root (path (:root store) "manifests")]
@@ -477,7 +528,7 @@
       (catch Throwable cause cause))))
 
 (defrecord FileBlobStore [root persistence fsync? clock max-receipts
-                          max-inventory-records lock]
+                          max-inventory-records max-controller-intents lock]
   storage/PBlobTransferStore
 
   (-load-staging [store _session manifest-id manifest]
@@ -508,6 +559,24 @@
   (-cleanup-session! [_store _session _manifest-id]
     (storage/chan-of true))
 
+  controller-storage/PBlobControllerStore
+
+  (-load-controller-intents [store cluster]
+    (run-io #(locking lock (load-controller-intents! store cluster))))
+
+  (-persist-controller-intent! [store cluster object-id record]
+    (run-io
+     #(locking lock
+        (when-not (and (intent/valid-record? record)
+                       (same-bytes? cluster (get record "cluster"))
+                       (same-bytes? object-id (get record "object")))
+          (throw (ex-info "Invalid durable controller intent"
+                          {:type :netz.replication/invalid-intent-record})))
+        (atomic-write! store
+                       (controller-intent-path store cluster object-id)
+                       (wire/encode-canonical record))
+        :ok)))
+
   inventory/PBlobInventoryStore
 
   (-inventory-page [store cursor limit]
@@ -535,11 +604,14 @@
   tests;
   - `:max-receipts` bounds restart scanning (default 100,000);
   - `:max-inventory-records` bounds local manifest scanning (default
-    1,000,000); returned pages remain bounded to 1,024 addresses.
+    1,000,000); returned pages remain bounded to 1,024 addresses;
+  - `:max-controller-intents` bounds the cluster-scoped durable controller
+    outbox scan (default 100,000).
 
-  Fsync mode forces every staged piece, the atomic install/receipt marker, and
-  the containing directory. An unsupported atomic move fails rather than
-  silently weakening the advertised persistence profile."
+  Fsync mode forces every staged piece and each atomic install, receipt, or
+  controller-intent record plus its containing directory. An unsupported
+  atomic move fails rather than silently weakening the advertised persistence
+  profile."
   ([root] (new-file-store root {}))
   ([root opts]
    (let [root (-> (if (instance? Path root)
@@ -550,17 +622,21 @@
          persistence (or (:persistence opts) "netz/store/fsync/1")
          clock (or (:clock opts) #(System/currentTimeMillis))
          max-receipts (or (:max-receipts opts) 100000)
-         max-inventory-records (or (:max-inventory-records opts) 1000000)]
+         max-inventory-records (or (:max-inventory-records opts) 1000000)
+         max-controller-intents (or (:max-controller-intents opts) 100000)]
      (when-not (and (contains? file-persistence-profiles persistence)
                     (ifn? clock)
                     (int? max-receipts)
                     (pos? max-receipts)
                     (int? max-inventory-records)
-                    (pos? max-inventory-records))
+                    (pos? max-inventory-records)
+                    (int? max-controller-intents)
+                    (pos? max-controller-intents))
        (throw (ex-info "Invalid file blob-store options"
                        {:type :netz.replication/invalid-file-store-options})))
      (Files/createDirectories root
                               (make-array java.nio.file.attribute.FileAttribute 0))
      (->FileBlobStore root persistence
                       (= persistence "netz/store/fsync/1")
-                      clock max-receipts max-inventory-records (Object.)))))
+                      clock max-receipts max-inventory-records
+                      max-controller-intents (Object.)))))

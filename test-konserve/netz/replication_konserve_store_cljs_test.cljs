@@ -4,10 +4,12 @@
             [konserve.memory :refer [new-mem-store]]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.controller-runtime :as controller-runtime]
             [netz.replication.controller-storage :as controller-storage]
             [netz.replication.inventory :as inventory]
             [netz.replication.intent :as intent]
             [netz.replication.konserve-store :as konserve-store]
+            [netz.replication.layout :as layout]
             [netz.replication.layout-runtime :as layout-runtime]
             [netz.replication.lifecycle :as lifecycle]
             [netz.replication.lifecycle-runtime :as lifecycle-runtime]
@@ -186,4 +188,43 @@
         (is (= :ok stored))
         (is (intent/same-record? record loaded))
         (is (= 3 (get loaded "intent_revision")))
+        (done)))))
+
+(deftest portable-controller-runtime-persists-before-dispatch
+  (async done
+    (async/go
+      (let [underlying (async/<! (new-mem-store))
+            store (konserve-store/new-konserve-blob-store
+                   underlying {:persistence "netz/store/best-effort/1"})
+            signer {:genesis genesis
+                    :operational
+                    {:public (identity/hex->bytes public-hex)
+                     :private (identity/hex->bytes private-hex)}}
+            layout-envelope (async/<! (replication-wire/sign-statement
+                                       signer layout0))
+            retention-envelope
+            (async/<! (replication-wire/sign-statement
+                       signer (assoc retention "layout_epoch" 0)))
+            layout-state
+            (:state (layout/reconcile
+                     (layout/make-state (get retention "cluster") [authority])
+                     layout0))
+            offers (atom [])
+            controller
+            (controller-runtime/start!
+             {:store store
+              :cluster (get retention "cluster")
+              :controllers [authority]
+              :layout-state-fn (constantly layout-state)
+              :dispatch-offer! #(do (swap! offers conj %) true)
+              :accepted-persistence #{"netz/store/best-effort/1"}
+              :now-fn (constantly 1100)})]
+        (is (true? (async/<! (controller-runtime/ready controller))))
+        (is (= :ok
+               (async/<! (controller-runtime/begin!
+                          controller layout-envelope retention-envelope
+                          (:manifest split)))))
+        (is (= 1 (count @offers)))
+        (is (= 0 (get-in @offers [0 :offer "attempt"])))
+        (controller-runtime/stop! controller)
         (done)))))

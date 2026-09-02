@@ -55,7 +55,14 @@ may make incompatible protocol changes.
   receipt replay to precede restart repair. A closed local controller-intent
   record now carries the signed layout/retention, manifest, exact target
   attempts and revision across a bounded portable Konserve restart on JVM and
-  JavaScript.
+  JavaScript. A serialized controller runtime now restores intents before
+  receipts, persists begin and explicit-repair generations before dispatch,
+  retries failed writes without advancing their fence, and rejects stale
+  layouts or mismatched signed receipt fields. Transfer receipt replay has a
+  single-owner switch for this composition. The JVM file repository now also
+  stores controller intents with bounded atomic/fsynced replacement. A real
+  Noise/Kabel test covers the complete controller-outbox, transfer, durable
+  receipt and quorum-callback path.
   The explicit Konserve immutable-write seam now fails before network work when
   its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.

@@ -315,15 +315,17 @@ clusters, while the current marker does not carry enough authority or privacy
 scope to make such disclosure safe. A later authorized batched or Merkle
 protocol can reduce audit traffic, but must define cluster/privacy scoping,
 freshness and replay rules, and resource bounds. It is not a release blocker.
-The durable, bounded scheduler that restores intents and issues targeted
-re-offers remains to be implemented.
+The serialized controller runtime now restores a bounded intent set, replays
+durable receipts before readiness, and issues explicit targeted re-offers. The
+automatic scheduling policy which decides cadence, backoff and concurrency is
+still separate and remains to be implemented.
 
 The pure receipt controller now treats each retry as a new durable outbox
 generation. It increments the selected targets' attempts and the intent
 revision, persists that state, and releases re-offers only when the exact
 revision completes. During that write boundary neither an old receipt nor a
 late completion for an earlier revision can count. This closes the crash window
-the production scheduler will rely on; persistence and peer resolution remain
+the production scheduler relies on; persistence and peer resolution remain
 runtime responsibilities. Layout and acknowledgement policy are bound to each
 object intent rather than assumed globally. Verified durable intents restore
 without emitting work, allowing receipt replay to rebuild quorum evidence
@@ -335,9 +337,31 @@ manifest, sorted per-target attempts and intent revision; restoration
 re-verifies both signatures, controller authorization, every address and the
 derived target set. `PBlobControllerStore` is the asynchronous persistence
 contract. The portable Konserve repository implements bounded, cluster-scoped
-load and atomic replacement and passes JVM/Node restart tests. The scheduler
-which serializes these operations and resolves target Authorities is still the
-next layer.
+load and atomic replacement and passes JVM/Node restart tests. The JVM file
+repository implements the same contract with atomic replacement and an fsync
+boundary.
+
+`netz.replication.controller-runtime` is the durable-outbox adapter around the
+pure controller. Startup verifies intents, restores their exact attempts,
+replays the transfer repository's signed receipts, and only then closes its
+`ready` channel. `begin!` and `repair!` serialize per-object state transitions;
+the next complete record persists before `:dispatch-offer!` can observe an
+offer. A failed write releases no network work and can be retried as the exact
+same generation. Before every dispatch the runtime rechecks that the signed
+layout is still the accepted non-forked head and that the retention lease is
+live.
+
+When composing it with `netz.replication.runtime`, both runtimes use the same
+repository. Start the transfer runtime with `:replay-receipts? false`, route
+its `:on-stored!` callback through `controller-runtime/stored-handler`, and
+have the controller's `:dispatch-offer!` resolve the already-selected full
+Authority to exactly one authenticated connected routing peer before calling
+`replication.runtime/replicate!`. Discovery may make that selected peer
+reachable; it must not substitute another replica. Await the layout runtime,
+lifecycle runtime and controller runtime readiness gates before admitting new
+retention work. This gives applications an explicit crash-safe operation now;
+the later scheduler will call the same `repair!` operation under bounded timer
+and backoff policy rather than changing its persistence semantics.
 
 This keeps Konserve as the common storage abstraction without making ordinary
 Konserve reads remote. An `ensure-local` or later tiered adapter can try local

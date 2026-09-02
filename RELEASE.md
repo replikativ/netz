@@ -190,6 +190,12 @@ This extension is not part of the alpha interoperability claim yet.
       contract. Restore re-verifies signed layout/retention, addresses, policy
       and exact targets; the Konserve implementation has bounded JVM/Node
       restart and replacement coverage.
+- [x] Implement the serialized explicit controller runtime. Startup restores
+      intents before receipts and readiness; begin and repair persist before
+      dispatch, failed writes retry the identical generation, and the transfer
+      runtime can delegate receipt replay to this single owner. The JVM file
+      repository supplies the default atomic/fsync controller store, while
+      Konserve is an explicitly accepted best-effort option.
 - [ ] Implement Node/browser durable storage, durable automated repair
       scheduling, backend erasure, and operational offline-peer
       reconciliation.

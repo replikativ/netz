@@ -139,6 +139,15 @@
       "intent_revision" intent-revision
       "attempts" attempt-records})))
 
+(defn make-initial-record
+  "Build revision zero with attempt zero for every deterministic target."
+  [layout-envelope retention-envelope manifest]
+  (let [layout-statement (statement layout-envelope layout/statement-type)
+        retention (statement retention-envelope "blob/retention")
+        targets (target-ids layout-statement retention)]
+    (make-record layout-envelope retention-envelope manifest
+                 (zipmap targets (repeat 0)) 0)))
+
 (defn record->intent
   "Convert one structurally valid record to the pure controller restore shape."
   [record]
