@@ -357,7 +357,18 @@ not need plaintext keys.
 A changed layout has the next signed epoch and links the exact previous layout
 address. Receipts from an old epoch remain evidence that bytes existed, but do
 not by themselves satisfy placement under the current layout. A same-epoch
-signed fork halts new admission until explicit operator recovery.
+signed fork permanently halts new admission for that cluster identity.
+
+Draft-00 deliberately has no branch-choice or unfreeze operation. Operators
+preserve the forked transcript, audit the controller and old lifecycle state,
+and roll forward to a fresh cluster identifier with an out-of-band authorized
+controller and epoch-zero layout. Existing verified object bytes can be reused
+because their addresses do not include the cluster, but every migrated object
+needs a new retention statement and new receipts; evidence from the forked
+cluster cannot satisfy the new placement. Old leases, expiry, deletion
+tombstones and audit evidence remain in force until their obligations are
+fulfilled. The normative procedure is in
+[`blob-replication-draft-00`](../spec/blob-replication-draft-00.md#31-controller-fork-recovery).
 
 ## Failure guarantees
 
@@ -480,10 +491,10 @@ three process IDs represent three independent failure domains.
 
 ## Implementation order
 
-1. [wire and durable restore done; fork recovery open] Freeze object, receipt,
-   retention, deletion and signed layout/reconfiguration schemas with canonical
-   CBOR fixtures. The bounded transcript now restores through portable
-   Konserve; specify explicit operator recovery from signed controller forks.
+1. [done] Freeze object, receipt, retention, deletion and signed
+   layout/reconfiguration schemas with canonical CBOR fixtures. The bounded
+   transcript restores through portable Konserve, and signed controller forks
+   have a terminal cluster-rollover procedure.
 2. [done] Implement pure placement, receipt-controller, receiver-transfer and
    crash-safe lifecycle transitions.
 3. [done] Add simulated durable disks, faults, crash recovery, bulk expiry and

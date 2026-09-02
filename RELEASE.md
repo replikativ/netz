@@ -170,9 +170,10 @@ This extension is not part of the alpha interoperability claim yet.
       and predecessor on startup, persists before activation, and fails startup
       closed on corruption; the portable Konserve adapter passes JVM/Node
       restart tests.
-- [ ] Define the explicit operator procedure for resolving a signed controller
-      fork. The durable runtime intentionally preserves the evidence and
-      freezes rather than choosing a branch by arrival order or LWW.
+- [x] Define signed controller-fork recovery as a terminal rollover to a fresh
+      cluster identity. The procedure preserves the old transcript and
+      lifecycle obligations, requires out-of-band authorization and fresh
+      retention evidence, and never chooses a branch by arrival order or LWW.
 - [ ] Implement Node/browser durable storage, network inventory exchange,
       automated repair scheduling, backend erasure, and operational
       offline-peer reconciliation.

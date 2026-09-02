@@ -37,7 +37,10 @@ may make incompatible protocol changes.
   A serialized layout runtime now re-verifies and replays a bounded ordered
   envelope transcript before readiness, persists each accepted change before
   activation, and restores both the chain and fork freeze through the portable
-  Konserve adapter on JVM and JavaScript.
+  Konserve adapter on JVM and JavaScript. The draft defines a detected signed
+  controller fork as terminal for that cluster identity and specifies an
+  audited rollover which preserves old lifecycle obligations and requires new
+  retention evidence.
   The explicit Konserve immutable-write seam now fails before network work when
   its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.
