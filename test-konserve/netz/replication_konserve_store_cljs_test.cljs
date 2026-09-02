@@ -6,15 +6,19 @@
             [netz.replication.blob :as blob]
             [netz.replication.inventory :as inventory]
             [netz.replication.konserve-store :as konserve-store]
+            [netz.replication.layout-runtime :as layout-runtime]
             [netz.replication.lifecycle :as lifecycle]
             [netz.replication.lifecycle-runtime :as lifecycle-runtime]
             [netz.replication.storage :as storage]
+            [netz.replication.wire :as replication-wire]
             [netz.wire :as wire]))
 
 (def session (identity/hex->bytes (apply str (repeat 16 "30"))))
 (def split (blob/split (identity/seq->bytes (range 20)) {:piece-size 8}))
 (def public-hex
   "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+(def private-hex
+  "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
 (def genesis
   (identity/make-genesis
    {:rotation-keys [(apply str (repeat 32 "aa"))]
@@ -30,6 +34,12 @@
    "object" (:object-id split) "layout_epoch" 7
    "replicas" 1 "write_acks" 1 "minimum_domains" {}
    "issued_at" 1000 "retain_until" 5000 "signer" authority})
+(def layout0
+  {"v" 1 "type" "blob/layout" "cluster" (get retention "cluster")
+   "epoch" 0
+   "previous" (identity/hex->bytes (apply str (repeat 32 "00")))
+   "members" [{"authority" authority "domains" {} "enabled" true}]
+   "issued_at" 900 "signer" authority})
 
 (deftest portable-konserve-store-resumes-and-installs
   (async done
@@ -113,4 +123,34 @@
                  (lifecycle/status (lifecycle-runtime/state restarted)
                                    retention)))
           (lifecycle-runtime/stop! restarted))
+        (done)))))
+
+(deftest portable-layout-transcript-restarts-from-konserve
+  (async done
+    (async/go
+      (let [underlying (async/<! (new-mem-store))
+            make-runtime
+            #(layout-runtime/start!
+              {:store (konserve-store/new-konserve-blob-store
+                       underlying {:persistence "netz/store/volatile/1"})
+               :cluster (get layout0 "cluster")
+               :controllers [authority]})
+            envelope (async/<!
+                      (replication-wire/sign-statement
+                       {:genesis genesis
+                        :operational
+                        {:public (identity/hex->bytes public-hex)
+                         :private (identity/hex->bytes private-hex)}}
+                       layout0))
+            first-run (make-runtime)]
+        (is (true? (async/<! (layout-runtime/ready first-run))))
+        (is (= :accepted
+               (async/<! (layout-runtime/apply-envelope!
+                          first-run envelope))))
+        (layout-runtime/stop! first-run)
+        (let [restarted (make-runtime)]
+          (is (true? (async/<! (layout-runtime/ready restarted))))
+          (is (= 0 (get-in (layout-runtime/state restarted)
+                           [:current :statement "epoch"])))
+          (layout-runtime/stop! restarted))
         (done)))))

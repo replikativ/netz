@@ -104,7 +104,14 @@ them, for example with a single Urd/Raft leader. Learning an Authority through
 membership, pub/sub, or provider discovery never makes it a layout controller
 or replica. The accepted chain MUST cross the deployment's durable boundary
 before its new epoch authorizes retention; the reference pure reconciler does
-not itself provide that storage boundary.
+not itself provide that storage boundary. The reference runtime stores one
+bounded ordered envelope transcript per cluster, re-verifies every signature
+and predecessor before readiness, atomically persists the enlarged transcript,
+and only then exposes the new epoch. A corrupt, oversized, gapped or otherwise
+unreplayable durable transcript fails startup closed. Draft-00 bounds the
+reference transcript to 256 envelopes by default; deployments MUST configure
+a finite bound and arrange an audited checkpoint or migration before reaching
+it.
 
 Placement converts each member Authority to its lowercase 64-hex spelling and
 uses the following policy:
@@ -481,9 +488,9 @@ otherwise an offline replica could resurrect bytes from a stale offer.
 Before advertising a durable-blob capability, implementations must additionally
 complete and test:
 
-1. durable layout-chain restoration and explicit operator recovery from a
-   detected signed fork (the portable signed statement, hash chain, pure
-   reconciliation and admission fence are implemented);
+1. explicit operator recovery from a detected signed fork (portable signed
+   statements, the hash chain, persist-before-activate runtime, Konserve
+   restoration and admission fence are implemented);
 2. non-JVM durable piece-staging adapters (the bounded pure sender/receiver and
    JVM fsync/atomic-file reference adapter are implemented);
 3. restart recovery against real durable non-memory stores (the portable

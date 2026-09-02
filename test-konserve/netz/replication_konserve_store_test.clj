@@ -8,6 +8,8 @@
             [netz.replication.blob :as blob]
             [netz.replication.inventory :as inventory]
             [netz.replication.konserve-store :as konserve-store]
+            [netz.replication.layout :as layout]
+            [netz.replication.layout-runtime :as layout-runtime]
             [netz.replication.lifecycle :as lifecycle]
             [netz.replication.lifecycle-runtime :as lifecycle-runtime]
             [netz.replication.lifecycle-storage :as lifecycle-storage]
@@ -93,6 +95,13 @@
    "object" (:object-id split) "layout_epoch" 7
    "replicas" 1 "write_acks" 1 "minimum_domains" {}
    "issued_at" 1000 "retain_until" 5000 "signer" authority})
+
+(def layout0
+  {"v" 1 "type" "blob/layout"
+   "cluster" (get retention "cluster") "epoch" 0
+   "previous" (identity/hex->bytes (apply str (repeat 32 "00")))
+   "members" [{"authority" authority "domains" {} "enabled" true}]
+   "issued_at" 900 "signer" authority})
 
 (deftest pieces-resume-and-install-through-konserve
   (let [underlying (<!! (new-mem-store))
@@ -233,6 +242,27 @@
                  "netz/store/volatile/1")))
           "generic Konserve refuses to claim marker-only privacy erasure")
       (lifecycle-runtime/stop! restarted))))
+
+(deftest signed-layout-transcript-restarts-through-the-same-konserve
+  (let [underlying (<!! (new-mem-store))
+        make-runtime #(layout-runtime/start!
+                       {:store (fresh-store underlying)
+                        :cluster (get layout0 "cluster")
+                        :controllers [authority]})
+        envelope (sign-statement layout0)
+        first-run (make-runtime)]
+    (is (true? (await (layout-runtime/ready first-run))))
+    (is (= :accepted
+           (await (layout-runtime/apply-envelope! first-run envelope))))
+    (layout-runtime/stop! first-run)
+    (let [restarted (make-runtime)]
+      (is (true? (await (layout-runtime/ready restarted))))
+      (is (= 0 (get-in (layout-runtime/state restarted)
+                       [:current :statement "epoch"])))
+      (is (identity/bufs= (layout/address layout0)
+                          (get-in (layout-runtime/state restarted)
+                                  [:current :address])))
+      (layout-runtime/stop! restarted))))
 
 (deftest installed-konserve-objects-are-inventoried-and-scrubbed
   (let [underlying (<!! (new-mem-store))
