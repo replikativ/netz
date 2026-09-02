@@ -47,7 +47,10 @@ may make incompatible protocol changes.
   targeted re-offers: authorized receivers repair missing pieces or re-verify
   an existing installation before issuing a freshly fenced receipt. Local
   inventory is not a network disclosure surface; any later batched or Merkle
-  inventory requires explicit privacy scope and resource bounds.
+  inventory requires explicit privacy scope and resource bounds. Retry attempts
+  now cross a revision-fenced durable-outbox action before any re-offer, so a
+  crash cannot reset the attempt fence or release work through a stale write
+  completion.
   The explicit Konserve immutable-write seam now fails before network work when
   its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.

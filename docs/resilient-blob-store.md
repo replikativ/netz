@@ -318,6 +318,14 @@ freshness and replay rules, and resource bounds. It is not a release blocker.
 The durable, bounded scheduler that restores intents and issues targeted
 re-offers remains to be implemented.
 
+The pure receipt controller now treats each retry as a new durable outbox
+generation. It increments the selected targets' attempts and the intent
+revision, persists that state, and releases re-offers only when the exact
+revision completes. During that write boundary neither an old receipt nor a
+late completion for an earlier revision can count. This closes the crash window
+the production scheduler will rely on; persistence and peer resolution remain
+runtime responsibilities.
+
 This keeps Konserve as the common storage abstraction without making ordinary
 Konserve reads remote. An `ensure-local` or later tiered adapter can try local
 Konserve first and explicitly invoke `fetch!`; it must surface unavailable,

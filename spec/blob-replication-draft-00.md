@@ -515,13 +515,16 @@ Byzantine peer will retain the bytes afterward.
 
 Automatic repair scheduling MUST be driven from durable retention intents,
 resume after restart, bound concurrent sessions and queued work, and use
-bounded retry with backoff. Connection discovery resolves an already selected
-full Authority to a live peer; it MUST NOT change the target or grant storage
-authority. Network-wide inventory exchange is not defined in draft-00. A later
-batched or Merkle extension must define cluster and privacy-domain scoping,
-authorization before existence disclosure, freshness and replay behavior, and
-request, response and computation bounds. It is an optimization, not a
-prerequisite for correct repair.
+bounded retry with backoff. The coordinator MUST durably persist each
+incremented per-target attempt and its intent revision before sending that
+retry; stale persistence completions and receipts from earlier attempts MUST
+NOT release or satisfy the retry. Connection discovery resolves an already
+selected full Authority to a live peer; it MUST NOT change the target or grant
+storage authority. Network-wide inventory exchange is not defined in draft-00.
+A later batched or Merkle extension must define cluster and privacy-domain
+scoping, authorization before existence disclosure, freshness and replay
+behavior, and request, response and computation bounds. It is an optimization,
+not a prerequisite for correct repair.
 
 ## 8. Failure and privacy semantics
 
