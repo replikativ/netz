@@ -50,7 +50,9 @@ may make incompatible protocol changes.
   inventory requires explicit privacy scope and resource bounds. Retry attempts
   now cross a revision-fenced durable-outbox action before any re-offer, so a
   crash cannot reset the attempt fence or release work through a stale write
-  completion.
+  completion. The pure controller now binds layout and policy per intent and
+  restores verified attempts without emitting network work, allowing durable
+  receipt replay to precede restart repair.
   The explicit Konserve immutable-write seam now fails before network work when
   its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.

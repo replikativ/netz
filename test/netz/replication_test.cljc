@@ -236,3 +236,52 @@
     (is (= [:persist-intent] (mapv first actions)))
     (is (empty? (:actions premature)))
     (is (empty? (get-in (:state premature) [:objects "blob" :acks])))))
+
+(deftest placement-policy-is-bound-per-intent
+  (let [two-copy-policy {:replicas 2 :write-acks 1
+                         :minimum-domains {"party" 1}}
+        {begun :state}
+        (step (replication/make-state layout policy)
+              {:type :replication/begin
+               :manifest {:object-id "small"}
+               :layout layout
+               :policy two-copy-policy})
+        {ready :state stores :actions}
+        (step begun {:type :replication/intent-stored
+                     :object-id "small" :layout-epoch 7
+                     :intent-revision 0})
+        target (second (first stores))
+        {durable :state emitted :actions}
+        (step ready {:type :replication/stored
+                     :object-id "small" :replica-id target
+                     :layout-epoch 7 :attempt 0})]
+    (is (= 2 (count stores)))
+    (is (= two-copy-policy (get-in ready [:objects "small" :policy])))
+    (is (= [:durable] (mapv first emitted)))
+    (is (true? (get-in durable [:objects "small" :durable-emitted?])))))
+
+(deftest verified-intents-restore-without-releasing-network-work
+  (let [targets (mapv :id (placement/place layout policy "restored"))
+        attempts (zipmap targets [3 4 5])
+        restored
+        (replication/restore-state
+         (replication/make-state layout policy)
+         [{:manifest {:object-id "restored"}
+           :layout layout :policy policy
+           :attempts attempts :intent-revision 9}])
+        {pending :state actions :actions}
+        (step restored {:type :replication/repair :object-id "restored"})]
+    (is (= attempts (get-in restored [:objects "restored" :attempts])))
+    (is (empty? (get-in restored [:objects "restored" :pending-targets])))
+    (is (= [:persist-intent] (mapv first actions)))
+    (is (= 10 (get-in pending [:objects "restored" :intent-revision])))
+    (is (= (zipmap targets [4 5 6])
+           (get-in pending [:objects "restored" :attempts])))
+    (is (thrown-with-msg?
+         #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+         #"Invalid durable replication intent"
+         (replication/restore-state
+          (replication/make-state layout policy)
+          [{:manifest {:object-id "bad"}
+            :layout layout :policy policy
+            :attempts {(first targets) 0} :intent-revision 0}])))))

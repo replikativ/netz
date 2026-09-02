@@ -43,28 +43,32 @@
    :signed-receipts (select-keys (:receipts entry) (:targets entry))
    :status status})
 
-(defn- ack-members [state entry]
+(defn- ack-members [entry]
   (let [by-id (into {} (map (juxt :id identity))
-                    (placement/eligible-members (:layout state)))]
+                    (placement/eligible-members (:layout entry)))]
     (keep by-id (:acks entry))))
 
-(defn- durable? [state entry]
-  (let [{:keys [write-acks minimum-domains]} (:policy state)]
+(defn- durable? [entry]
+  (let [{:keys [write-acks minimum-domains]} (:policy entry)]
     (and (>= (count (:acks entry)) write-acks)
-         (placement/satisfies-domains? (ack-members state entry)
+         (placement/satisfies-domains? (ack-members entry)
                                        minimum-domains))))
 
 (defn- complete? [entry]
   (= (set (:targets entry)) (:acks entry)))
 
-(defn- begin [state manifest]
-  (let [object-id (:object-id manifest)]
+(defn- begin [state manifest requested-layout requested-policy]
+  (let [object-id (:object-id manifest)
+        layout (placement/validate-layout (or requested-layout (:layout state)))
+        policy (placement/validate-policy
+                layout (or requested-policy (:policy state)))]
     (when (nil? object-id)
       (throw (ex-info "Replication manifest has no object id"
                       {:type :netz.replication/invalid-manifest
                        :manifest manifest})))
     (if-let [existing (get-in state [:objects object-id])]
-      (if (= manifest (:manifest existing))
+      (if (= [manifest layout policy]
+             [(:manifest existing) (:layout existing) (:policy existing)])
         {:state state :actions []}
         (throw (ex-info "One object id was begun with conflicting manifests"
                         {:type :netz.replication/conflicting-manifest
@@ -72,10 +76,11 @@
                          :existing (:manifest existing)
                          :incoming manifest})))
       (let [targets (mapv :id
-                          (placement/place (:layout state) (:policy state)
-                                           object-id))
+                          (placement/place layout policy object-id))
             entry {:manifest manifest
-                   :layout-epoch (get-in state [:layout :epoch])
+                   :layout layout
+                   :policy policy
+                   :layout-epoch (:epoch layout)
                    :targets targets
                    :attempts (zipmap targets (repeat 0))
                    :acks #{}
@@ -138,7 +143,7 @@
                       (assoc-in [:objects object-id :receipts replica-id]
                                 receipt))
               entry (get-in state [:objects object-id])
-              emit-durable? (and (durable? state entry)
+              emit-durable? (and (durable? entry)
                                  (not (:durable-emitted? entry)))
               emit-complete? (and (complete? entry)
                                   (not (:complete-emitted? entry)))
@@ -207,6 +212,57 @@
       {:state state :actions []})
     {:state state :actions []}))
 
+(defn- restored-entry
+  [{:keys [manifest layout policy attempts intent-revision]}]
+  (let [object-id (:object-id manifest)
+        layout (placement/validate-layout layout)
+        policy (placement/validate-policy layout policy)
+        targets (mapv :id (placement/place layout policy object-id))]
+    (when-not (and object-id
+                   (map? attempts)
+                   (= (set targets) (set (keys attempts)))
+                   (every? #(and (integer? %) (<= 0 % 9007199254740991))
+                           (vals attempts))
+                   (integer? intent-revision)
+                   (<= 0 intent-revision 9007199254740991))
+      (throw (ex-info "Invalid durable replication intent"
+                      {:type :netz.replication/invalid-durable-intent
+                       :object-id object-id})))
+    [object-id
+     {:manifest manifest
+      :layout layout
+      :policy policy
+      :layout-epoch (:epoch layout)
+      :targets targets
+      :attempts attempts
+      :acks #{}
+      :receipts {}
+      :intent-revision intent-revision
+      :intent-stored? true
+      :pending-targets []
+      :durable-emitted? false
+      :complete-emitted? false
+      :repairing? false}]))
+
+(defn restore-state
+  "Restore verified durable intents without releasing network work.
+
+  `intents` is a bounded sequence of maps containing `:manifest`, `:layout`,
+  `:policy`, exact per-target `:attempts`, and `:intent-revision`. A runtime
+  replays durable signed receipts next and only then submits explicit repair
+  events; those repairs cross a new persisted revision before any re-offer."
+  [state intents]
+  (reduce (fn [current intent]
+            (let [[object-id entry] (restored-entry intent)]
+              (when (contains? (:objects current) object-id)
+                (throw (ex-info "Duplicate durable replication intent"
+                                {:type :netz.replication/duplicate-durable-intent
+                                 :object-id object-id})))
+              (-> current
+                  (assoc-in [:objects object-id] entry)
+                  (update-in [:stats :intents-stored] inc))))
+          state intents))
+
 (defn handler
   "Advance receipt state by one local event.
 
@@ -220,9 +276,9 @@
   - `{:type :replication/lost :object-id ... :replica-id ...
       :layout-epoch ...}`
   - `{:type :replication/repair :object-id ...}`"
-  [state {:keys [type manifest] :as event} _context]
+  [state {:keys [type manifest layout policy] :as event} _context]
   (case type
-    :replication/begin (begin state manifest)
+    :replication/begin (begin state manifest layout policy)
     :replication/intent-stored (intent-stored state event)
     :replication/stored (stored state event)
     :replication/lost (lost state event)

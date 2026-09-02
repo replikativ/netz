@@ -324,7 +324,10 @@ revision, persists that state, and releases re-offers only when the exact
 revision completes. During that write boundary neither an old receipt nor a
 late completion for an earlier revision can count. This closes the crash window
 the production scheduler will rely on; persistence and peer resolution remain
-runtime responsibilities.
+runtime responsibilities. Layout and acknowledgement policy are bound to each
+object intent rather than assumed globally. Verified durable intents restore
+without emitting work, allowing receipt replay to rebuild quorum evidence
+before an explicit repair scan persists its next generation.
 
 This keeps Konserve as the common storage abstraction without making ordinary
 Konserve reads remote. An `ensure-local` or later tiered adapter can try local
