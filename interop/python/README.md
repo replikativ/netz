@@ -28,7 +28,11 @@ admission. Python and Clojure share the placement, blob-manifest and
 signed-statement known-answer corpora. `netz_protocol.materialization`
 validates and addresses the same closed
 application-key/object binding as the JVM/JavaScript implementation. The
-transfer runtime and Konserve adapter are not yet part of the Python API.
+`netz_protocol.blob_store.FileBlobStore` adds asynchronous fsync or
+best-effort piece staging, atomic installation markers, restart/resume,
+inventory, scrubbing, and bounded reads. Its piece paths and deterministic
+CBOR markers are byte-compatible with the JVM file store. The Python transfer
+machine/runtime and Konserve adapter are not yet part of the API.
 
 This does not replace a full CBOR implementation for application values.
 Application payloads are opaque bytes and may use Boring's registered tags;
@@ -42,6 +46,27 @@ already owned on PyPI) and imports as `netz_protocol`:
 ```python
 from netz_protocol import SyncReceiver, SyncSender, dumps, loads
 ```
+
+The filesystem repository has no third-party dependency:
+
+```python
+from netz_protocol import BLOB_STORE_FSYNC, FileBlobStore, split_blob
+
+split = split_blob(b"encrypted application bytes", piece_size=64 * 1024)
+session = bytes.fromhex("00" * 16)
+async with FileBlobStore("./netz-blobs") as store:
+    for piece in split["pieces"]:
+        await store.stage_piece(
+            session, split["manifest_id"], split["manifest"],
+            piece["index"], piece["id"], piece["data"])
+    await store.install_object(
+        session, split["manifest_id"], split["manifest"],
+        retention={}, persistence=BLOB_STORE_FSYNC)
+```
+
+The session argument is transport bookkeeping and never enters a path. One
+process must exclusively own a repository root. An installation result is a
+local persistence claim, not a signed replica receipt or a replication quorum.
 
 Build an installable wheel from the repository root without publishing it:
 
@@ -57,10 +82,10 @@ profile commit returns a bounded local `CommitReceipt`; the reference profiles
 claim no frontier until their checkpoint formats bind one causally or
 cryptographically.
 
-Run the shared fixture tests from this directory:
+Run the complete Python conformance suite from the repository root:
 
 ```sh
-python3 -m unittest -v test_netz_codec.py
+python3 -m unittest discover -s interop/python -v
 ```
 
 This is intentionally a protocol core plus a conformance carrier, not yet a

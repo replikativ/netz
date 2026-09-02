@@ -2,7 +2,8 @@
 
 Status: experimental implementation draft. Portable placement, manifests,
 signed lifecycle statements, bounded sender/receiver transfer machines, a
-crash-safe lifecycle journal and a JVM Kabel/Noise/file-store runtime exist.
+crash-safe lifecycle journal, a JVM Kabel/Noise runtime and JVM/Python durable
+filesystem repositories exist.
 The capability remains explicit opt-in and is not advertised by default. This
 is not yet a durability or data-protection claim of the Netz release.
 
@@ -173,15 +174,23 @@ instead of silently downgrading the receipt. Receipt records are independently
 content addressed, bounded during restart scanning, and their Ed25519
 signatures are re-verified before replay to the quorum controller.
 
+The dependency-free Python `netz_protocol.FileBlobStore` implements the same
+piece and manifest paths, closed marker schema, deterministic CBOR bytes,
+fsync/best-effort profiles, restart/resume, bounded inventory, scrubbing and
+bounded object reads through asynchronous methods. Both implementations pin
+the same `blob-file-store-marker-1.hex` fixture. Python does not yet implement
+the transfer machine, receipt journal or Kabel/Noise blob runtime, so this is a
+cross-language storage boundary rather than an interoperability claim.
+
 Session cleanup deliberately does not delete addressed pieces. This is what
 allows a new attempt to resume after a process crash or lost ACK, and it avoids
 deleting a piece shared by several manifests. Lease-aware orphan collection
 and network inventory exchange remain separate gates; until they land the
 reference adapter can accumulate uninstalled staged pieces. Local paginated
 installed-manifest inventory and full-object scrubbing now exist for the JVM
-file and portable Konserve adapters. The JVM adapter is an executable
-conformance reference, not yet the Node/browser/Python durable storage
-implementation.
+file, Python file and portable Konserve adapters. The JVM adapter remains the
+only executable end-to-end transfer reference; Node/browser durable storage
+and the Python transfer binding remain open.
 
 ### Authenticated runtime binding
 
@@ -501,12 +510,14 @@ three process IDs represent three independent failure domains.
    resurrection-prevention invariants.
 4. [done] Implement the bounded pure sender, including one-piece backpressure,
    receipt fencing and persist-before-quorum handoff.
-5. [JVM done, portable Konserve reference added] Implement durable file
+5. [JVM and Python file stores done, portable Konserve reference added]
+   Implement durable file
    staging/install, signed-receipt replay and the explicit capability-gated
    Kabel/Noise binding. The generic Konserve repository now passes JVM and Node
    memory-store restart/install tests and honestly exposes only volatile or
-   best-effort completion. The lifecycle-policy adapter now has JVM and Node
-   Konserve restart tests; add real Node/browser durable-backend tests.
+   best-effort completion. Python shares the JVM piece/marker format but not yet
+   its receipt/runtime binding. The lifecycle-policy adapter now has JVM and
+   Node Konserve restart tests; add real Node/browser durable-backend tests.
 6. [local store, provider fetch and explicit `ensure-local!` done] Add network
    inventory exchange and background placement-repair scheduling;
    authenticated local-first retrieval already reuses the receipt-producing

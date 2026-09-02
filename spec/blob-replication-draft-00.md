@@ -531,11 +531,13 @@ complete and test:
    3.1 (the portable signed statements, hash chain, persist-before-activate
    runtime, Konserve restoration, admission fence and normative recovery
    procedure are implemented);
-2. non-JVM durable piece-staging adapters (the bounded pure sender/receiver and
-   JVM fsync/atomic-file reference adapter are implemented);
-3. restart recovery against real durable non-memory stores (the portable
-   lifecycle-policy adapter, JVM capability-gated transfer runtime, local
-   inventory/scrub API and durable receipt replay are implemented);
+2. browser durable piece staging and a Python transfer-machine binding (the
+   Python fsync/atomic file repository shares JVM piece paths, marker bytes,
+   restart/resume, inventory and scrub behavior);
+3. restart recovery against real durable non-memory stores beyond the JVM and
+   Python file repositories (the portable lifecycle-policy adapter, JVM
+   capability-gated transfer runtime, local inventory/scrub API and durable
+   receipt replay are implemented);
 4. operational clock-skew and real-store deletion tests (the journal-first
    pure lease/expiry/deletion machine is implemented);
 5. independent JVM, JavaScript and Python end-to-end tests; and
