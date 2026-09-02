@@ -31,8 +31,19 @@ application-key/object binding as the JVM/JavaScript implementation. The
 `netz_protocol.blob_store.FileBlobStore` adds asynchronous fsync or
 best-effort piece staging, atomic installation markers, restart/resume,
 inventory, scrubbing, and bounded reads. Its piece paths and deterministic
-CBOR markers are byte-compatible with the JVM file store. The Python transfer
-machine/runtime and Konserve adapter are not yet part of the API.
+CBOR markers are byte-compatible with the JVM file store.
+
+`netz_protocol.BlobSender` and `BlobReceiver` are independent, one-session
+transfer machines over the same closed frames as the JVM/JavaScript
+implementation. They return `TransferAction` values rather than performing IO.
+Receiver actions name staging loads and writes, installation, receipt signing,
+frame sends, and cleanup. Sender actions name piece reads, receipt persistence,
+frame sends, and the final controller event. The caller must verify and admit a
+signed retention statement before constructing a receiver, and must verify the
+receipt signature plus authenticated remote Authority before calling
+`BlobSender.verified_stored`. A carrier owns the bounded session table,
+timeouts, and reconnect policy. There is no Python WebSocket transfer runtime
+or Konserve adapter yet.
 
 This does not replace a full CBOR implementation for application values.
 Application payloads are opaque bytes and may use Boring's registered tags;
@@ -67,6 +78,28 @@ async with FileBlobStore("./netz-blobs") as store:
 The session argument is transport bookkeeping and never enters a path. One
 process must exclusively own a repository root. An installation result is a
 local persistence claim, not a signed replica receipt or a replication quorum.
+
+A carrier can drive the pure transfer boundary without exposing its networking
+library to application code:
+
+```python
+from netz_protocol import BlobReceiver
+
+# Signature, controller, layout, lifecycle, and peer policy already admitted.
+receiver = BlobReceiver(
+    local_authority, peer_handle, authenticated_remote_authority,
+    decoded_offer, now=clock_ms(),
+)
+for action in receiver.start():
+    await execute_transfer_action(action)
+```
+
+Each completion is fed back through the specifically named method such as
+`staging_loaded`, `piece_staged`, `installed`, or `receipt_signed`. Execute
+those transitions serially for a session. Receiving a piece never emits an ACK
+until `piece_staged(..., "ok")`; the sender retains no piece bytes after its
+send action; and a verified receipt does not reach the controller until
+`receipt_persisted("ok")`.
 
 Build an installable wheel from the repository root without publishing it:
 

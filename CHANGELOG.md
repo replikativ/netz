@@ -75,6 +75,10 @@ may make incompatible protocol changes.
   full-retention/layout advances and later-layout global deletion, while
   control-stream retention is refused on members outside current placement;
   compact leases remain scoped to already admitted replicas.
+  The Python package now includes transport-independent one-session durable
+  blob sender and receiver machines with typed effects, one-piece persistence
+  backpressure, authenticated session fencing, and receipt-persistence gating.
+  JVM, JavaScript and Python pin the same canonical need/piece/ACK/commit trace.
   The explicit Konserve immutable-write seam now fails before network work when
   its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.

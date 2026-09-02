@@ -67,6 +67,12 @@ from .blob_store import (
     BlobStoreError,
     FileBlobStore,
 )
+from .blob_transfer import (
+    BlobReceiver,
+    BlobSender,
+    BlobTransferError,
+    TransferAction,
+)
 from .replication_wire import (
     ReplicationWireError,
     decode_frame as decode_replication_frame,
@@ -98,6 +104,9 @@ __all__ = [
     "CBORError",
     "BlobError",
     "BlobStoreError",
+    "BlobReceiver",
+    "BlobSender",
+    "BlobTransferError",
     "BLOB_STORE_BEST_EFFORT",
     "BLOB_STORE_FSYNC",
     "CommitReceipt",
@@ -122,6 +131,7 @@ __all__ = [
     "SyncReceiver",
     "SyncResponse",
     "SyncSender",
+    "TransferAction",
     "authority_id",
     "application_binding",
     "application_binding_address",

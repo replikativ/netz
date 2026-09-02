@@ -541,8 +541,18 @@ network delivery, an accepted offer, a queued write or a partially installed
 manifest is not an acknowledgement.
 
 `fixtures/blob-statements-1.json` pins the retention transcript, Ed25519
-signature and complete canonical offer/fetch hashes across JVM, JavaScript and
-Python.
+signature, complete canonical offer/fetch hashes, and the need/piece/ACK/commit
+transfer trace across JVM, JavaScript and Python.
+
+The Python reference exposes one transport-independent `BlobSender` or
+`BlobReceiver` per session. It returns explicit actions for carrier sends,
+piece/staging IO, installation, receipt signing and receipt persistence. A
+runtime owns the bounded session table and feeds completion results back
+serially. This split is non-normative API structure, but preserves the same
+normative boundaries: an authorized receiver starts only after lifecycle
+admission, `verified_stored` is called only after signature and authenticated
+remote-Authority verification, and controller release follows successful
+receipt persistence.
 
 A coordinator may return quorum when it holds `W` current receipts satisfying
 all domain constraints. Signature verification and an authenticated replica
@@ -634,9 +644,10 @@ complete and test:
    3.1 (the portable signed statements, hash chain, persist-before-activate
    runtime, Konserve restoration, admission fence and normative recovery
    procedure are implemented);
-2. browser durable piece staging and a Python transfer-machine binding (the
-   Python fsync/atomic file repository shares JVM piece paths, marker bytes,
-   restart/resume, inventory and scrub behavior);
+2. browser durable piece staging (the Python one-session sender/receiver
+   binding and fsync/atomic file repository now share JVM/JavaScript transfer
+   trace bytes, JVM piece paths, marker bytes, restart/resume, inventory and
+   scrub behavior; a reconnecting Python network runtime remains separate);
 3. restart recovery against real durable non-memory stores beyond the JVM and
    Python file repositories (the portable lifecycle-policy adapter, JVM
    capability-gated transfer runtime, local inventory/scrub API and durable
