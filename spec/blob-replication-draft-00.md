@@ -399,6 +399,31 @@ increasing `attempt`. A retry increments the attempt. A completion for an older
 attempt MUST NOT satisfy the current operation, including after a connection or
 disk is replaced.
 
+The reference portable outbox representation is a local storage record, not a
+network frame:
+
+~~~text
+{
+  "v": 1, "type": "blob/replication-intent",
+  "cluster": bytes, "object": bytes32,
+  "manifest": blob_manifest,
+  "layout": signed_layout_envelope,
+  "retention": signed_retention_envelope,
+  "intent_revision": uint,
+  "attempts": [{"replica": bytes32, "attempt": uint}, ...]
+}
+~~~
+
+`attempts` is sorted by unsigned replica Authority bytes, contains no
+duplicates and names exactly the deterministic target set. The record itself
+is not a new authority statement: on every restore an implementation MUST
+re-verify both envelope signatures, configured controller authorization,
+cluster, object and manifest addresses, layout epoch, placement policy and
+target set. It MUST restore no more than its configured intent bound. Restored
+intents release no network work until durable receipts have replayed and a
+repair event has persisted its next intent revision. An implementation may use
+another local representation only if it preserves those semantics.
+
 The `netz/blob-replication/1` capability selects these transfer frames. It MUST
 only be used over a connection that authenticates both full Netz Authority IDs.
 An implementation MUST NOT send or accept these frames merely because a local

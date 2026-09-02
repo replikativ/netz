@@ -15,7 +15,9 @@
   (:require [konserve.core :as k]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.controller-storage :as controller-storage]
             [netz.replication.inventory :as inventory]
+            [netz.replication.intent :as intent]
             [netz.replication.layout-storage :as layout-storage]
             [netz.replication.lifecycle-storage :as lifecycle-storage]
             [netz.replication.storage :as storage]
@@ -92,6 +94,10 @@
 
 (defn- layout-key [store cluster]
   [(:prefix store) ::layout (cluster-hex cluster)])
+
+(defn- controller-intent-key [store cluster object-id]
+  [(:prefix store) ::controller-intent
+   (cluster-hex cluster) (address-hex object-id)])
 
 (defn- verify-context! [manifest-id manifest]
   (blob/validate-manifest manifest)
@@ -480,9 +486,47 @@
                          {:type :netz.replication/invalid-layout-transcript})))
        (get record "envelopes")))))
 
+(defn- controller-intent-entry? [store cluster-hex-value entry]
+  (let [key (:key entry)]
+    (and (vector? key)
+         (= 4 (count key))
+         (= (:prefix store) (nth key 0))
+         (= ::controller-intent (nth key 1))
+         (= cluster-hex-value (nth key 2))
+         (string? (nth key 3))
+         (re-matches #"[0-9a-f]{64}" (nth key 3)))))
+
+(defn- load-controller-intents! [store cluster]
+  (go-try-
+   (let [cluster-hex-value (cluster-hex cluster)
+         entries (<?- (k/keys (:store store) {:sync? false}))
+         keys (->> entries
+                   (filter #(controller-intent-entry?
+                             store cluster-hex-value %))
+                   (map :key)
+                   (sort-by #(nth % 3))
+                   vec)]
+     (when (> (count keys) (:max-controller-intents store))
+       (throw (ex-info "Controller intent journal exceeds its configured bound"
+                       {:type :netz.replication/too-many-controller-intents
+                        :limit (:max-controller-intents store)})))
+     (loop [remaining (seq keys) result []]
+       (if-let [key (first remaining)]
+         (let [record (<?- (k/get (:store store) key nil {:sync? false}))]
+           (when-not (and (intent/valid-record? record)
+                          (same-bytes? cluster (get record "cluster"))
+                          (= (nth key 3)
+                             (identity/bytes->hex (get record "object"))))
+             (throw (ex-info "Invalid durable controller intent"
+                             {:type :netz.replication/invalid-intent-record
+                              :key key})))
+           (recur (next remaining) (conj result record)))
+         result)))))
+
 (defrecord KonserveBlobStore [store prefix persistence clock max-receipts
                               max-lifecycle-records max-layout-records
-                              max-inventory-records delete-object!]
+                              max-inventory-records max-controller-intents
+                              delete-object!]
   storage/PBlobTransferStore
 
   (-load-staging [this _session manifest-id manifest]
@@ -576,6 +620,27 @@
          :ok)
        (catch #?(:clj Throwable :cljs js/Error) cause cause))))
 
+  controller-storage/PBlobControllerStore
+
+  (-load-controller-intents [this cluster]
+    (go-try-
+     (try
+       (<?- (load-controller-intents! this cluster))
+       (catch #?(:clj Throwable :cljs js/Error) cause cause))))
+
+  (-persist-controller-intent! [this cluster object-id record]
+    (go-try-
+     (try
+       (when-not (and (intent/valid-record? record)
+                      (same-bytes? cluster (get record "cluster"))
+                      (same-bytes? object-id (get record "object")))
+         (throw (ex-info "Invalid durable controller intent"
+                         {:type :netz.replication/invalid-intent-record})))
+       (<?- (k/assoc store (controller-intent-key this cluster object-id)
+                     record nil {:sync? false}))
+       :ok
+       (catch #?(:clj Throwable :cljs js/Error) cause cause))))
+
   inventory/PBlobInventoryStore
 
   (-inventory-page [this cursor limit]
@@ -613,7 +678,8 @@
   signed-layout transcript (default 256). `:max-inventory-records` bounds the
   first reference
   implementation's local marker scan (default 1,000,000); returned pages stay
-  bounded to 1,024 addresses.
+  bounded to 1,024 addresses. `:max-controller-intents` bounds restoration of
+  the controller's portable durable outbox (default 100,000).
 
   Privacy deletion is intentionally fail-closed. Supply `:delete-object!` as a
   function from `{key statement persistence}` to a result channel only when it
@@ -623,14 +689,15 @@
   issued."
   [store {:keys [prefix persistence clock max-receipts
                  max-lifecycle-records max-layout-records
-                 max-inventory-records delete-object!]
+                 max-inventory-records max-controller-intents delete-object!]
           :or {prefix :netz.blob
                clock #?(:clj #(System/currentTimeMillis)
                         :cljs #(.now js/Date))
                max-receipts 100000
                max-lifecycle-records 100000
                max-layout-records 256
-               max-inventory-records 1000000}}]
+               max-inventory-records 1000000
+               max-controller-intents 100000}}]
   (when-not (and store
                  (some? prefix)
                  (contains? persistence-profiles persistence)
@@ -643,6 +710,8 @@
                  (pos? max-layout-records)
                  (int? max-inventory-records)
                  (pos? max-inventory-records)
+                 (int? max-controller-intents)
+                 (pos? max-controller-intents)
                  (or (nil? delete-object!) (ifn? delete-object!)))
     (throw (ex-info "Invalid Konserve blob-store options"
                     {:type :netz.replication/invalid-konserve-store-options
@@ -650,8 +719,9 @@
                      :max-receipts max-receipts
                      :max-lifecycle-records max-lifecycle-records
                      :max-layout-records max-layout-records
-                     :max-inventory-records max-inventory-records})))
+                     :max-inventory-records max-inventory-records
+                     :max-controller-intents max-controller-intents})))
   (->KonserveBlobStore store prefix persistence clock max-receipts
                        max-lifecycle-records max-layout-records
-                       max-inventory-records
+                       max-inventory-records max-controller-intents
                        delete-object!))

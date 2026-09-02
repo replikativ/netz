@@ -4,7 +4,9 @@
             [konserve.memory :refer [new-mem-store]]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.controller-storage :as controller-storage]
             [netz.replication.inventory :as inventory]
+            [netz.replication.intent :as intent]
             [netz.replication.konserve-store :as konserve-store]
             [netz.replication.layout-runtime :as layout-runtime]
             [netz.replication.lifecycle :as lifecycle]
@@ -153,4 +155,35 @@
           (is (= 0 (get-in (layout-runtime/state restarted)
                            [:current :statement "epoch"])))
           (layout-runtime/stop! restarted))
+        (done)))))
+
+(deftest portable-controller-intent-restarts-from-konserve
+  (async done
+    (async/go
+      (let [underlying (async/<! (new-mem-store))
+            make-store #(konserve-store/new-konserve-blob-store
+                         underlying {:persistence "netz/store/volatile/1"})
+            signer {:genesis genesis
+                    :operational
+                    {:public (identity/hex->bytes public-hex)
+                     :private (identity/hex->bytes private-hex)}}
+            layout-envelope (async/<! (replication-wire/sign-statement
+                                       signer layout0))
+            retention-envelope
+            (async/<! (replication-wire/sign-statement
+                       signer (assoc retention "layout_epoch" 0)))
+            record (intent/make-record
+                    layout-envelope retention-envelope (:manifest split)
+                    {(identity/bytes->hex authority) 4} 3)
+            stored (async/<!
+                    (controller-storage/-persist-controller-intent!
+                     (make-store) (get retention "cluster")
+                     (:object-id split) record))
+            loaded (first
+                    (async/<!
+                     (controller-storage/-load-controller-intents
+                      (make-store) (get retention "cluster"))))]
+        (is (= :ok stored))
+        (is (intent/same-record? record loaded))
+        (is (= 3 (get loaded "intent_revision")))
         (done)))))

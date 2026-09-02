@@ -52,7 +52,10 @@ may make incompatible protocol changes.
   crash cannot reset the attempt fence or release work through a stale write
   completion. The pure controller now binds layout and policy per intent and
   restores verified attempts without emitting network work, allowing durable
-  receipt replay to precede restart repair.
+  receipt replay to precede restart repair. A closed local controller-intent
+  record now carries the signed layout/retention, manifest, exact target
+  attempts and revision across a bounded portable Konserve restart on JVM and
+  JavaScript.
   The explicit Konserve immutable-write seam now fails before network work when
   its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.

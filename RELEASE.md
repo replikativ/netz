@@ -186,6 +186,10 @@ This extension is not part of the alpha interoperability claim yet.
 - [x] Persist retry generations before re-offer. Per-target attempts and the
       intent revision cross the durable outbox before network actions; stale
       persistence completions and old receipts cannot satisfy a new repair.
+- [x] Define a closed portable controller-intent record and asynchronous store
+      contract. Restore re-verifies signed layout/retention, addresses, policy
+      and exact targets; the Konserve implementation has bounded JVM/Node
+      restart and replacement coverage.
 - [ ] Implement Node/browser durable storage, durable automated repair
       scheduling, backend erasure, and operational offline-peer
       reconciliation.
