@@ -12,8 +12,10 @@ repository and transfer machines define the path to implementations outside
 the Clojure ecosystem.
 
 > **Release status: `0.1.0-alpha.1`.** The JVM, JavaScript, and Python paths now
-> share deterministic CBOR and authenticated Noise/Kabel fixtures, and the
-> secure JVM overlay passes a real three-peer rejoin test. Exact configured
+> share deterministic CBOR and authenticated Noise/Kabel fixtures. The secure
+> JVM overlay passes a real three-peer rejoin test, and a Python sender now
+> completes a real authenticated, fsync-backed transfer into the JVM runtime.
+> Exact configured
 > `wss` gateways have a supported dial policy. Arbitrary public discovery still
 > waits on socket-level resolved-IP pinning. The authenticated transport uses
 > released Kabel 0.3.126 and Geheimnis 0.2.39 artifacts. Rotation remains
@@ -55,6 +57,12 @@ The complete Python suite needs the optional secure client dependencies first:
 
 ```sh
 python3 -m pip install '.[secure-client]'
+```
+
+The same environment can run the mixed Python/JVM transport proof:
+
+```sh
+NETZ_PYTHON=python3 clojure -X:secure-test:mixed-test :dirs '["test-mixed"]'
 ```
 
 Maintainers with sibling checkouts can also run the real stack seams without

@@ -47,10 +47,14 @@ frame sends, and the final controller event. The caller must verify and admit a
 signed retention statement before constructing a receiver, and must verify the
 receipt signature plus authenticated remote Authority before calling
 `BlobSender.verified_stored`. A carrier owns the bounded session table,
-timeouts, and reconnect policy. There is no Python WebSocket transfer runtime
-or Konserve adapter yet; the secure WebSocket, extension codec, filesystem
-repository, and pure transfer machines are the separate pieces needed to build
-that bounded reconnecting adapter.
+timeouts, and reconnect policy. There is no reusable Python WebSocket transfer
+runtime or Konserve adapter yet; the secure WebSocket, extension codec,
+filesystem repository, and pure transfer machines are the separate pieces
+needed to build that bounded reconnecting adapter. The separately installed
+package is exercised by `test-mixed/python/mixed_blob_sender.py`, an independent
+conformance peer: CI runs it through authenticated Noise/Kabel against the JVM
+fsync receiver and requires a verified, fsynced receipt before it exits
+successfully.
 
 This does not replace a full CBOR implementation for application values.
 Application payloads are opaque bytes and may use Boring's registered tags;
@@ -126,6 +130,12 @@ Run the complete Python conformance suite from the repository root:
 
 ```sh
 python3 -m unittest discover -s interop/python -v
+```
+
+Run the mixed Python/JVM transport proof after installing the secure extra:
+
+```sh
+NETZ_PYTHON=python3 clojure -X:secure-test:mixed-test :dirs '["test-mixed"]'
 ```
 
 This is intentionally a protocol core plus a conformance carrier, not yet a

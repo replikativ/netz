@@ -141,10 +141,12 @@ same canonical need/piece/ACK/commit trace. This proves the byte, signature,
 carrier, receiving-session and blob flow-control shapes. Named extensions now
 also have an exact capability-bound carrier fixture and the JVM runtime selects
 it after separate wire-profile and carrier negotiation; Python exposes both
-halves of that codec. A
-complete portable runtime still needs base-overlay codec routing, outbound
-Python sync/repair and blob-transfer orchestration, content exchange, and an
-independent JVM/Python application-session test.
+halves of that codec. A complete portable runtime still needs base-overlay
+codec routing, outbound
+Python sync/repair and reusable reconnecting blob-transfer orchestration, and
+content exchange. A dedicated conformance process now drives a real Python
+blob sender through Noise/Kabel and the negotiated portable carrier into the
+JVM fsync receiver, including verified and durably persisted receipt evidence.
 
 ## Boring and the CBOR data model
 

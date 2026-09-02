@@ -13,7 +13,8 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 - [x] Dialing has an explicit operator policy and safe ws/wss syntax default.
 - [x] Identity handshakes are attempt-limited, deadline-bound and complete once.
 - [x] Subtree sessions have deadlines and retry alternate providers.
-- [x] JVM, browser/Node, optional store, Python fixture and jar build are CI gates.
+- [x] JVM, browser/Node, optional store, Python fixture, mixed JVM/Python, and
+      jar build are CI gates.
 - [x] A language-neutral draft and deterministic-CBOR fixture exist.
 - [x] Point-to-point sync sessions are pure, bounded, acknowledged, atomic at
       profile commit, and exercised with fenced-root and join-semilattice
@@ -138,7 +139,7 @@ This extension is not part of the alpha interoperability claim yet.
       staging backpressure and authenticated session/attempt fences, and gate
       controller delivery on durable receipt persistence. JVM, JavaScript and
       Python pin the same need/piece/ACK/commit trace bytes. A reconnecting
-      Python carrier runtime remains a separate gate.
+      general-purpose Python carrier runtime remains a separate gate.
 - [x] Implement a journal-first lifecycle machine with monotone leases,
       same-revision equivocation evidence, expiry, deletion retry, absorbing
       tombstones, and persist-before-emit deletion receipts. Simulator tests
@@ -155,6 +156,11 @@ This extension is not part of the alpha interoperability claim yet.
       older Clojure peers retain an explicit transitional fallback. Python
       enforces the transcript capability set and exposes bounded carrier codecs
       for its secure WebSocket client, but not yet the reconnecting runtime.
+- [x] Run a real Python sender against the JVM/http-kit receiver: Noise XX
+      authenticates both Authority IDs, the portable carrier moves the complete
+      piece/ACK/commit flow, the JVM fsyncs and signs its receipt, and Python
+      verifies and fsyncs that receipt before declaring completion. This is a
+      dedicated CI job with independently provisioned Python dependencies.
 - [x] Implement a portable production lifecycle-policy adapter which restores
       before authorization, journals the exact retention statement before byte
       transfer, verifies reconciled lease/deletion envelopes, and fails closed
@@ -272,7 +278,9 @@ This extension is not part of the alpha interoperability claim yet.
       and serializer-0 outer carrier. CLJS runs the same binding logic and
       adversarial transport suite; consuming this JSON fixture there remains
       part of the three-runtime gate below.
-- [ ] Pass independent JVM/JS/Python two-peer conformance tests.
+- [ ] Pass independent JVM/JS/Python two-peer conformance tests. The durable
+      blob subset now has a real Python-to-JVM two-peer test; base dissemination,
+      sync, the reverse blob direction, and a JavaScript peer remain.
 - [x] Pass a real three-peer offline/rejoin test over http-kit, Kabel CBOR and
       authenticated Noise for both a fenced single-writer root and a
       multiwriter join-semilattice.
@@ -286,6 +294,8 @@ This extension is not part of the alpha interoperability claim yet.
 clojure -X:test :dirs '["test"]'
 # Released Kabel 0.3.126 and Geheimnis 0.2.39:
 clojure -X:secure-test :dirs '["test" "test-secure"]'
+# After installing `.[secure-client]` into the selected interpreter:
+NETZ_PYTHON=python3 clojure -X:secure-test:mixed-test :dirs '["test-mixed"]'
 clojure -X:konserve:test :dirs '["test" "test-konserve"]'
 # With ../urd, ../datahike, ../yggdrasil, and ../spindel checked out:
 clojure -X:stack :dirs '["test-stack"]'
