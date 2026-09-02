@@ -102,20 +102,27 @@
            :now-fn (constantly 1100)}
           callbacks)))
 
-(defn stored-event [attempt]
-  (let [receipt
-        (sign
-         {"v" 1 "type" "blob/stored" "cluster" cluster
-          "privacy_domain" privacy-domain "retention_revision" 1
-          "manifest" (:manifest-id split) "object" (:object-id split)
-          "layout_epoch" 0 "replica" authority "attempt" attempt
-          "persistence" "netz/store/best-effort/1" "stored_at" 1200
-          "retain_until" 5000 "signer" authority})]
-    {:type :replication/stored
-     :object-id (identity/bytes->hex (:object-id split))
-     :replica-id authority-hex :layout-epoch 0 :attempt attempt
-     :persistence "netz/store/best-effort/1" :receipt receipt
-     :manifest-id (identity/bytes->hex (:manifest-id split))}))
+(defn stored-event
+  ([attempt] (stored-event retention attempt))
+  ([retention-statement attempt]
+   (let [receipt
+         (sign
+          {"v" 1 "type" "blob/stored" "cluster" cluster
+           "privacy_domain" privacy-domain
+           "retention_revision" (get retention-statement "revision")
+           "manifest" (:manifest-id split) "object" (:object-id split)
+           "layout_epoch" (get retention-statement "layout_epoch")
+           "replica" authority "attempt" attempt
+           "persistence" "netz/store/best-effort/1" "stored_at" 1200
+           "retain_until" (get retention-statement "retain_until")
+           "signer" authority})]
+     {:type :replication/stored
+      :object-id (identity/bytes->hex (:object-id split))
+      :replica-id authority-hex
+      :layout-epoch (get retention-statement "layout_epoch")
+      :attempt attempt
+      :persistence "netz/store/best-effort/1" :receipt receipt
+      :manifest-id (identity/bytes->hex (:manifest-id split))})))
 
 (deftest begin-persists-before-dispatch
   (let [store (memory-store)
@@ -288,4 +295,95 @@
     (is (= 1 (get-in (repair-scheduler-runtime/state scheduler)
                      [:stats :completed])))
     (repair-scheduler-runtime/stop! scheduler)
+    (controller-runtime/stop! controller)))
+
+(deftest signed-retention-revision-persists-before-fresh-receipts
+  (let [store (memory-store)
+        state (atom (layout-state layout0))
+        offers (atom [])
+        controller (runtime store state offers {})
+        layout-envelope (sign layout0)
+        retention-envelope (sign retention)
+        renewal (assoc retention "revision" 2
+                       "issued_at" 1100 "retain_until" 6000)
+        renewal-envelope (sign renewal)
+        object-id (identity/bytes->hex (:object-id split))]
+    (is (true? (await (controller-runtime/ready controller))))
+    (is (= :ok (await (controller-runtime/begin!
+                       controller layout-envelope retention-envelope
+                       (:manifest split)))))
+    (await (controller-runtime/notify-stored! controller (stored-event 0)))
+    (is (wait-for 2000
+                  #(= #{authority-hex}
+                      (get-in (controller-runtime/state controller)
+                              [:objects object-id :acks]))))
+
+    (let [gate (async/chan)
+          _ (reset! (:gate store) gate)
+          result (controller-runtime/revise!
+                  controller layout-envelope renewal-envelope)
+          [_ port] (async/alts!! [result (async/timeout 50)])]
+      (is (not= result port))
+      (is (= 1 (count @offers)) "renewal offer escaped before persistence")
+      (async/put! gate true)
+      (is (= :ok (await result))))
+
+    (is (= 2 (count @offers)))
+    (is (= 1 (get-in @offers [1 :offer "attempt"])))
+    (is (empty? (get-in (controller-runtime/state controller)
+                        [:objects object-id :acks])))
+    (is (= 2 (-> (controller-runtime/records controller)
+                 (get object-id) (get "retention")
+                 replication-wire/parse-envelope :statement
+                 (get "revision"))))
+    (is (= :exists
+           (await (controller-runtime/revise!
+                   controller layout-envelope renewal-envelope))))
+
+    (await (controller-runtime/notify-stored!
+            controller (stored-event renewal 1)))
+    (is (wait-for 2000
+                  #(= #{authority-hex}
+                      (get-in (controller-runtime/state controller)
+                              [:objects object-id :acks]))))
+    (let [malformed (controller-runtime/revise!
+                     controller {} renewal-envelope)
+          [value port] (async/alts!! [malformed (async/timeout 2000)])]
+      (is (= malformed port) "malformed revision did not complete")
+      (is (instance? Throwable value)))
+    (controller-runtime/stop! controller)))
+
+(deftest signed-layout-migration-replaces-the-intent-atomically
+  (let [layout-envelope (sign layout0)
+        retention-envelope (sign retention)
+        record (intent/make-initial-record
+                layout-envelope retention-envelope (:manifest split))
+        object-id (identity/bytes->hex (:object-id split))
+        store (memory-store {object-id record} [])
+        layout1 (assoc layout0 "epoch" 1
+                       "previous" (layout/address layout0)
+                       "issued_at" 1000)
+        layout1-envelope (sign layout1)
+        migrated-retention (assoc retention
+                                  "revision" 2
+                                  "layout_epoch" 1
+                                  "issued_at" 1100
+                                  "retain_until" 6000)
+        migrated-envelope (sign migrated-retention)
+        layout-state1 (:state (layout/reconcile (layout-state layout0)
+                                                layout1))
+        state (atom layout-state1)
+        offers (atom [])
+        controller (runtime store state offers {})]
+    (is (true? (await (controller-runtime/ready controller))))
+    (is (= :ok (await (controller-runtime/revise!
+                       controller layout1-envelope migrated-envelope))))
+    (is (= 1 (count @offers)))
+    (is (= 1 (get-in @offers [0 :offer "attempt"])))
+    (is (= 1 (get-in (controller-runtime/state controller)
+                     [:objects object-id :layout-epoch])))
+    (is (= 1 (-> (controller-runtime/records controller)
+                 (get object-id) (get "layout")
+                 replication-wire/parse-envelope :statement
+                 (get "epoch"))))
     (controller-runtime/stop! controller)))

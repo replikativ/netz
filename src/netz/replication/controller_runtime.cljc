@@ -2,9 +2,10 @@
   "Serialized durable-outbox adapter for the pure replication controller.
 
   Startup loads and verifies bounded intent records, restores controller state,
-  and replays durable signed receipts before readiness. Begin and explicit
-  repair operations persist the exact next intent generation before dispatching
-  any offer. Periodic scheduling/backoff is deliberately a later policy layer."
+  and replays durable signed receipts before readiness. Begin, signed intent
+  revision, and explicit repair operations persist the exact next generation
+  before dispatching any offer. Periodic scheduling/backoff is a separate
+  policy layer."
   (:require [netz.identity :as identity]
             [netz.replication :as replication]
             [netz.replication.controller-storage :as controller-storage]
@@ -292,12 +293,32 @@
       :else (drive! ctx {:type :replication/repair :object-id object-id}
                     reply))))
 
+(defn- process-revise! [ctx record reply]
+  (let [restored (intent/record->intent record)
+        object-id (get-in restored [:manifest :object-id])
+        candidate (get @(:candidates ctx) object-id)
+        durable (get @(:records ctx) object-id)]
+    (cond
+      @(:startup-error ctx) (result! reply @(:startup-error ctx))
+      (nil? durable) (result! reply :missing)
+      (not (current-record? ctx record)) (result! reply :stale-layout)
+      candidate
+      (if (intent/same-record? candidate record)
+        (persist-intent! ctx object-id
+                         (get-in @(:state ctx) [:objects object-id]) reply)
+        (result! reply :conflict))
+      (intent/same-record? durable record) (result! reply :exists)
+      (not (intent/valid-successor-record? durable record))
+      (result! reply :conflict)
+      :else (drive! ctx {:type :replication/revise :intent restored} reply))))
+
 (defn- run-loop! [ctx]
   (go-loop []
     (when-let [{:keys [kind reply] :as item} (<! (:events ctx))]
       (try
         (case kind
           :begin (process-begin! ctx (:record item) reply)
+          :revise (process-revise! ctx (:record item) reply)
           :repair (process-repair! ctx (:object-id item) reply)
           :stored (when (receipt-matches? ctx (:event item))
                     (drive! ctx (:event item) nil))
@@ -410,6 +431,53 @@
              (submit! ctx {:kind :repair :object-id object-id :reply reply}))
       reply
       (do (result! reply :unavailable) reply))))
+
+(defn revise!
+  "Durably renew or migrate one existing immutable-object intent.
+
+  The signed full retention statement must advance the same controller stream,
+  never shorten retention, and name either the existing layout or the current
+  later layout. The successor intent is persisted before all newly fenced
+  target offers are dispatched. Old receipts cannot satisfy the new retention
+  revision. Exact retry after a failed write persists the same candidate.
+
+  The result is `:ok`, `:exists`, `:missing`, `:conflict`, `:stale-layout`,
+  `:unavailable`, or a persistence/verification failure value."
+  [ctx layout-envelope retention-envelope]
+  (let [reply (chan 1)]
+    (go
+      (let [retention
+            (try
+              (:statement (replication-wire/parse-envelope retention-envelope))
+              (catch #?(:clj Throwable :cljs :default) cause cause))
+            object-id (when-not (failure? retention)
+                        (try
+                          (identity/bytes->hex (get retention "object"))
+                          (catch #?(:clj Throwable :cljs :default) cause cause)))
+            current (when (string? object-id)
+                      (get @(:records ctx) object-id))
+            record (if current
+                     (try
+                       (if (and (same-value? (get current "layout")
+                                             layout-envelope)
+                                (same-value? (get current "retention")
+                                             retention-envelope))
+                         current
+                         (intent/make-successor-record
+                          current layout-envelope retention-envelope))
+                       (catch #?(:clj Throwable :cljs :default) cause cause))
+                     (or (when (failure? retention) retention)
+                         (when (failure? object-id) object-id)
+                         :missing))
+            verified (if (or (= :missing record) (failure? record))
+                       record
+                       (<! (intent/verify-record record (:controllers ctx))))]
+        (cond
+          (= :missing verified) (result! reply :missing)
+          (failure? verified) (result! reply verified)
+          (not (submit! ctx {:kind :revise :record record :reply reply}))
+          (result! reply :unavailable))))
+    reply))
 
 (defn notify-stored!
   "Callback entry point for verified, durably journaled transfer receipts."

@@ -237,6 +237,39 @@
     (is (empty? (:actions premature)))
     (is (empty? (get-in (:state premature) [:objects "blob" :acks])))))
 
+(deftest signed-intent-revision-invalidates-receipts-before-reoffer
+  (let [{installed :state initial-stores :actions}
+        (begin-ready (replication/make-state layout policy)
+                     {:object-id "blob" :manifest-id "manifest-v1"})
+        target (second (first initial-stores))
+        {acknowledged :state}
+        (step installed {:type :replication/stored
+                         :object-id "blob" :replica-id target
+                         :layout-epoch 7 :attempt 0})
+        next-attempts (into {}
+                            (map (fn [[replica attempt]]
+                                   [replica (inc attempt)]))
+                            (get-in acknowledged [:objects "blob" :attempts]))
+        successor {:manifest {:object-id "blob"
+                              :manifest-id "manifest-v1"}
+                   :layout layout :policy policy
+                   :attempts next-attempts :intent-revision 1}
+        {pending :state actions :actions}
+        (step acknowledged {:type :replication/revise :intent successor})]
+    (is (= [:persist-intent] (mapv first actions)))
+    (is (empty? (get-in pending [:objects "blob" :acks])))
+    (is (false? (get-in pending [:objects "blob" :intent-stored?])))
+    (let [{ready :state stores :actions}
+          (step pending {:type :replication/intent-stored
+                         :object-id "blob" :layout-epoch 7
+                         :intent-revision 1})
+          stale (step ready {:type :replication/stored
+                             :object-id "blob" :replica-id target
+                             :layout-epoch 7 :attempt 0})]
+      (is (= 3 (count stores)))
+      (is (every? #(= 1 (get-in % [3 :attempt])) stores))
+      (is (empty? (get-in (:state stale) [:objects "blob" :acks]))))))
+
 (deftest placement-policy-is-bound-per-intent
   (let [two-copy-policy {:replicas 2 :write-acks 1
                          :minimum-domains {"party" 1}}

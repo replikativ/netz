@@ -148,6 +148,84 @@
     (make-record layout-envelope retention-envelope manifest
                  (zipmap targets (repeat 0)) 0)))
 
+(defn valid-successor-record?
+  "Whether `successor` is a monotone replacement for one durable intent.
+
+  The immutable object and controller stream remain fixed. A higher signed
+  retention revision may extend the deadline and change policy on the same
+  layout, or move to a later already-reconciled layout. Every retained target
+  advances its attempt; a newly selected target starts at the new local intent
+  revision so an earlier remove/re-add cycle cannot collide."
+  [current successor]
+  (try
+    (let [current (validate-record current)
+          successor (validate-record successor)
+          old-layout (statement (get current "layout") layout/statement-type)
+          new-layout (statement (get successor "layout")
+                                layout/statement-type)
+          old-retention (statement (get current "retention") "blob/retention")
+          new-retention (statement (get successor "retention")
+                                   "blob/retention")
+          old-revision (get current "intent_revision")
+          new-revision (get successor "intent_revision")
+          old-attempts (attempts-map (get current "attempts"))
+          new-attempts (attempts-map (get successor "attempts"))
+          expected-attempts
+          (into {}
+                (map (fn [target]
+                       [target (if-let [attempt (get old-attempts target)]
+                                 (inc attempt)
+                                 new-revision)]))
+                (keys new-attempts))]
+      (and (same-bytes? (get current "cluster") (get successor "cluster"))
+           (same-bytes? (get current "object") (get successor "object"))
+           (same-value? (get current "manifest") (get successor "manifest"))
+           (same-bytes? (get old-retention "privacy_domain")
+                        (get new-retention "privacy_domain"))
+           (same-bytes? (get old-retention "manifest")
+                        (get new-retention "manifest"))
+           (same-bytes? (get old-retention "signer")
+                        (get new-retention "signer"))
+           (< (get old-retention "revision")
+              (get new-retention "revision"))
+           (<= (get old-retention "issued_at")
+               (get new-retention "issued_at"))
+           (<= (get old-retention "retain_until")
+               (get new-retention "retain_until"))
+           (= new-revision (inc old-revision))
+           (= expected-attempts new-attempts)
+           (<= (get old-layout "epoch") (get new-layout "epoch"))
+           (or (< (get old-layout "epoch") (get new-layout "epoch"))
+               (same-bytes? (layout/address old-layout)
+                            (layout/address new-layout)))))
+    (catch #?(:clj Throwable :cljs :default) _ false)))
+
+(defn make-successor-record
+  "Replace one intent with a higher full retention revision.
+
+  `layout-envelope` must name the same or a later signed layout. The manifest
+  bytes are reused unchanged; this operation migrates authority and placement,
+  not content."
+  [current layout-envelope retention-envelope]
+  (let [current (validate-record current)
+        next-revision (inc (get current "intent_revision"))
+        new-layout (statement layout-envelope layout/statement-type)
+        new-retention (statement retention-envelope "blob/retention")
+        new-targets (target-ids new-layout new-retention)
+        old-attempts (attempts-map (get current "attempts"))
+        attempts (into {}
+                       (map (fn [target]
+                              [target (if-let [attempt (get old-attempts target)]
+                                        (inc attempt)
+                                        next-revision)]))
+                       new-targets)
+        successor (make-record layout-envelope retention-envelope
+                               (get current "manifest") attempts next-revision)]
+    (when-not (valid-successor-record? current successor)
+      (throw (ex-info "Invalid durable intent successor"
+                      {:type :netz.replication/invalid-intent-successor})))
+    successor))
+
 (defn record->intent
   "Convert one structurally valid record to the pure controller restore shape."
   [record]

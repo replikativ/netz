@@ -360,12 +360,15 @@ boundary.
 `netz.replication.controller-runtime` is the durable-outbox adapter around the
 pure controller. Startup verifies intents, restores their exact attempts,
 replays the transfer repository's signed receipts, and only then closes its
-`ready` channel. `begin!` and `repair!` serialize per-object state transitions;
-the next complete record persists before `:dispatch-offer!` can observe an
-offer. A failed write releases no network work and can be retried as the exact
-same generation. Before every dispatch the runtime rechecks that the signed
-layout is still the accepted non-forked head and that the retention lease is
-live.
+`ready` channel. `begin!`, `revise!`, and `repair!` serialize per-object state
+transitions; the next complete record persists before `:dispatch-offer!` can
+observe an offer. Revision accepts only a monotone higher full retention
+statement over the same immutable object, with the same or a later reconciled
+layout. It clears prior receipt authority and obtains freshly fenced receipts
+for the derived target set. A failed write releases no network work and can be
+retried as the exact same generation. Before every dispatch the runtime
+rechecks that the signed layout is still the accepted non-forked head and that
+the retention deadline is live.
 
 When composing it with `netz.replication.runtime`, both runtimes use the same
 repository. Start the transfer runtime with `:replay-receipts? false`, route
@@ -464,6 +467,14 @@ address. Receipts from an old epoch remain evidence that bytes existed, but do
 not by themselves satisfy placement under the current layout. A same-epoch
 signed fork permanently halts new admission for that cluster identity.
 
+For an ordinary non-forked migration, the controller issues a higher full
+retention statement against the accepted new layout and calls
+`controller-runtime/revise!`. The runtime derives the new target set, clears
+old receipt authority, fences retained and newly added targets, atomically
+replaces the durable intent, and only then re-offers. Removed targets are not
+extended by the new retention statement; they keep the prior finite lease until
+expiry, while a global deletion at the later epoch may retire them sooner.
+
 Draft-00 deliberately has no branch-choice or unfreeze operation. Operators
 preserve the forked transcript, audit the controller and old lifecycle state,
 and roll forward to a fresh cluster identifier with an out-of-band authorized
@@ -526,6 +537,12 @@ signed replica deletion receipt; an autonomous expiry cannot truthfully claim
 a controller deletion revision that does not exist.
 Long-lived public or non-personal objects may use a distinct archival policy;
 indefinite retention must never be the accidental default.
+
+The compact `blob/lease` extends an already admitted replica but omits placement
+policy. It therefore cannot authorize a fresh offer or layout migration. A
+controller that needs the object to remain repairable publishes a higher full
+`blob/retention` revision and durably revises its intent; using only compact
+leases knowingly leaves post-original-deadline repair unavailable.
 
 An intermittently connected replica creates an unavoidable choice: it cannot
 both serve indefinitely while offline and guarantee prompt receipt of an

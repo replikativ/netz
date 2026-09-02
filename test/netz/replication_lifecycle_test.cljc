@@ -164,6 +164,38 @@
       (is (= 1 (get-in equivocated [:stats :equivocations])))
       (is (= 1 (count (:equivocations equivocated)))))))
 
+(deftest full-retention-can-advance-layout-but-lease-cannot
+  (let [{pending :state actions :actions} (accept (state) retention 1000)
+        {retained :state} (land pending actions)
+        migrated-statement (assoc retention
+                                  "revision" 2
+                                  "layout_epoch" 8
+                                  "issued_at" 1100
+                                  "retain_until" 3000)
+        {migrating :state migration-actions :actions}
+        (accept retained migrated-statement 1100)
+        {migrated :state} (land migrating migration-actions :ok 1100)
+        old-layout-lease (lease 3 4000)
+        {lease-rejected :state} (accept migrated old-layout-lease 1200)
+        regressed-retention (assoc retention
+                                   "revision" 3
+                                   "issued_at" 1200
+                                   "retain_until" 4000)
+        {regression-rejected :state}
+        (accept migrated regressed-retention 1200)
+        delete-new-layout (assoc (deletion 3 1300) "layout_epoch" 8)
+        {deleting :state delete-actions :actions}
+        (accept migrated delete-new-layout 1200)]
+    (is (= [:persist] (mapv first migration-actions)))
+    (is (= 8 (-> migrated :records vals first :statement
+                 (get "layout_epoch"))))
+    (is (empty? (:actions (accept migrated old-layout-lease 1200))))
+    (is (= 1 (get-in lease-rejected [:stats :rejected])))
+    (is (= 1 (get-in regression-rejected [:stats :rejected])))
+    (is (= [:persist] (mapv first delete-actions)))
+    (is (= 8 (-> deleting :pending vals first :record :statement
+                 (get "layout_epoch"))))))
+
 (deftest expiry-is-journaled-before-delete-and-is-absorbing
   (let [{pending :state actions :actions} (accept (state) retention 1000)
         {retained :state} (land pending actions)
