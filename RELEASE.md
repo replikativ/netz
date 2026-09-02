@@ -161,6 +161,15 @@ This extension is not part of the alpha interoperability claim yet.
       piece/ACK/commit flow, the JVM fsyncs and signs its receipt, and Python
       verifies and fsyncs that receipt before declaring completion. This is a
       dedicated CI job with independently provisioned Python dependencies.
+- [x] Run the reverse fetch path from an installed JVM object into the Python
+      fsync repository. A minimal test controller first fsyncs the exact
+      admitted retention envelope; Python then verifies the matching offer,
+      persists each piece before ACK, verifies the complete object, and signs
+      the receipt. The independently configured JVM read policy pins the
+      requester, cluster, manifest and layout epoch before serving and durably
+      journals the returned receipt. The JVM then reopens and verifies Python's
+      store layout. This is conformance scaffolding, not yet a reusable Python
+      lifecycle/carrier runtime.
 - [x] Implement a portable production lifecycle-policy adapter which restores
       before authorization, journals the exact retention statement before byte
       transfer, verifies reconciled lease/deletion envelopes, and fails closed
@@ -279,8 +288,8 @@ This extension is not part of the alpha interoperability claim yet.
       adversarial transport suite; consuming this JSON fixture there remains
       part of the three-runtime gate below.
 - [ ] Pass independent JVM/JS/Python two-peer conformance tests. The durable
-      blob subset now has a real Python-to-JVM two-peer test; base dissemination,
-      sync, the reverse blob direction, and a JavaScript peer remain.
+      blob subset now runs both Python/JVM directions; base dissemination,
+      sync, reconnect/resume, and a JavaScript peer remain.
 - [x] Pass a real three-peer offline/rejoin test over http-kit, Kabel CBOR and
       authenticated Noise for both a fenced single-writer root and a
       multiwriter join-semilattice.
