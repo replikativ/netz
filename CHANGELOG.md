@@ -86,6 +86,8 @@ may make incompatible protocol changes.
   the Python-written repository through the JVM adapter. The reverse test
   fsyncs its exact admitted retention intent before requesting bytes, while
   the provider independently pins the authorized requester and object scope.
+  It also interrupts a process after a durable piece but before ACK, then
+  reconnects with a fresh session/attempt and transfers only the missing tail.
   JVM, JavaScript and Python pin the same canonical need/piece/ACK/commit trace.
   The explicit Konserve immutable-write seam now fails before network work when
   its local commit fails and delivers thrown replication errors to callers.

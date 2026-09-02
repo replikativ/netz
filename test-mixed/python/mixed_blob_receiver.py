@@ -39,6 +39,10 @@ NOW = 1_000
 PEER = "jvm"
 
 
+class _IntentionalInterruption(Exception):
+    """Stop after a durable piece to exercise process-level resume."""
+
+
 def _identity() -> tuple[LocalIdentity, bytes]:
     private = bytes([17]) * 32
     public = (ed25519.Ed25519PrivateKey.from_private_bytes(private)
@@ -102,14 +106,15 @@ async def _wait_for_completion(path: Path) -> None:
 
 
 async def transfer(uri: str, remote_authority: bytes, store_path: Path,
-                   completion_path: Path) -> str:
+                   completion_path: Path, attempt: int = 0,
+                   stop_after_pieces: int = 0) -> tuple[str, str]:
     identity, local_authority = _identity()
     split = split_blob(PAYLOAD, PIECE_SIZE)
     retention = _retention(identity, local_authority, split)
     admitted_retention = _persist_admission(store_path, retention)
     fetch = {
-        "v": 1, "type": "blob/fetch", "session": bytes(range(64, 80)),
-        "attempt": 0, "retention": retention,
+        "v": 1, "type": "blob/fetch", "session": attempt.to_bytes(16, "big"),
+        "attempt": attempt, "retention": retention,
     }
     socket = await open_secure_websocket(
         uri, identity=identity, expected_authority=remote_authority
@@ -117,10 +122,11 @@ async def transfer(uri: str, remote_authority: bytes, store_path: Path,
     selected = frozenset(socket.peer.capabilities)
     receiver: BlobReceiver | None = None
     completed: dict[str, Any] | None = None
+    staged_pieces = 0
 
     async with FileBlobStore(store_path, clock=lambda: 1_200) as store:
         async def apply(actions: list[TransferAction]) -> None:
-            nonlocal completed
+            nonlocal completed, staged_pieces
             if receiver is None:
                 raise RuntimeError("receiver is not initialized")
             pending = list(actions)
@@ -147,6 +153,12 @@ async def transfer(uri: str, remote_authority: bytes, store_path: Path,
                     pending.extend(receiver.piece_staged(
                         values["index"], result
                     ))
+                    staged_pieces += 1
+                    if (stop_after_pieces > 0
+                            and staged_pieces >= stop_after_pieces):
+                        # Deliberately stop after fsync but before ACK. A fresh
+                        # process/session must discover this addressed piece.
+                        raise _IntentionalInterruption
                 elif action.kind == "install_object":
                     result = await store.install_object(
                         values["session"], values["manifest_id"],
@@ -216,7 +228,9 @@ async def transfer(uri: str, remote_authority: bytes, store_path: Path,
             # no receipt ACK. The conformance controller supplies this local
             # signal to keep the socket open until the JVM journal callback.
             await _wait_for_completion(completion_path)
-            return split["manifest_id"].hex()
+            return "complete", split["manifest_id"].hex()
+        except _IntentionalInterruption:
+            return "interrupted", split["manifest_id"].hex()
         finally:
             await socket.websocket.close()
 
@@ -227,14 +241,23 @@ def main() -> None:
     parser.add_argument("--remote-authority", required=True)
     parser.add_argument("--store", required=True, type=Path)
     parser.add_argument("--completion", required=True, type=Path)
+    parser.add_argument("--attempt", type=int, default=0)
+    parser.add_argument("--stop-after-pieces", type=int, default=0)
     args = parser.parse_args()
     authority = bytes.fromhex(args.remote_authority)
     if len(authority) != 32:
         parser.error("--remote-authority must be 32 bytes of hexadecimal")
-    manifest = asyncio.run(transfer(
-        args.uri, authority, args.store, args.completion
+    if not 0 <= args.attempt <= (1 << 53) - 1:
+        parser.error("--attempt must be a safe unsigned integer")
+    if args.stop_after_pieces < 0:
+        parser.error("--stop-after-pieces must not be negative")
+    status, manifest = asyncio.run(transfer(
+        args.uri, authority, args.store, args.completion,
+        args.attempt, args.stop_after_pieces,
     ))
-    print(f"NETZ_MIXED_FETCH_OK {manifest}", flush=True)
+    marker = ("NETZ_MIXED_FETCH_OK" if status == "complete"
+              else "NETZ_MIXED_FETCH_INTERRUPTED")
+    print(f"{marker} {manifest}", flush=True)
 
 
 if __name__ == "__main__":
