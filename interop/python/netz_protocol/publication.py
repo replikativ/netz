@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, cast
 
 from netz_codec import dumps, loads
 
@@ -86,7 +86,7 @@ def sign_publication(genesis: dict[str, object], private_key: bytes, *,
     """Construct one self-verifying profile-1 publication envelope."""
     try:
         genesis_bytes(genesis)
-        operational_keys = genesis["operational"]
+        operational_keys = cast(Iterable[bytes], genesis["operational"])
     except (IdentityError, KeyError, TypeError) as error:
         raise PublicationError("invalid genesis object") from error
     operational = _public_bytes(private_key)
@@ -108,8 +108,13 @@ def sign_publication(genesis: dict[str, object], private_key: bytes, *,
     return envelope
 
 
-def verify_publication(value: Mapping[str, object]) -> dict[str, object]:
-    """Verify an exact-schema publication and return a plain dictionary."""
+def parse_publication(value: Mapping[str, object]) -> dict[str, object]:
+    """Validate the exact envelope without performing its Ed25519 check.
+
+    Carrier codecs use this structural boundary so decoding does not acquire an
+    optional crypto dependency. Applications must call ``verify_publication``
+    before authorization, deduplication, delivery, or forwarding.
+    """
     required = {
         "v", "type", "origin", "epoch", "seq", "topic", "payload",
         "genesis", "operational", "signature", "hops",
@@ -132,19 +137,33 @@ def verify_publication(value: Mapping[str, object]) -> dict[str, object]:
     except IdentityError as error:
         raise PublicationError("invalid genesis object") from error
     origin = authority_id(genesis)
-    if value["origin"] != origin or operational not in genesis["operational"]:
+    if (value["origin"] != origin
+            or operational not in cast(Iterable[bytes], genesis["operational"])):
         raise PublicationError("publication origin is not authorized by genesis")
     immutable = signing_object(
         origin, value["epoch"], value["seq"], value["topic"], value["payload"]
     )
     _checked_uint(value["hops"], "hops")
+    return dict(value)
+
+
+def verify_publication(value: Mapping[str, object]) -> dict[str, object]:
+    """Cryptographically verify an exact-schema publication."""
+    publication = parse_publication(value)
+    operational = cast(bytes, publication["operational"])
+    signature = cast(bytes, publication["signature"])
+    immutable = signing_object(
+        cast(bytes, publication["origin"]), cast(int, publication["epoch"]),
+        cast(int, publication["seq"]), cast(str, publication["topic"]),
+        cast(bytes, publication["payload"]),
+    )
     try:
         _ed25519().Ed25519PublicKey.from_public_bytes(operational).verify(
             signature, GOSSIP_DOMAIN + dumps(immutable)
         )
     except Exception as error:
         raise PublicationError("invalid publication signature") from error
-    return dict(value)
+    return publication
 
 
 def encode_publication(value: Mapping[str, object]) -> bytes:
@@ -163,6 +182,6 @@ def decode_publication(encoded: bytes) -> dict[str, object]:
 
 __all__ = [
     "GOSSIP_DOMAIN", "PublicationError", "decode_publication",
-    "encode_publication", "sign_publication", "signing_bytes",
+    "encode_publication", "parse_publication", "sign_publication", "signing_bytes",
     "signing_object", "verify_publication",
 ]

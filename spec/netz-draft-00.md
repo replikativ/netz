@@ -243,8 +243,10 @@ authentication target.
 `selected` MUST be the exact intersection of the two supported sets. Both
 peers' required sets MUST be subsets of it. A peer MUST abort rather than
 silently choose a smaller set. The initiator's message-3 capability values MUST
-also equal its transcript-hashed message-1 offer. Example feature identifiers
-include `dissemination/1`, `content/1` and `sync/1`; the direct carrier is
+also equal its transcript-hashed message-1 offer. Current feature identifiers
+include `netz/dissemination/1`, `netz/content/1` and `netz/sync/1`. The
+language-neutral control profile is `wire/netz-cbor/1`, the named Kabel carrier
+is `netz/extension-cbor/1`, and the authenticated direct transport is
 `transport/kabel-noise-cbor/1`.
 
 The connection enters authenticated state only after the Noise handshake,
@@ -314,13 +316,69 @@ key set, and the signature MUST verify before authorization, deduplication, or
 forwarding. `repair` may only be the value `true`; absence means false. Relays
 may increment `hops` and set `repair`, but MUST NOT modify a signed field.
 `fixtures/publication-1.json` pins the signing bytes, Ed25519 signature, and
-complete deterministic envelope. JVM, JavaScript, and Python consume the same
-values.
+complete deterministic envelope. `fixtures/dissemination-control-1.json` pins
+the control frames below. JVM, JavaScript, and Python consume the same values.
 
 The topic's application profile defines `payload`. A CBOR application may use
 the full registered-tag vocabulary accepted by that profile; a non-CBOR
 application may use another deterministic or self-describing encoding. Relays
 handle the payload as bytes in either case.
+
+Profile-1 dissemination is selected only when the authenticated connection
+negotiates all of `wire/netz-cbor/1`, `netz/extension-cbor/1`, and
+`netz/dissemination/1`. Its control messages use the named extension carrier
+from Section 11.1 and the following closed maps:
+
+~~~text
+interests {
+  "v": 1, "type": "interests",
+  "topics": [<text>, ...],
+  "carries": [<text>, ...],
+  "relay_all": <boolean>
+}
+
+have {
+  "v": 1, "type": "have",
+  "streams": [{
+    "origin": <32-byte Authority ID>, "epoch": <uint>, "topic": <text>,
+    "ranges": [[<lo uint>, <hi uint>], ...], "floor": <uint>
+  }, ...]
+}
+
+want {
+  "v": 1, "type": "want",
+  "ranges": [{
+    "origin": <32-byte Authority ID>, "epoch": <uint>, "topic": <text>,
+    "lo": <uint>, "hi": <uint>
+  }, ...]
+}
+~~~
+
+All topic arrays MUST contain unique values sorted by their UTF-8 byte strings.
+`topics` requests exact delivery and `carries` volunteers to relay those exact
+topics without delivery. `relay_all` volunteers to relay every topic. This
+base profile intentionally does not assign a wire meaning to Clojure keyword
+topics or heterogeneous vector-prefix ranges; richer hierarchical routing
+requires a separately negotiated capability.
+
+`have.streams` and `want.ranges` MUST be unique and sorted by full Authority
+ID bytes, epoch, UTF-8 topic bytes, then range bounds where present. Interval
+sets MUST be sorted, disjoint, non-adjacent inclusive ranges. Empty arrays are
+valid. The reference bounds interests to 1,024 values, summaries to 1,024
+streams with 512 intervals per stream and 1,024 intervals total, and one
+request to 16 ranges. The aggregate interval limit keeps every accepted
+control frame below the profile-wide decoded-item budget. Epochs, sequences,
+floors, and bounds MUST fit the non-negative exactly interoperable integer
+range `0..2^53-1`.
+
+Negotiating dissemination support grants no subscription, relay, history, or
+payload permission. An implementation MUST apply application policy to an
+authenticated remote Authority before disclosing interests or repair history,
+serving a `want`, or accepting and forwarding a publication. It SHOULD close
+the connection on a malformed negotiated portable frame rather than retry it
+through a native decoder. A peer that selected the complete portable capability
+set MUST reject native `interests`, `have`, `want`, and `gossip` frames as a
+downgrade.
 
 `seq` is monotonically increasing within `(origin, epoch, topic)`. Peers
 deduplicate and repair by that same stream key. They periodically exchange

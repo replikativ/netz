@@ -36,7 +36,17 @@ from netz_protocol.publication import (
     signing_bytes as publication_signing_bytes,
     verify_publication,
 )
-from netz_protocol.dissemination import OrderedReceiver, Publisher
+from netz_protocol.dissemination import (
+    DisseminationError,
+    OrderedReceiver,
+    Publisher,
+    decode_frame as decode_dissemination_frame,
+    encode_frame as encode_dissemination_frame,
+    have_frame,
+    interests_frame,
+    validate_frame as validate_dissemination_frame,
+    want_frame,
+)
 from netz_protocol.extension import (
     EXTENSION_CARRIER_CAPABILITY,
     ExtensionError,
@@ -270,6 +280,74 @@ class CodecTest(unittest.TestCase):
         stream = receiver.stream(publications[2])
         committed = receiver.commit_frontiers({stream: 2})
         self.assertEqual([3], [item["seq"] for item in committed.delivered])
+
+    def test_portable_dissemination_control_frames(self):
+        fixture = json.loads(
+            (ROOT / "spec/fixtures/dissemination-control-1.json").read_text())
+        diagnostic = fixture["diagnostic"]
+        first, second = [bytes.fromhex(value)
+                         for value in diagnostic["authorities_hex"]]
+        interests = interests_frame(
+            ["demo/tasks", "db/roots", "demo/tasks"],
+            ["demo/tasks"], relay_all=True,
+        )
+        have = have_frame([
+            {"origin": second, "epoch": 3, "topic": "demo/tasks",
+             "ranges": [[0, 2], [5, 5]], "floor": 1},
+            {"origin": first, "epoch": 1, "topic": "db/roots",
+             "ranges": [[9, 12]], "floor": 9},
+        ])
+        want = want_frame([
+            {"origin": second, "epoch": 3, "topic": "demo/tasks",
+             "lo": 3, "hi": 4},
+            {"origin": first, "epoch": 1, "topic": "db/roots",
+             "lo": 13, "hi": 13},
+        ])
+        for frame in (interests, have, want):
+            self.assertEqual(
+                frame,
+                decode_dissemination_frame(encode_dissemination_frame(frame)),
+            )
+        self.assertEqual(fixture["interests_cbor_hex"],
+                         encode_dissemination_frame(interests).hex())
+        self.assertEqual(fixture["have_cbor_hex"],
+                         encode_dissemination_frame(have).hex())
+        self.assertEqual(fixture["want_cbor_hex"],
+                         encode_dissemination_frame(want).hex())
+
+        with self.assertRaises(DisseminationError):
+            validate_dissemination_frame({**interests, "ignored": True})
+        with self.assertRaises(DisseminationError):
+            validate_dissemination_frame({
+                **interests, "topics": ["demo/tasks", "db/roots"],
+            })
+        with self.assertRaises(DisseminationError):
+            have_frame([{"origin": first, "epoch": 1, "topic": "db/roots",
+                         "ranges": [[0, 1], [2, 3]], "floor": 0}])
+        with self.assertRaises(DisseminationError):
+            want_frame([{"origin": first, "epoch": 1, "topic": "db/roots",
+                         "lo": 4, "hi": 3}])
+        with self.assertRaises(DisseminationError):
+            want_frame([{"origin": first, "epoch": 1, "topic": "db/roots",
+                         "lo": 4, "hi": 5}] * 2)
+        intervals = [[index * 2, index * 2] for index in range(512)]
+        with self.assertRaises(DisseminationError):
+            have_frame([
+                {"origin": first, "epoch": epoch, "topic": f"topic-{epoch}",
+                 "ranges": intervals, "floor": 0}
+                for epoch in range(3)
+            ])
+
+    def test_dissemination_decode_is_structural_then_origin_verified(self):
+        fixture = json.loads(
+            (ROOT / "spec/fixtures/publication-1.json").read_text())
+        publication = decode_publication(bytes.fromhex(
+            fixture["canonical_cbor_hex"]))
+        tampered = {**publication, "signature": b"\x00" * 64}
+        encoded = encode_dissemination_frame(tampered)
+        self.assertEqual(tampered, decode_dissemination_frame(encoded))
+        with self.assertRaises(PublicationError):
+            verify_publication(tampered)
 
     def test_shared_known_answer(self):
         fixture, value = self.fixture()

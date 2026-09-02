@@ -147,9 +147,13 @@ join-semilattice pulls in both directions. Portable sync support is not read
 authorization: the JVM runtime rejects incoming opens by default and its
 `:authorize-sync?` hook receives the authenticated connection facts, topic and
 profile. The negotiated carrier is pinned for the session, preventing native
-schema downgrade or reinterpretation across reconnects. A complete portable
-runtime still needs base membership/dissemination/content codec routing, the
-subscription repair and reusable reconnect orchestration. A dedicated
+schema downgrade or reinterpretation across reconnects. The dissemination wire
+boundary is now closed too: JVM, JavaScript and Python share deterministic
+exact-topic `interests`, flattened full-Authority `have`, bounded `want`, and
+signed opaque publication frames under `netz/dissemination/1`. A complete
+portable runtime still needs negotiated dissemination routing, its
+Authority/routing-ID adapter and policy hooks, plus base membership/content
+codec routing and reusable reconnect orchestration. A dedicated
 conformance process now drives a real Python
 blob sender through Noise/Kabel and the negotiated portable carrier into the
 JVM fsync receiver, including verified and durably persisted receipt evidence.

@@ -7,9 +7,9 @@ an application-defined state-synchronization boundary.
 
 The reference implementation runs on the JVM and in JavaScript through shared
 Clojure/ClojureScript sources. A language-neutral protocol draft and a small
-dependency-free Python CBOR/session core plus a durable filesystem blob
-repository and transfer machines define the path to implementations outside
-the Clojure ecosystem.
+dependency-free Python CBOR/session core—including strict signed dissemination
+and repair frames—plus a durable filesystem blob repository and transfer
+machines define the path to implementations outside the Clojure ecosystem.
 
 > **Release status: `0.1.0-alpha.1`.** The JVM, JavaScript, and Python paths now
 > share deterministic CBOR and authenticated Noise/Kabel fixtures. The secure

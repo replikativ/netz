@@ -160,6 +160,8 @@
                      (= identity/key-size (identity/buf-length operational))
                      (wire/byte-buffer? signature)
                      (= identity/signature-size (identity/buf-length signature))
+                     (identity/genesis-authorises?
+                      genesis operational (identity/bytes->hex authority))
                      (safe-uint? (:hops publication)))
         (throw (ex-info "invalid profile-1 publication fields"
                         {:type :netz.publication/invalid-envelope})))
