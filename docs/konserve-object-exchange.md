@@ -368,9 +368,9 @@ reconciliation remain release gates.
 3. Demonstrate Dvergr/Simmis drive replication and one Geschichte pack closure.
 4. Add signed head reconciliation and materialization tests using the existing
    root-log and Spindel workspace gate.
-5. [targeted repair protocol chosen; scheduler open] Add durable background
-   repair scheduling over authenticated re-offers, then expose a tiered
-   Konserve convenience adapter. Consider a privacy-scoped batched or Merkle
-   inventory only as a later optimization.
+5. [known-missing scheduler done] The portable bounded scheduler now drives
+   authenticated re-offers from durable controller evidence. Expose a tiered
+   Konserve convenience adapter separately. Consider a privacy-scoped batched
+   or Merkle inventory only as a later optimization.
 6. Run independent JVM/Node/Python conformance before advertising the blob
    capability by default.

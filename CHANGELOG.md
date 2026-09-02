@@ -62,7 +62,12 @@ may make incompatible protocol changes.
   single-owner switch for this composition. The JVM file repository now also
   stores controller intents with bounded atomic/fsynced replacement. A real
   Noise/Kabel test covers the complete controller-outbox, transfer, durable
-  receipt and quorum-callback path.
+  receipt and quorum-callback path. A portable known-missing repair scheduler
+  now waits for controller recovery, protects attempt-zero work with an initial
+  grace interval, globally bounds outstanding controller calls, applies a
+  bounded backoff ladder, and ignores late results from replaced intent
+  generations. Its pure 1,000-object test exercises bounded deterministic
+  scheduling without starting additional peers or JVMs.
   The explicit Konserve immutable-write seam now fails before network work when
   its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.

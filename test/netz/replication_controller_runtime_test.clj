@@ -8,6 +8,7 @@
             [netz.replication.controller-storage :as controller-storage]
             [netz.replication.intent :as intent]
             [netz.replication.layout :as layout]
+            [netz.replication.repair-scheduler-runtime :as repair-scheduler-runtime]
             [netz.replication.runtime :as transfer-runtime]
             [netz.replication.storage :as storage]
             [netz.replication.wire :as replication-wire]))
@@ -49,6 +50,15 @@
 (defn await [channel]
   (let [result (<!! channel)]
     (if (instance? Throwable result) (throw result) result)))
+
+(defn wait-for [ms predicate]
+  (let [deadline (+ (System/currentTimeMillis) ms)]
+    (loop []
+      (if (predicate)
+        true
+        (when (< (System/currentTimeMillis) deadline)
+          (Thread/sleep 2)
+          (recur))))))
 
 (defn sign [statement]
   (await (replication-wire/sign-statement signer statement)))
@@ -241,4 +251,41 @@
                 (:state (layout/reconcile (layout-state layout0) layout1)))
         (is (= :stale-layout
                (await (controller-runtime/repair! controller object-id))))))
+    (controller-runtime/stop! controller)))
+
+(deftest bounded-scheduler-drives-the-real-durable-controller
+  (let [layout-envelope (sign layout0)
+        retention-envelope (sign retention)
+        record (intent/make-initial-record
+                layout-envelope retention-envelope (:manifest split))
+        object-id (identity/bytes->hex (:object-id split))
+        store (memory-store {object-id record} [])
+        state (atom (layout-state layout0))
+        offers (atom [])
+        controller (runtime store state offers {})
+        scheduler
+        (repair-scheduler-runtime/start!
+         {:controller controller
+          :scheduler-opts {:scan-ms 5 :initial-grace-ms 5
+                           :backoff-ms [100000]
+                           :max-repairs-per-scan 1
+                           :max-in-flight 1}})]
+    (is (true? (await (repair-scheduler-runtime/ready scheduler))))
+    (is (wait-for 2000 #(= 1 (count @offers))))
+    (is (= 1 (get-in @offers [0 :offer "attempt"])))
+    (is (= 1 (get-in (controller-runtime/records controller)
+                     [object-id "intent_revision"])))
+
+    (await (controller-runtime/notify-stored! controller (stored-event 1)))
+    (is (wait-for 2000
+                  #(= #{authority-hex}
+                      (get-in (controller-runtime/state controller)
+                              [:objects object-id :acks]))))
+    (is (repair-scheduler-runtime/request-scan! scheduler))
+    (is (wait-for 2000
+                  #(empty? (:entries
+                            (repair-scheduler-runtime/state scheduler)))))
+    (is (= 1 (get-in (repair-scheduler-runtime/state scheduler)
+                     [:stats :completed])))
+    (repair-scheduler-runtime/stop! scheduler)
     (controller-runtime/stop! controller)))
