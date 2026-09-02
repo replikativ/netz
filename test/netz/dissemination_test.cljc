@@ -1,6 +1,7 @@
 (ns netz.dissemination-test
   (:require [clojure.test :refer [deftest testing is]]
             [netz.dissemination :as d]
+            [netz.identity :as identity]
             [netz.interval-set :as is*]
             [netz.overlay :as o]
             [netz.sim :as sim]
@@ -9,6 +10,30 @@
 ;; =============================================================================
 ;; Pure
 ;; =============================================================================
+
+(deftest portable-stream-metadata-stays-in-the-pure-machine
+  (let [authority (apply str (repeat 64 "a"))
+        state (d/make-state :me #{"db/roots"} {:authority-id authority})
+        [published _] (d/publish state "db/roots" (identity/seq->bytes [1 2 3]))
+        message (first (vals (:store published)))]
+    (is (= authority (get-in published [:authority-ids :me])))
+    (is (= 1 (:wire-version message)))
+    (is (= authority (:origin-authority message)))
+    (is (contains? (:portable-streams published) [:me 0 "db/roots"])))
+
+  (let [authority (apply str (repeat 64 "b"))
+        result (d/handler
+                (d/make-state :me)
+                {:type :message :from :peer
+                 :payload {:type :have
+                           :summary {:writer {0 {"db/roots" [[0 1]]}}}
+                           :horizon {[:writer 0 "db/roots"] 0}
+                           :origin-authorities {:writer authority}
+                           :portable-streams #{[:writer 0 "db/roots"]}}}
+                {:now 0})]
+    (is (= authority (get-in (:state result) [:authority-ids :writer])))
+    (is (contains? (:portable-streams (:state result))
+                   [:writer 0 "db/roots"]))))
 
 (deftest seen-tracking
   (testing "marking and testing"

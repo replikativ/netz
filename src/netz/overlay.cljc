@@ -54,7 +54,9 @@
                                                         carries (netz.topics/normalise carries)
                                                         relay? #{netz.topics/everything}
                                                         :else #{})))
-   :dissemination (assoc (d/make-state id topics (or dissemination {}))
+   :dissemination (assoc (d/make-state id topics
+                                       (assoc (or dissemination {})
+                                              :authority-id authority-id))
                          :carries (cond
                                     carries (netz.topics/normalise carries)
                                     relay? #{netz.topics/everything}

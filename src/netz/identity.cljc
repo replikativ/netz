@@ -225,6 +225,24 @@
   [genesis]
   (bytes->hex (authority-id-bytes genesis)))
 
+(defn authority-routing-id
+  "Project a full Authority ID to Kabel's UUID-shaped routing identifier.
+
+  This is routing convenience only and MUST NOT be used for authorization."
+  [authority]
+  (let [bytes (cond
+                (and (string? authority)
+                     (re-matches #"(?i)[0-9a-f]{64}" authority))
+                (hex->bytes authority)
+                (= peer-id-size (buf-length authority)) authority
+                :else (throw (ex-info "invalid full Authority ID"
+                                      {:type :netz.identity/invalid-authority})))
+        h (bytes->hex (sub-buf bytes 0 16))
+        s (str (subs h 0 8) "-" (subs h 8 12) "-" (subs h 12 16) "-"
+               (subs h 16 20) "-" (subs h 20 32))]
+    #?(:clj (UUID/fromString s)
+       :cljs (uuid s))))
+
 (defn peer-id
   "Routing id for a genesis record: the first 16 bytes of `peer-id-bytes`,
   rendered as a UUID so a self-certifying identity drops straight into kabel's
@@ -234,11 +252,7 @@
   stamped, because overwriting six bits to satisfy a spec nothing here reads
   would only shrink the identifier."
   [genesis]
-  (let [h (bytes->hex (sub-buf (authority-id-bytes genesis) 0 16))
-        s (str (subs h 0 8) "-" (subs h 8 12) "-" (subs h 12 16) "-"
-               (subs h 16 20) "-" (subs h 20 32))]
-    #?(:clj (UUID/fromString s)
-       :cljs (uuid s))))
+  (authority-routing-id (authority-id-bytes genesis)))
 
 (defn genesis-authorises?
   "May `public-key` sign on behalf of the full `claimed-authority`?
