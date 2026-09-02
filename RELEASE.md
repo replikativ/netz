@@ -267,17 +267,21 @@ This extension is not part of the alpha interoperability claim yet.
       frame conversion through the separately negotiated `netz/sync/1` named
       extension, wire-profile and carrier capabilities; byte-array sessions are
       keyed by tagged content on the JVM. Named extension traffic uses the same
-      portable carrier. Base membership, dissemination and content remain.
+      portable carrier. Dissemination now has strict JVM/JS/Python interests,
+      signed-publication, flattened `have`, and bounded `want` codecs plus a
+      shared fixture; negotiated runtime routing, Authority/routing-ID adaptation
+      and policy hooks remain. Base membership and content remain native.
 - [x] Add canonical identity, publication signature and malformed-input
       fixtures.
 - [x] Implement cryptographically bound capability/version negotiation in the
       Noise handshake. Runtime codec selection remains the separate item above;
       `wire/netz-cbor/1` is not aliased to the transitional `netz/1` token.
 - [ ] Complete a Python identity/handshake/dissemination/sync client. The
-      identity, secure carrier, signed publisher, bounded ordered receiver, and
-      bounded cumulative-ACK sync sender/atomic receiver exist. Real peers now
-      exercise both Python-initiated JVM-to-Python and JVM-initiated
-      Python-to-JVM join-semilattice transfers. Reusable subscription repair,
+      identity, secure carrier, signed publisher, bounded ordered receiver,
+      strict interests/have/want codecs, and bounded cumulative-ACK sync
+      sender/atomic receiver exist. Real peers now exercise both
+      Python-initiated JVM-to-Python and JVM-initiated Python-to-JVM
+      join-semilattice transfers. Reusable subscription/repair transport,
       content exchange and reconnect orchestration remain.
 - [x] The optional Python secure-client prototype signs and verifies identity
       records, binds Authority IDs to authenticated Noise statics, enforces the

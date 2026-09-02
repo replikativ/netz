@@ -6,6 +6,13 @@ may make incompatible protocol changes.
 
 ## 0.1.0-alpha.1 — unreleased
 
+- Defined the portable `netz/dissemination/1` interests, anti-entropy and repair
+  frames. Strict Clojure/ClojureScript and Python codecs share deterministic
+  CBOR fixtures, use full Authority IDs for stream identity, retain payloads as
+  opaque signed bytes, and reject unknown, unsorted, duplicate or unbounded
+  control data. Profile 1 exposes exact text-topic carrying plus `relay_all`;
+  native Clojure vector-prefix ranges remain outside the standard boundary.
+
 - Added a separately negotiated portable `netz/sync/1` carrier path and real
   bidirectional Python/JVM synchronization tests. Portable bytes16 sessions
   are now keyed by tagged content rather than JVM array identity, and malformed

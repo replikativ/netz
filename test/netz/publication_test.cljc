@@ -70,7 +70,12 @@
     (is (thrown? #?(:clj Throwable :cljs :default)
                  (publication/from-wire
                   (assoc (wire/decode (publication/encode signed))
-                         "extension" true)))))
+                         "extension" true))))
+    (is (thrown? #?(:clj Throwable :cljs :default)
+                 (publication/from-wire
+                  (assoc (wire/decode (publication/encode signed))
+                         "origin" (identity/hex->bytes
+                                   (apply str (repeat 64 "0"))))))))
 
   (testing "forwarding metadata does not alter the origin signature"
     (is (= signing-hex

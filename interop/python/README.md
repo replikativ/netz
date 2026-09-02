@@ -20,7 +20,12 @@ identifier.
 `netz_protocol.publication` constructs and verifies the complete signed
 profile-1 dissemination envelope. Its application payload is an opaque byte
 string: relays verify the exact bytes and never need to decode Boring, CBOR, or
-an application-specific format.
+an application-specific format. `netz_protocol.dissemination` adds the strict
+`netz/dissemination/1` `interests`, flattened `have`, and bounded `want` frames,
+plus canonical constructors and a bounded per-stream ordered receiver. The
+control schemas use full Authority IDs and share an exact fixture with the JVM
+and JavaScript codecs; live subscription and repair orchestration remain the
+next client layer.
 
 `netz_protocol.replication` implements transport-independent deterministic
 placement for the experimental durable-blob extension. The companion
@@ -153,9 +158,9 @@ NETZ_PYTHON=python3 clojure -X:secure-test:mixed-test :dirs '["test-mixed"]'
 This is intentionally a protocol core plus a conformance carrier, not yet a
 high-level reconnecting application client. Both session roles are bounded;
 the receiver is ordered and atomic, and carrier framing, identities, signed
-publications and the secure capability handshake are pinned. Subscription
-repair, content exchange, discovery policy, and reconnect/backoff remain
-explicit application-client work.
+publications and the secure capability handshake are pinned. Transport
+orchestration for subscription repair, content exchange, discovery policy, and
+reconnect/backoff remains explicit application-client work.
 
 The experimental optional secure-client layer can be installed with:
 
