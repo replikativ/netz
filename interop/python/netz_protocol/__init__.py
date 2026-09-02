@@ -61,6 +61,12 @@ from .blob import (
     piece_address as blob_piece_address,
     split_blob,
 )
+from .blob_store import (
+    BEST_EFFORT as BLOB_STORE_BEST_EFFORT,
+    FSYNC as BLOB_STORE_FSYNC,
+    BlobStoreError,
+    FileBlobStore,
+)
 from .replication_wire import (
     ReplicationWireError,
     decode_frame as decode_replication_frame,
@@ -91,8 +97,12 @@ from .materialization import (
 __all__ = [
     "CBORError",
     "BlobError",
+    "BlobStoreError",
+    "BLOB_STORE_BEST_EFFORT",
+    "BLOB_STORE_FSYNC",
     "CommitReceipt",
     "FramingError",
+    "FileBlobStore",
     "IdentityError",
     "JOIN_PROFILE",
     "JoinSetProfile",

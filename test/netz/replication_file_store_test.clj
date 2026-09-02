@@ -60,6 +60,11 @@
     (.resolve (.resolve (.resolve root "pieces") (subs hex 0 2))
               (str (subs hex 2) ".piece"))))
 
+(defn marker-path [^Path root manifest-id]
+  (let [hex (identity/bytes->hex manifest-id)]
+    (.resolve (.resolve (.resolve root "manifests") (subs hex 0 2))
+              (str (subs hex 2) ".cbor"))))
+
 (defn receipt-files [^Path root]
   (let [receipts (.resolve root "receipts")]
     (if-not (Files/exists receipts (make-array java.nio.file.LinkOption 0))
@@ -147,6 +152,11 @@
                 :persistence "netz/store/fsync/1"
                 :stored-at 1200}
                (install! restarted "netz/store/fsync/1")))
+        (is (= (str/trim
+                (slurp "spec/fixtures/blob-file-store-marker-1.hex"))
+               (identity/bytes->hex
+                (Files/readAllBytes
+                 (marker-path root (:manifest-id split))))))
 
         (let [{:keys [held installed]}
               (await (storage/-load-staging

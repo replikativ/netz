@@ -21,6 +21,9 @@ may make incompatible protocol changes.
   disk/partition/crash repair, an explicit optional Konserve object seam, and a
   three-device demonstration. JVM file and portable Konserve stores also expose
   bounded sorted installed-manifest inventory and full-address object scrubs.
+  The Python package now includes an asynchronous filesystem repository with
+  the same piece paths and deterministic installation-marker bytes as the JVM,
+  plus fsync, restart/resume, inventory, scrub and bounded-read coverage.
   Authenticated providers can now serve an explicitly requested installed
   manifest through the same offer/piece/receipt path, with independent read
   authorization and exact pending-request fencing. A portable bounded

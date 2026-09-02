@@ -129,6 +129,11 @@ This extension is not part of the alpha interoperability claim yet.
       reference file store with independently verified content-addressed
       staging, atomic/fsynced installation markers, bounded cryptographically
       verified receipt replay, and restart-resume integration tests.
+- [x] Implement a dependency-free asynchronous Python filesystem repository
+      with JVM-compatible piece paths and deterministic installation markers,
+      explicit fsync/best-effort claims, restart/resume, bounded inventory,
+      scrubbing and bounded reads. The transfer and receipt runtimes remain
+      separate gates.
 - [x] Implement a journal-first lifecycle machine with monotone leases,
       same-revision equivocation evidence, expiry, deletion retry, absorbing
       tombstones, and persist-before-emit deletion receipts. Simulator tests
