@@ -208,6 +208,9 @@ malformed extension frames close the connection.
 pure hash-chain reconciliation used by that policy. Its output is trusted only
 after the ordinary `blob/signed` envelope verifies. A same-epoch fork freezes
 layout-based admission; it is not resolved by arrival order or LWW.
+`netz.replication.layout-runtime` is the serialized storage boundary: it
+re-verifies the complete bounded envelope transcript before readiness and
+persists an accepted successor or fork before exposing the resulting state.
 
 Storage operations preserve machine backpressure. Each piece is ACKed only
 after the store's stage channel succeeds, a stored receipt is signed only after
@@ -226,15 +229,20 @@ implements both the transfer and lifecycle storage contracts:
 (let [store  (konserve-store/new-konserve-blob-store
               connected-konserve
               {:persistence "netz/store/best-effort/1"})
+      layouts (layout-runtime/start!
+               {:store store
+                :cluster cluster-id
+                :controllers [controller-authority]})
       policy (lifecycle-runtime/start!
               {:identity peer-identity
                :store store
                :controllers [controller-authority]
-               :layout-state-fn (fn [] @durable-layout-state)
+               :layout-state-fn #(layout-runtime/state layouts)
                :lifecycle-opts
                {:persistence "netz/store/best-effort/1"
                 :accepted-persistence
                 #{"netz/store/best-effort/1"}}})]
+  (async/<! (layout-runtime/ready layouts))
   (async/<! (lifecycle-runtime/ready policy))
   (replication-runtime/start!
    overlay-node
@@ -472,10 +480,10 @@ three process IDs represent three independent failure domains.
 
 ## Implementation order
 
-1. [wire done; durable restore open] Freeze object, receipt, retention,
-   deletion and signed layout/reconfiguration schemas with canonical CBOR
-   fixtures. Persist/restore the accepted layout chain and specify operator
-   recovery from signed controller forks.
+1. [wire and durable restore done; fork recovery open] Freeze object, receipt,
+   retention, deletion and signed layout/reconfiguration schemas with canonical
+   CBOR fixtures. The bounded transcript now restores through portable
+   Konserve; specify explicit operator recovery from signed controller forks.
 2. [done] Implement pure placement, receipt-controller, receiver-transfer and
    crash-safe lifecycle transitions.
 3. [done] Add simulated durable disks, faults, crash recovery, bulk expiry and

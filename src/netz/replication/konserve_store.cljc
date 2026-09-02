@@ -16,6 +16,7 @@
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
             [netz.replication.inventory :as inventory]
+            [netz.replication.layout-storage :as layout-storage]
             [netz.replication.lifecycle-storage :as lifecycle-storage]
             [netz.replication.storage :as storage]
             [netz.replication.wire :as replication-wire]
@@ -35,6 +36,9 @@
 (def ^:private event-fields
   #{:type :object-id :replica-id :layout-epoch :attempt
     :persistence :receipt :manifest-id})
+
+(def ^:private layout-transcript-fields
+  #{"v" "type" "cluster" "envelopes"})
 
 (def ^:private persistence-profiles
   #{"netz/store/volatile/1" "netz/store/best-effort/1"})
@@ -63,6 +67,13 @@
     :else (throw (ex-info "Invalid Konserve blob-store address"
                           {:type :netz.replication/invalid-konserve-address}))))
 
+(defn- cluster-hex [value]
+  (if (and (wire/byte-buffer? value)
+           (<= 1 (identity/buf-length value) 64))
+    (identity/bytes->hex value)
+    (throw (ex-info "Invalid Konserve blob-store cluster"
+                    {:type :netz.replication/invalid-konserve-cluster}))))
+
 (defn- entry-key [store kind address]
   [(:prefix store) kind (address-hex address)])
 
@@ -78,6 +89,9 @@
 
 (defn- lifecycle-key [store key]
   [(:prefix store) ::lifecycle key])
+
+(defn- layout-key [store cluster]
+  [(:prefix store) ::layout (cluster-hex cluster)])
 
 (defn- verify-context! [manifest-id manifest]
   (blob/validate-manifest manifest)
@@ -447,9 +461,28 @@
            (recur (next remaining) (assoc result object-key record)))
          result)))))
 
+(defn- valid-layout-transcript? [store cluster record]
+  (and (map? record)
+       (= layout-transcript-fields (set (keys record)))
+       (= 1 (get record "v"))
+       (= "blob/layout-transcript" (get record "type"))
+       (same-bytes? cluster (get record "cluster"))
+       (vector? (get record "envelopes"))
+       (<= (count (get record "envelopes")) (:max-layout-records store))))
+
+(defn- load-layout-transcript! [store cluster]
+  (go-try-
+   (let [record (<?- (k/get (:store store) (layout-key store cluster)
+                            nil {:sync? false}))]
+     (when record
+       (when-not (valid-layout-transcript? store cluster record)
+         (throw (ex-info "Invalid durable layout transcript"
+                         {:type :netz.replication/invalid-layout-transcript})))
+       (get record "envelopes")))))
+
 (defrecord KonserveBlobStore [store prefix persistence clock max-receipts
-                              max-lifecycle-records max-inventory-records
-                              delete-object!]
+                              max-lifecycle-records max-layout-records
+                              max-inventory-records delete-object!]
   storage/PBlobTransferStore
 
   (-load-staging [this _session manifest-id manifest]
@@ -522,6 +555,27 @@
         {:type :netz.replication/deletion-not-configured
          :key key}))))
 
+  layout-storage/PBlobLayoutStore
+
+  (-load-layout-transcript [this cluster]
+    (go-try-
+     (try
+       (<?- (load-layout-transcript! this cluster))
+       (catch #?(:clj Throwable :cljs js/Error) cause cause))))
+
+  (-persist-layout-transcript! [this cluster envelopes]
+    (go-try-
+     (try
+       (let [record {"v" 1 "type" "blob/layout-transcript"
+                     "cluster" cluster "envelopes" envelopes}]
+         (when-not (valid-layout-transcript? this cluster record)
+           (throw (ex-info "Invalid durable layout transcript"
+                           {:type :netz.replication/invalid-layout-transcript})))
+         (<?- (k/assoc store (layout-key this cluster) record
+                       nil {:sync? false}))
+         :ok)
+       (catch #?(:clj Throwable :cljs js/Error) cause cause))))
+
   inventory/PBlobInventoryStore
 
   (-inventory-page [this cursor limit]
@@ -555,7 +609,9 @@
 
   Staged pieces intentionally survive session cleanup. `:max-receipts` and
   `:max-lifecycle-records` independently bound restart scans (both default to
-  100,000). `:max-inventory-records` bounds the first reference
+  100,000). `:max-layout-records` bounds each cluster's atomically replaced
+  signed-layout transcript (default 256). `:max-inventory-records` bounds the
+  first reference
   implementation's local marker scan (default 1,000,000); returned pages stay
   bounded to 1,024 addresses.
 
@@ -566,12 +622,14 @@
   retained as a durable tombstone and retried, but no deletion receipt is
   issued."
   [store {:keys [prefix persistence clock max-receipts
-                 max-lifecycle-records max-inventory-records delete-object!]
+                 max-lifecycle-records max-layout-records
+                 max-inventory-records delete-object!]
           :or {prefix :netz.blob
                clock #?(:clj #(System/currentTimeMillis)
                         :cljs #(.now js/Date))
                max-receipts 100000
                max-lifecycle-records 100000
+               max-layout-records 256
                max-inventory-records 1000000}}]
   (when-not (and store
                  (some? prefix)
@@ -581,6 +639,8 @@
                  (pos? max-receipts)
                  (int? max-lifecycle-records)
                  (pos? max-lifecycle-records)
+                 (int? max-layout-records)
+                 (pos? max-layout-records)
                  (int? max-inventory-records)
                  (pos? max-inventory-records)
                  (or (nil? delete-object!) (ifn? delete-object!)))
@@ -589,7 +649,9 @@
                      :persistence persistence
                      :max-receipts max-receipts
                      :max-lifecycle-records max-lifecycle-records
+                     :max-layout-records max-layout-records
                      :max-inventory-records max-inventory-records})))
   (->KonserveBlobStore store prefix persistence clock max-receipts
-                       max-lifecycle-records max-inventory-records
+                       max-lifecycle-records max-layout-records
+                       max-inventory-records
                        delete-object!))

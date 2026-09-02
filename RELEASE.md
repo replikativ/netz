@@ -165,9 +165,14 @@ This extension is not part of the alpha interoperability claim yet.
       and fail-closed deterministic-target admission. JVM/JavaScript/Python
       share the layout/address/signature vector. The lifecycle runtime exposes
       a migration-safe synchronous layout-state fence.
-- [ ] Persist and restore the accepted layout chain before it authorizes an
-      epoch, and define the explicit operator procedure for resolving a signed
-      controller fork. The pure reconciler intentionally freezes on a fork.
+- [x] Persist and restore the bounded, ordered signed-layout transcript before
+      it authorizes an epoch. The serialized runtime re-verifies every envelope
+      and predecessor on startup, persists before activation, and fails startup
+      closed on corruption; the portable Konserve adapter passes JVM/Node
+      restart tests.
+- [ ] Define the explicit operator procedure for resolving a signed controller
+      fork. The durable runtime intentionally preserves the evidence and
+      freezes rather than choosing a branch by arrival order or LWW.
 - [ ] Implement Node/browser durable storage, network inventory exchange,
       automated repair scheduling, backend erasure, and operational
       offline-peer reconciliation.

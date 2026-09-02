@@ -34,6 +34,10 @@ may make incompatible protocol changes.
   rejects gaps and bad links, preserves bounded same-epoch fork evidence, and
   freezes deterministic-target admission after a fork; JVM, JavaScript and
   Python share the layout/address/signature vector.
+  A serialized layout runtime now re-verifies and replays a bounded ordered
+  envelope transcript before readiness, persists each accepted change before
+  activation, and restores both the chain and fork freeze through the portable
+  Konserve adapter on JVM and JavaScript.
   The explicit Konserve immutable-write seam now fails before network work when
   its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.
