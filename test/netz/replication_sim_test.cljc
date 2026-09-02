@@ -32,7 +32,8 @@
                [:persist [:replication/intent target] manifest
                 {:op :intent-stored
                  :object-id target
-                 :layout-epoch (:layout-epoch manifest)}]
+                 :layout-epoch (:layout-epoch manifest)
+                 :intent-revision (:intent-revision manifest)}]
 
                :store
                [:send target {:op :store

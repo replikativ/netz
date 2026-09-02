@@ -1,10 +1,11 @@
 (ns netz.replication
   "Pure receipt controller for durable immutable objects.
 
-  The controller does not perform IO. `:replication/begin` first emits a
-  `:persist-intent` action. Only `:replication/intent-stored` releases network
-  `:store` actions, making the durable-outbox crash boundary explicit in the
-  API. A runtime reports successful remote durable installation back as
+  The controller does not perform IO. `:replication/begin` and every retry
+  generation first emit a `:persist-intent` action. Only the matching
+  `:replication/intent-stored` revision releases network `:store` actions,
+  making the durable-outbox and attempt-fencing crash boundaries explicit in
+  the API. A runtime reports successful remote durable installation back as
   `:replication/stored`. Only those events can produce `:durable` or `:complete`
   actions. Network delivery, an offer, or a write merely being queued is never
   a durability acknowledgement."
@@ -30,6 +31,9 @@
   [:store target (:manifest entry)
    {:layout-epoch (:layout-epoch entry)
     :attempt (get-in entry [:attempts target])}])
+
+(defn- persist-action [object-id entry]
+  [:persist-intent object-id entry])
 
 (defn- object-receipt [entry status]
   {:object-id (get-in entry [:manifest :object-id])
@@ -76,19 +80,23 @@
                    :attempts (zipmap targets (repeat 0))
                    :acks #{}
                    :receipts {}
+                   :intent-revision 0
                    :intent-stored? false
+                   :pending-targets targets
                    :durable-emitted? false
                    :complete-emitted? false
                    :repairing? false}]
         {:state (-> state
                     (assoc-in [:objects object-id] entry)
                     (update-in [:stats :begun] inc))
-         :actions [[:persist-intent object-id entry]]}))))
+         :actions [(persist-action object-id entry)]}))))
 
-(defn- intent-stored [state {:keys [object-id layout-epoch]}]
+(defn- intent-stored
+  [state {:keys [object-id layout-epoch intent-revision]}]
   (if-let [entry (get-in state [:objects object-id])]
     (cond
-      (not= layout-epoch (:layout-epoch entry))
+      (or (not= layout-epoch (:layout-epoch entry))
+          (not= intent-revision (:intent-revision entry)))
       {:state (update-in state [:stats :invalid-acks] inc) :actions []}
 
       (:intent-stored? entry)
@@ -97,10 +105,12 @@
       :else
       (let [state (-> state
                       (assoc-in [:objects object-id :intent-stored?] true)
+                      (assoc-in [:objects object-id :pending-targets] [])
                       (update-in [:stats :intents-stored] inc))
-            entry (get-in state [:objects object-id])]
+            stored-entry (get-in state [:objects object-id])]
         {:state state
-         :actions (mapv #(store-action entry %) (:targets entry))}))
+         :actions (mapv #(store-action stored-entry %)
+                        (:pending-targets entry))}))
     {:state (update-in state [:stats :invalid-acks] inc) :actions []}))
 
 (defn- stored
@@ -158,12 +168,18 @@
      :actions []}))
 
 (defn- retry-targets [state object-id targets]
-  (let [state (reduce (fn [s target]
-                        (update-in s [:objects object-id :attempts target] inc))
-                      state targets)
-        entry (get-in state [:objects object-id])]
-    {:state state
-     :actions (mapv #(store-action entry %) targets)}))
+  (if (seq targets)
+    (let [state (-> (reduce (fn [s target]
+                              (update-in s [:objects object-id :attempts target]
+                                         inc))
+                            state targets)
+                    (update-in [:objects object-id :intent-revision] inc)
+                    (assoc-in [:objects object-id :intent-stored?] false)
+                    (assoc-in [:objects object-id :pending-targets] targets))
+          entry (get-in state [:objects object-id])]
+      {:state state
+       :actions [(persist-action object-id entry)]})
+    {:state state :actions []}))
 
 (defn- lost [state {:keys [object-id replica-id layout-epoch]}]
   (if-let [entry (get-in state [:objects object-id])]
@@ -197,7 +213,8 @@
   Supported events:
 
   - `{:type :replication/begin :manifest {... :object-id ...}}`
-  - `{:type :replication/intent-stored :object-id ... :layout-epoch ...}`
+  - `{:type :replication/intent-stored :object-id ... :layout-epoch ...
+      :intent-revision ...}`
   - `{:type :replication/stored :object-id ... :replica-id ...
       :layout-epoch ... :attempt ... :receipt <verified-envelope>}`
   - `{:type :replication/lost :object-id ... :replica-id ...

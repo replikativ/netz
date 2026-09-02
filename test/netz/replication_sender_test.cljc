@@ -233,7 +233,8 @@
                                controller-1
                                {:type :replication/intent-stored
                                 :object-id (:object-id manifest)
-                                :layout-epoch 7}
+                                :layout-epoch 7
+                                :intent-revision 0}
                                {})
         {sender-0 :state} (start-sender)
         all-held (blob/need-bitmap (:manifest split) (constantly true))

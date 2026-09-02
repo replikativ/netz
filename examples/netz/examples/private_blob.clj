@@ -44,7 +44,8 @@
         (advance initial {:type :replication/begin :manifest manifest})
         {ready :state stores :actions}
         (advance intent-state {:type :replication/intent-stored
-                               :object-id object-id :layout-epoch 1})
+                               :object-id object-id :layout-epoch 1
+                               :intent-revision 0})
         first-copy (advance ready (stored-event object-id (nth stores 0)))
         quorum (advance (:state first-copy)
                         (stored-event object-id (nth stores 1)))
@@ -66,4 +67,3 @@
     (prn {:lost (labels lost-target)
           :repair-attempt (get-in repair [0 3 :attempt])
           :after-repair (:actions repaired)})))
-

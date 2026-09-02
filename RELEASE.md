@@ -183,6 +183,9 @@ This extension is not part of the alpha interoperability claim yet.
       primitive. Local inventory is not exposed over the network; broad or
       Merkle inventory is a later optimization requiring explicit privacy
       scope, authorization, freshness and resource bounds.
+- [x] Persist retry generations before re-offer. Per-target attempts and the
+      intent revision cross the durable outbox before network actions; stale
+      persistence completions and old receipts cannot satisfy a new repair.
 - [ ] Implement Node/browser durable storage, durable automated repair
       scheduling, backend erasure, and operational offline-peer
       reconciliation.

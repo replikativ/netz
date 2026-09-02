@@ -24,7 +24,8 @@
         epoch (get-in intent-state [:layout :epoch])
         ready (step intent-state {:type :replication/intent-stored
                                   :object-id object-id
-                                  :layout-epoch epoch})]
+                                  :layout-epoch epoch
+                                  :intent-revision 0})]
     (assoc ready :intent-actions intent-actions)))
 
 (deftest rendezvous-placement-is-deterministic
@@ -196,17 +197,31 @@
         {lost :state retry :actions}
         (step begun {:type :replication/lost :object-id "blob"
                      :replica-id target :layout-epoch epoch})]
-    (is (= 1 (get-in retry [0 3 :attempt])))
-    (testing "a delayed completion from the old disk generation is ignored"
+    (is (= [:persist-intent] (mapv first retry)))
+    (is (= 1 (get-in lost [:objects "blob" :attempts target])))
+    (is (false? (get-in lost [:objects "blob" :intent-stored?])))
+    (testing "neither a stale receipt nor stale outbox completion escapes"
       (let [{stale :state actions :actions}
             (step lost {:type :replication/stored :object-id "blob"
-                        :replica-id target :layout-epoch epoch :attempt 0})]
+                        :replica-id target :layout-epoch epoch :attempt 0})
+            stale-persist
+            (step stale {:type :replication/intent-stored
+                         :object-id "blob" :layout-epoch epoch
+                         :intent-revision 0})]
         (is (empty? actions))
-        (is (empty? (get-in stale [:objects "blob" :acks])))))
+        (is (empty? (:actions stale-persist)))
+        (is (empty? (get-in (:state stale-persist)
+                            [:objects "blob" :acks])))))
     (testing "the retried durable installation is accepted"
-      (let [{current :state}
-            (step lost {:type :replication/stored :object-id "blob"
-                        :replica-id target :layout-epoch epoch :attempt 1})]
+      (let [{ready :state stores :actions}
+            (step lost {:type :replication/intent-stored
+                        :object-id "blob" :layout-epoch epoch
+                        :intent-revision 1})
+            {current :state}
+            (step ready {:type :replication/stored :object-id "blob"
+                         :replica-id target :layout-epoch epoch :attempt 1})]
+        (is (= [:store] (mapv first stores)))
+        (is (= 1 (get-in stores [0 3 :attempt])))
         (is (= #{target} (get-in current [:objects "blob" :acks])))))))
 
 (deftest stores-cannot-leave-before-the-intent-is-durable
