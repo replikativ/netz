@@ -95,8 +95,8 @@ the body as follows:
    Lower epochs are stale; skipped epochs and bad predecessor links fail closed.
 4. A different valid address at the current epoch is controller equivocation.
    The replica MUST retain bounded fork evidence and MUST stop layout-based
-   retention admission and further reconfiguration until an operator resolves
-   the fork.
+   retention admission and further reconfiguration permanently for that
+   cluster identity. Section 3.1 defines recovery by cluster rollover.
 
 Draft-00 signatures are single-Authority statements, not multisignatures. A
 deployment that permits several controller Authorities MUST externally fence
@@ -112,6 +112,45 @@ unreplayable durable transcript fails startup closed. Draft-00 bounds the
 reference transcript to 256 envelopes by default; deployments MUST configure
 a finite bound and arrange an audited checkpoint or migration before reaching
 it.
+
+### 3.1. Controller-fork recovery
+
+Two valid, differently addressed layout statements for the same configured
+cluster and epoch, each signed by an authorized controller, prove controller
+equivocation. In draft-00 that proof is terminal for the cluster identity. An
+implementation MUST NOT choose a branch by arrival order, wall-clock time or
+LWW, and an operator MUST NOT erase the evidence or unfreeze that cluster.
+Recovery creates a new cluster rather than trying to make independently
+observed peers agree on an unsigned branch choice.
+
+The operator rollover procedure is:
+
+1. Stop new layout-based retention admission for the old cluster and preserve
+   its complete durable transcript and all observed fork envelopes for audit.
+2. Audit the controller and deployment configuration, and inventory every
+   reachable member's retained objects, live leases, deletion tombstones and
+   outstanding repair obligations. A fork is not permission to delete or serve
+   bytes outside the already accepted lifecycle policy.
+3. Generate a fresh unpredictable cluster identifier and provision the exact
+   controller Authority out of band. A fresh controller Authority SHOULD be
+   used unless compromise has been excluded. Its first layout MUST be epoch
+   zero with an all-zero predecessor.
+4. Explicitly authorize the new cluster and controller on each intended member,
+   then durably accept its genesis layout before advertising readiness for
+   that cluster or accepting its retention work.
+5. Issue new retention statements under the new cluster and layout. Object and
+   manifest addresses are cluster-independent, so a replica MAY reuse verified
+   local bytes, but old-cluster receipts MUST NOT count toward new placement or
+   quorum. Each selected target must scrub or install the object and issue new
+   evidence under the new retention statement.
+6. Preserve the old transcript and continue enforcing its accepted expiry,
+   deletion and tombstone state until the deployment's retention and erasure
+   obligations are fulfilled. The new cluster does not supersede that state.
+
+Several allowed controller Authorities still require one external writer
+fence, such as an Urd/Raft leader. Key rotation that retains the same Authority
+ID does not recover a fork; the fresh cluster identity is the convergence
+boundary visible to every implementation.
 
 Placement converts each member Authority to its lowercase 64-hex spelling and
 uses the following policy:
@@ -488,9 +527,10 @@ otherwise an offline replica could resurrect bytes from a stale offer.
 Before advertising a durable-blob capability, implementations must additionally
 complete and test:
 
-1. explicit operator recovery from a detected signed fork (portable signed
-   statements, the hash chain, persist-before-activate runtime, Konserve
-   restoration and admission fence are implemented);
+1. operational tooling for the terminal cluster-rollover procedure in section
+   3.1 (the portable signed statements, hash chain, persist-before-activate
+   runtime, Konserve restoration, admission fence and normative recovery
+   procedure are implemented);
 2. non-JVM durable piece-staging adapters (the bounded pure sender/receiver and
    JVM fsync/atomic-file reference adapter are implemented);
 3. restart recovery against real durable non-memory stores (the portable
