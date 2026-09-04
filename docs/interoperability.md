@@ -13,7 +13,7 @@ commits over a content-addressed Merkle Search Tree and CAR exports.
 
 Useful points to reuse:
 
-- deterministic CBOR and CID-compatible content identifiers;
+- deterministic CBOR and an exact CIDv1/raw/SHA-256 content profile;
 - an explicit synchronized/desynchronized state;
 - signed root records plus live deltas and full resync;
 - a hard encoded-frame ceiling and validation before application.
