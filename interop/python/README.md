@@ -32,7 +32,10 @@ ordered delivery, and state-sync escalation.
 profile: CIDv1/raw/SHA-256 construction, bounded provider discovery and
 request-correlated transfer. Block contents remain opaque and are verified
 before delivery; using this profile does not require an application to encode
-its data as CBOR.
+its data as CBOR. `netz_protocol.ContentRequester` provides bounded deadlines,
+reply correlation and disconnect cleanup. `netz_protocol.ContentService`
+authorizes an authenticated peer before consulting its injected block store or
+provider index, so policy denial does not become a content-existence oracle.
 
 `netz_protocol.replication` implements transport-independent deterministic
 placement for the experimental durable-blob extension. The companion
