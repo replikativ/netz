@@ -275,11 +275,12 @@ This extension is not part of the alpha interoperability claim yet.
       gates fail closed. A real Noise/Kabel test repairs an offline publication
       through portable `have`/`want`. A separately installed portable content
       service now authorizes before storage/provider lookup and serves verified
-      CIDv1/raw blocks through the same authenticated carrier; Python fetches a
-      block from the JVM in the mixed-runtime gate. A bounded JVM/JS requester
-      now returns explicit completion channels and correlates peer, request,
-      CID and operation across timeout and disconnect. Base membership and the
-      legacy Hasch-value content machine remain native.
+      CIDv1/raw blocks through the same authenticated carrier. Mixed-runtime
+      gates now fetch in both directions: Python verifies a JVM-served block,
+      and the bounded JVM requester verifies a Python-served block. That
+      requester returns explicit completion channels and correlates peer,
+      request, CID and operation across timeout and disconnect. Base membership
+      and the legacy Hasch-value content machine remain native.
 - [x] Add canonical identity, publication signature and malformed-input
       fixtures.
 - [x] Implement cryptographically bound capability/version negotiation in the
@@ -300,16 +301,17 @@ This extension is not part of the alpha interoperability claim yet.
       commits locally validated frontiers. Fixed authorized sources provide
       bounded inbound serving and load consistent snapshots only after policy.
       Strict single-block content frames, bounded request correlation, and an
-      authorization-first service now exist, including a real Python-to-JVM
-      fetch. Integrating them into the reconnecting client and multi-peer
-      provider discovery remain.
+      authorization-first service now exist, including real Python-to-JVM and
+      JVM-to-Python fetches. Integrating them into the reconnecting client and
+      multi-peer provider discovery remain.
 - [x] The optional Python secure-client prototype signs and verifies identity
       records, binds Authority IDs to authenticated Noise statics, enforces the
       expected dial target, fragments bounded inner frames, and passes a real
       asyncio WebSocket round trip plus the same Cacophony vector as Geheimnis.
       The reconnecting client now carries dissemination plus bounded sync pull
-      and serving sessions. Content exchange and multi-peer orchestration remain
-      before calling it a complete application client.
+      and serving sessions. Standalone content exchange now works in both
+      Python/JVM directions; reconnecting content integration and multi-peer
+      orchestration remain before calling it a complete application client.
 - [x] JVM and Python consume the same deterministic direct-binding fixture,
       covering both identity records and binding signatures, the offer, all
       three Noise messages, handshake hash, encrypted serializer-14 fragment,
@@ -320,9 +322,9 @@ This extension is not part of the alpha interoperability claim yet.
       blob subset now runs both Python/JVM directions and process-level resume;
       synchronization now runs both Python/JVM directions, and portable
       dissemination repairs an offline JVM publication into the reusable
-      Python client. Python also fetches a verified raw-CID block from the JVM.
-      A JavaScript peer, the reverse content direction, and full base-protocol
-      coverage remain.
+      Python client. Portable raw-CID content fetches now pass in both
+      Python/JVM directions. A JavaScript peer and full base-protocol coverage
+      remain.
 - [x] Pass a real three-peer offline/rejoin test over http-kit, Kabel CBOR and
       authenticated Noise for both a fenced single-writer root and a
       multiwriter join-semilattice.

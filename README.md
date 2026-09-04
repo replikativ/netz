@@ -21,7 +21,8 @@ machines define the path to implementations outside the Clojure ecosystem.
 > carrier over a real Noise/Kabel WebSocket, and the Python subscriber can
 > restore application-committed frontiers from an atomic fsynced record and
 > run a bounded state-sync pull on that same authenticated connection. Python
-> can also fetch a verified raw-CID block from the JVM content service over the
+> can also fetch a verified raw-CID block from the JVM content service, while
+> the bounded JVM requester verifies a block served by Python over the same
 > negotiated authenticated carrier.
 > Exact configured
 > `wss` gateways have a supported dial policy. Arbitrary public discovery still
