@@ -55,6 +55,10 @@ may make incompatible protocol changes.
   real authenticated Python/JVM fetches in both directions. Provider hints now
   live in an expiring cache bounded per CID, per provider, and globally;
   resilient fetches randomize and try only a configured candidate count.
+  Authorization-first announcements can populate that same bounded cache,
+  while connected-peer discovery filters exact negotiated capabilities, caps
+  fanout and parallelism, completes early, and composes directly with provider
+  failover without implicit dialing.
   Concurrent requests atomically reserve their outstanding slots, and repeated
   request-ID collisions fail boundedly. The reconnecting Python client now
   multiplexes direct content find/fetch and authorization-first serving over

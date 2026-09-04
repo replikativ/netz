@@ -42,8 +42,9 @@ Portable content-provider routing has a smaller pure resource model alongside
 the network simulator. It drives thousands of hostile CID/Authority hints into
 the same cache used by the JVM/JavaScript requester and asserts total-CID,
 per-CID, and per-provider limits plus exact virtual-clock expiry. Runtime tests
-then race 100 callers against the atomic outstanding-request cap and exercise
-provider failover without sockets.
+then race 100 callers against the atomic outstanding-request cap, drive a
+100-peer discovery view through an eight-peer/two-in-flight budget, and
+exercise early completion and provider failover without sockets.
 
 The profile apply boundary is also a pure machine. Its schedule tests cover
 snapshot/live cuts, per-stream reordering, slow application, item/byte

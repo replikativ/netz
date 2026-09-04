@@ -499,6 +499,12 @@
           [wire/profile-capability extension-carrier-capability
            dissemination-wire/capability]))
 
+(defn portable-extension-connection?
+  "Whether `peer-id` selected the portable carrier for a named capability."
+  [peer peer-id capability]
+  (every? #(connection-supports? peer peer-id %)
+          [wire/profile-capability extension-carrier-capability capability]))
+
 (defn register-extension!
   "Register one capability-gated direct protocol on a running node.
 

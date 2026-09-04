@@ -310,14 +310,15 @@ This extension is not part of the alpha interoperability claim yet.
       authorization-first serving on its existing authenticated carrier, with
       separate transport/storage policy, bounded request/backend timeouts and
       bounded service tasks so slow storage cannot block dissemination. This
-      is a complete bounded single-peer application client; active multi-peer
-      discovery is a separate node/router layer.
-- [ ] Implement active portable two-hop discovery: authorization-first
+      is a complete bounded single-peer application client; its multi-peer
+      composition remains application policy.
+- [x] Implement active portable two-hop discovery: authorization-first
       `content/announce` ingestion, bounded local provider records, capped
       parallel `content/find` fanout, early completion, and provider retry on
-      the JVM/JavaScript node layer. Python can compose multiple complete
-      single-peer clients after that node policy is frozen; a DHT remains an
-      optional routing provider rather than a core dependency.
+      the JVM/JavaScript node layer. Only already authenticated connections
+      with the exact portable wire/carrier/content capabilities participate;
+      there is no implicit dialing. Python can compose multiple complete
+      single-peer clients under the same policy; a DHT remains optional.
 - [x] The optional Python secure-client prototype signs and verifies identity
       records, binds Authority IDs to authenticated Noise statics, enforces the
       expected dial target, fragments bounded inner frames, and passes a real

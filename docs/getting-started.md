@@ -193,13 +193,29 @@ block bytes are hashed again before they cross the connection. Calling the
 returned function unregisters the capability handler and stops its worker.
 Stopping the overlay does this automatically.
 
-A node that fetches portable blocks installs the matching requester once:
+A node that serves and fetches portable blocks can share one bounded provider
+cache. An accepted announcement then becomes a local two-hop routing hint:
 
 ```clojure
+(require '[netz.content-provider :as content-provider])
+
+(def providers (atom (content-provider/make-cache)))
+
+(def stop-content-service!
+  (content-runtime/start-service!
+   node {:authorize? content-policy
+         :get-block load-cid
+         ;; Optional application admission/audit hook. Only true is cached.
+         :accept-announcement! accept-provider-announcement
+         :provider-cache providers}))
+
 (def content (content-runtime/start-requester! node
                {:max-outstanding 16
                 :timeout-ms 5000
-                :max-provider-attempts 4}))
+                :max-provider-attempts 4
+                :max-discovery-peers 8
+                :discovery-parallelism 2
+                :provider-cache providers}))
 
 ;; The channel yields {:status :ok :data bytes ...}, :not-found, :timeout,
 ;; :disconnected, or :unavailable. A failed fetch can be retried at another
@@ -212,6 +228,15 @@ A node that fetches portable blocks installs the matching requester once:
   ((:find! content) discovery-peer-routing-id cid-bytes))
 ;; Wait for discovery-result before starting the resilient fetch.
 (def resilient-result ((:fetch-any! content) cid-bytes))
+
+;; Ask only already-authenticated connected peers which negotiated all three
+;; portable wire/carrier/content capabilities, then try learned providers.
+;; This never implicitly dials a peer or treats discovery as authorization.
+(def discovered-fetch ((:discover-and-fetch! content) cid-bytes))
+
+;; Tell at most the configured number of eligible connected peers that this
+;; authenticated Authority currently serves these blocks.
+((:announce-connected! content) [cid-bytes another-cid])
 ```
 
 Reply correlation includes the live routing peer, random request ID, CID, and
@@ -221,7 +246,12 @@ state. Concurrent opens reserve their slots atomically. `(:find! content)` has
 the same shape and caches bounded, expiring full-Authority-ID hints under
 per-CID, per-provider, and total-CID caps. Hints only select whom to ask; every
 returned block is still accepted by its CID. `(:providers-for content)` exposes
-the currently live records for diagnostics.
+the currently live records for diagnostics. `:discover!` takes one connected
+peer snapshot, caps parallel queries, and completes early at
+`:discovery-min-providers`. Already-issued requests retain their ordinary
+deadlines, so the tail remains bounded by `:discovery-parallelism` and
+`:max-outstanding`. Peer-order functions are injectable for deterministic
+tests; production defaults randomize discovery and provider choice.
 
 ## Public API
 

@@ -553,7 +553,10 @@ arrays are valid. Provider hints expire locally no later than the advertised
 TTL; announcements without a TTL use a bounded local lifetime. They are routing
 information, not authorization to read data.
 An implementation MUST authorize an identified requester according to local
-policy before disclosing providers or block bytes.
+policy before accepting an announcement, mutating provider-routing state,
+disclosing providers, or disclosing block bytes. An accepted announcement MUST
+be attributed to the authenticated connection Authority rather than to an
+identity supplied inside the application frame.
 
 Request tables, retries, queued sends and aggregate buffered block bytes MUST
 be bounded. A request MUST have a deadline. On timeout, disconnect, hash
@@ -568,8 +571,12 @@ batch accounting and partial completion independently of a Clojure value
 model. Applications can already traverse a DAG by issuing bounded single-block
 requests for links interpreted by their own content codec.
 
-Two-hop provider discovery is the draft-00 baseline. A DHT is an optional
-routing provider, not part of the core protocol.
+Two-hop provider discovery is the draft-00 baseline. A requester asks a bounded
+set of already authenticated, capability-compatible connections, limits
+concurrent finds, and may stop after learning its configured number of live
+providers. Discovery does not require or imply dialing a returned provider;
+connection establishment and read authorization remain separate policy. A DHT
+is an optional routing provider, not part of the core protocol.
 
 ## 11. Transport binding
 

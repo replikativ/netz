@@ -157,8 +157,12 @@ collisions, and applies bounded fail-closed policy before entering the pure
 machine. The separately negotiated `netz/content/1` service and requester also
 pass authenticated raw-CID fetches in both Python/JVM directions, with the
 receiver independently verifying the returned bytes. Both Python directions
-now use the reusable reconnecting client rather than a one-shot carrier. Base
-membership routing and multi-peer discovery orchestration remain. A dedicated
+now use the reusable reconnecting client rather than a one-shot carrier. The
+JVM/JavaScript node layer additionally ingests authorization-first provider
+announcements and performs capped, capability-filtered two-hop discovery over
+already connected peers; it never implicitly dials or elevates a hint to
+authority. Python can compose its complete single-peer clients under the same
+multi-peer policy, but does not yet ship that node orchestrator. A dedicated
 conformance process now drives a real Python
 blob sender through Noise/Kabel and the negotiated portable carrier into the
 JVM fsync receiver, including verified and durably persisted receipt evidence.
