@@ -191,18 +191,21 @@
                              (identity/bufs= (:cid frame) (:cid entry))
                              (contains? expected (:type frame)))
                   false
-                  (when-let [removed (remove-entry! request-key)]
-                    (finish!
-                     removed
-                     (case (:type frame)
-                       :content/block
-                       {:status :ok :peer peer :cid (:cid frame)
-                        :data (:data frame)}
-                       :content/found
-                       {:status :found :peer peer :cid (:cid frame)
-                        :providers (:providers frame) :ttl-ms (:ttl-ms frame)}
-                       :content/dont-have
-                       {:status :not-found :peer peer :cid (:cid frame)}))
+                  (if-let [removed (remove-entry! request-key)]
+                    (do
+                      (finish!
+                       removed
+                       (case (:type frame)
+                         :content/block
+                         {:status :ok :peer peer :cid (:cid frame)
+                          :data (:data frame)}
+                         :content/found
+                         {:status :found :peer peer :cid (:cid frame)
+                          :providers (:providers frame) :ttl-ms (:ttl-ms frame)}
+                         :content/dont-have
+                         {:status :not-found :peer peer :cid (:cid frame)}))
+                      true)
+                    ;; Timeout/disconnect won the removal race.
                     true)))
               ;; Duplicate and retired-connection responses are harmless.
               true)))

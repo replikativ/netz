@@ -129,6 +129,9 @@
         (let [completed (async/<!! result)]
           (is (= :ok (:status completed)))
           (is (identity/bufs= data (:data completed))))
+        (is ((:receive! handler) peer-id {}
+                                 (content-wire/frame->wire response))
+            "a duplicate response is ignored without closing the connection")
         (is (empty? @pending))
         (stop!)))))
 
