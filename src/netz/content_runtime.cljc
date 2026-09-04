@@ -6,6 +6,7 @@
   overlay supplies authenticated connection facts, routing and backpressure."
   (:require [clojure.core.async :as async :refer [chan close! timeout]]
             [kabel.authorize :as authz]
+            [netz.content-provider :as content-provider]
             [netz.content-wire :as content-wire]
             [netz.identity :as identity]
             [netz.overlay.runtime :as overlay-runtime]))
@@ -15,6 +16,8 @@
    :authorization-timeout-ms 5000
    :backend-timeout-ms 30000
    :provider-ttl-ms content-wire/max-provider-ttl-ms})
+
+(def ^:private max-request-id-attempts 8)
 
 (defn- result-channel [value]
   (if (authz/channel? value)
@@ -152,17 +155,28 @@
 (defn start-requester!
   "Install bounded portable find/fetch response handling.
 
-  Returns `{:fetch! f :find! f :stop! f :pending atom}`. Each operation takes
-  a routing peer ID and CID and immediately returns a one-value channel. The
-  result status is `:ok`, `:found`, `:not-found`, `:timeout`, `:disconnected`,
-  `:unavailable`, or `:stopped`."
-  [running & [{:keys [max-outstanding timeout-ms]
-               :or {max-outstanding 16 timeout-ms 5000}}]]
+  Returns direct `:fetch!`/`:find!` operations plus `:fetch-any!`, which tries
+  bounded live provider hints learned from successful finds. Each operation
+  immediately returns a one-value channel. The result status is `:ok`,
+  `:found`, `:not-found`, `:timeout`, `:disconnected`, `:unavailable`, or
+  `:stopped`."
+  [running & [{:keys [max-outstanding timeout-ms max-provider-attempts
+                      provider-cache-opts provider-order-fn now-fn]
+               :or {max-outstanding 16 timeout-ms 5000
+                    max-provider-attempts 4 provider-cache-opts {}
+                    provider-order-fn shuffle}}]]
   (when-not (and (integer? max-outstanding) (<= 1 max-outstanding 1024)
-                 (integer? timeout-ms) (<= 1 timeout-ms 300000))
+                 (integer? timeout-ms) (<= 1 timeout-ms 300000)
+                 (integer? max-provider-attempts)
+                 (<= 1 max-provider-attempts content-wire/max-providers)
+                 (ifn? provider-order-fn)
+                 (or (nil? now-fn) (ifn? now-fn)))
     (throw (ex-info "invalid portable content requester bounds"
                     {:type :netz.content-runtime/invalid-options})))
-  (let [pending (atom {})
+  (let [now-fn (or now-fn #?(:clj #(System/currentTimeMillis)
+                             :cljs #(.now js/Date)))
+        provider-cache (atom (content-provider/make-cache provider-cache-opts))
+        pending (atom {})
         stopped? (atom false)
         remove-entry!
         (fn [request-key]
@@ -200,8 +214,14 @@
                          {:status :ok :peer peer :cid (:cid frame)
                           :data (:data frame)}
                          :content/found
-                         {:status :found :peer peer :cid (:cid frame)
-                          :providers (:providers frame) :ttl-ms (:ttl-ms frame)}
+                         (do
+                           (swap! provider-cache
+                                  content-provider/remember-many
+                                  (:cid frame) (:providers frame)
+                                  (:ttl-ms frame) (now-fn))
+                           {:status :found :peer peer :cid (:cid frame)
+                            :providers (:providers frame)
+                            :ttl-ms (:ttl-ms frame)})
                          :content/dont-have
                          {:status :not-found :peer peer :cid (:cid frame)}))
                       true)
@@ -221,38 +241,105 @@
         (fn [operation peer cid]
           (let [result (chan 1)]
             (cond
-              @stopped?
-              (do (finish! {:result result}
-                           {:status :stopped :peer peer :cid cid}) result)
-
               (not (content-wire/valid-cid? cid))
               (do (finish! {:result result}
                            {:status :unavailable :peer peer :cid cid
                             :reason :invalid-cid}) result)
 
-              (>= (count @pending) max-outstanding)
-              (do (finish! {:result result}
-                           {:status :unavailable :peer peer :cid cid
-                            :reason :overloaded}) result)
+              :else
+              (do
+                (loop [request-id-attempt 0]
+                  (let [entries @pending]
+                    (cond
+                      @stopped?
+                      (finish! {:result result}
+                               {:status :stopped :peer peer :cid cid})
+
+                      (>= (count entries) max-outstanding)
+                      (finish! {:result result}
+                               {:status :unavailable :peer peer :cid cid
+                                :reason :overloaded})
+
+                      :else
+                      (let [request (identity/random-bytes
+                                     content-wire/request-size)
+                            request-key (identity/bytes->hex request)
+                            frame {:type operation :request request :cid cid}
+                            entry {:peer peer :cid cid :operation operation
+                                   :result result}]
+                        (if (contains? entries request-key)
+                          (if (= (inc request-id-attempt)
+                                 max-request-id-attempts)
+                            (finish! {:result result}
+                                     {:status :unavailable :peer peer :cid cid
+                                      :reason :request-id-exhausted})
+                            (recur (inc request-id-attempt)))
+                          (if-not (compare-and-set!
+                                   pending entries
+                                   (assoc entries request-key entry))
+                            (recur request-id-attempt)
+                            (if (overlay-runtime/send-extension!
+                                 running peer content-wire/capability
+                                 (content-wire/frame->wire frame))
+                              (async/go
+                                (async/<! (timeout timeout-ms))
+                                (when-let [expired (remove-entry! request-key)]
+                                  (finish! expired
+                                           {:status :timeout :peer peer
+                                            :cid cid})))
+                              (when-let [unavailable
+                                         (remove-entry! request-key)]
+                                (finish! unavailable
+                                         {:status :unavailable :peer peer
+                                          :cid cid})))))))))
+                result))))
+        providers-for!
+        (fn [cid]
+          (let [now (now-fn)
+                current (swap! provider-cache content-provider/expire now)]
+            (content-provider/providers-for current cid now)))
+        fetch-any!
+        (fn [cid]
+          (let [result (chan 1)]
+            (cond
+              @stopped?
+              (finish! {:result result} {:status :stopped :cid cid})
+
+              (not (content-wire/valid-cid? cid))
+              (finish! {:result result}
+                       {:status :unavailable :cid cid :reason :invalid-cid})
 
               :else
-              (let [request (identity/random-bytes content-wire/request-size)
-                    request-key (identity/bytes->hex request)
-                    frame {:type operation :request request :cid cid}
-                    entry {:peer peer :cid cid :operation operation
-                           :result result}]
-                (swap! pending assoc request-key entry)
-                (if (overlay-runtime/send-extension!
-                     running peer content-wire/capability
-                     (content-wire/frame->wire frame))
-                  (async/go
-                    (async/<! (timeout timeout-ms))
-                    (when-let [expired (remove-entry! request-key)]
-                      (finish! expired {:status :timeout :peer peer :cid cid})))
-                  (when-let [unavailable (remove-entry! request-key)]
-                    (finish! unavailable
-                             {:status :unavailable :peer peer :cid cid})))
-                result))))
+              (let [providers (vec (take max-provider-attempts
+                                         (provider-order-fn
+                                          (providers-for! cid))))]
+                (if (empty? providers)
+                  (finish! {:result result}
+                           {:status :unavailable :cid cid
+                            :reason :no-providers :attempts []})
+                  (async/go-loop [remaining providers attempts []]
+                    (if-let [{:keys [peer authority]} (first remaining)]
+                      (let [attempt (async/<! (open! :content/want peer cid))
+                            attempts (conj attempts
+                                           (select-keys attempt
+                                                        [:status :peer :reason]))]
+                        (cond
+                          (= :ok (:status attempt))
+                          (finish! {:result result}
+                                   (assoc attempt :provider-authority authority
+                                          :attempts attempts))
+
+                          (= :stopped (:status attempt))
+                          (finish! {:result result}
+                                   {:status :stopped :cid cid
+                                    :attempts attempts})
+
+                          :else (recur (next remaining) attempts)))
+                      (finish! {:result result}
+                               {:status :unavailable :cid cid
+                                :reason :providers-exhausted
+                                :attempts attempts}))))))
+            result))
         stop! (fn []
                 (when (compare-and-set! stopped? false true)
                   (cleanup)
@@ -264,5 +351,8 @@
     (overlay-runtime/on-stop! running stop!)
     {:fetch! #(open! :content/want %1 %2)
      :find! #(open! :content/find %1 %2)
+     :fetch-any! fetch-any!
+     :providers-for providers-for!
      :stop! stop!
-     :pending pending}))
+     :pending pending
+     :provider-cache provider-cache}))
