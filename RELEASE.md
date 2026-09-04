@@ -286,7 +286,7 @@ This extension is not part of the alpha interoperability claim yet.
 - [x] Implement cryptographically bound capability/version negotiation in the
       Noise handshake. Runtime codec selection remains the separate item above;
       `wire/netz-cbor/1` is not aliased to the transitional `netz/1` token.
-- [ ] Complete a Python identity/handshake/dissemination/sync client. The
+- [x] Complete a Python identity/handshake/dissemination/sync/content client. The
       identity, secure carrier, signed publisher, bounded ordered receiver,
       strict interests/have/want codecs, and reusable reconnecting
       dissemination client now exist. Its mandatory asynchronous policy,
@@ -309,16 +309,23 @@ This extension is not part of the alpha interoperability claim yet.
       The reconnecting Python client now multiplexes direct find/fetch and
       authorization-first serving on its existing authenticated carrier, with
       separate transport/storage policy, bounded request/backend timeouts and
-      bounded service tasks so slow storage cannot block dissemination.
-      Active multi-peer discovery remains.
+      bounded service tasks so slow storage cannot block dissemination. This
+      is a complete bounded single-peer application client; active multi-peer
+      discovery is a separate node/router layer.
+- [ ] Implement active portable two-hop discovery: authorization-first
+      `content/announce` ingestion, bounded local provider records, capped
+      parallel `content/find` fanout, early completion, and provider retry on
+      the JVM/JavaScript node layer. Python can compose multiple complete
+      single-peer clients after that node policy is frozen; a DHT remains an
+      optional routing provider rather than a core dependency.
 - [x] The optional Python secure-client prototype signs and verifies identity
       records, binds Authority IDs to authenticated Noise statics, enforces the
       expected dial target, fragments bounded inner frames, and passes a real
       asyncio WebSocket round trip plus the same Cacophony vector as Geheimnis.
       The reconnecting client now carries dissemination plus bounded sync pull
-      and serving sessions. Standalone content exchange now works in both
-      Python/JVM directions; reconnecting content integration and multi-peer
-      orchestration remain before calling it a complete application client.
+      and serving sessions plus direct content find/fetch and serving. Both
+      content directions use this lifecycle in the Python/JVM gate. Multi-peer
+      node orchestration remains outside the single-peer client.
 - [x] JVM and Python consume the same deterministic direct-binding fixture,
       covering both identity records and binding signatures, the offer, all
       three Noise messages, handshake hash, encrypted serializer-14 fragment,
