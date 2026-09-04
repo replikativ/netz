@@ -16,11 +16,13 @@ machines define the path to implementations outside the Clojure ecosystem.
 > JVM overlay passes a real three-peer rejoin test, and a Python sender now
 > completes a real authenticated, fsync-backed transfer into the JVM runtime;
 > the reverse JVM-provider/Python-receiver path also survives a process restart
-> after a durable piece but before its ACK.
+> after a durable piece but before its ACK. The JVM runtime also repairs an
+> offline signed publication through the negotiated portable dissemination
+> carrier over a real Noise/Kabel WebSocket.
 > Exact configured
 > `wss` gateways have a supported dial policy. Arbitrary public discovery still
 > waits on socket-level resolved-IP pinning. The authenticated transport uses
-> released Kabel 0.3.126 and Geheimnis 0.2.39 artifacts. Rotation remains
+> released Kabel 0.3.134 and Geheimnis 0.2.39 artifacts. Rotation remains
 > explicitly reserved. See
 > [release readiness](RELEASE.md) for the exact gates.
 

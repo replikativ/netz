@@ -136,7 +136,9 @@
    ;; Authorization at EVERY hop.
    ;;
    ;; `:authorize` — `(fn [{:keys [op principal topic payload]}] -> truthy)`,
-   ;; the shape defined by `kabel.authorize`.
+   ;; the shape defined by `kabel.authorize`. This pure-machine gate must answer
+   ;; synchronously; a channel is denied. Production asynchronous policy runs
+   ;; in `netz.overlay.runtime` before an event enters this reducer.
    ;;
    ;; `:principal` is the VERIFIED origin peer id, which is the principal a
    ;; self-certifying network actually has. `:payload` is present so a policy
@@ -613,8 +615,10 @@
 
 (defn- authorized?
   [state topic origin payload]
-  ((authz/gate (:opts state) {:op :publish})
-   {:principal origin :topic topic :payload payload}))
+  (let [decision ((authz/gate (:opts state) {:op :publish})
+                  {:principal origin :topic topic :payload payload})]
+    (and (not (authz/channel? decision))
+         (boolean decision))))
 
 (defn- accept-and-forward
   "Common path for a message we have not seen: record, deliver, relay."

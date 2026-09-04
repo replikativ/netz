@@ -1,5 +1,6 @@
 (ns netz.dissemination-test
   (:require [clojure.test :refer [deftest testing is]]
+            [clojure.core.async :refer [chan]]
             [netz.dissemination :as d]
             [netz.identity :as identity]
             [netz.interval-set :as is*]
@@ -449,6 +450,19 @@
       (testing "and the principal is the verified origin"
         (is (= :alice (:principal (first @seen))))
         (is (= :publish (:op (first @seen))))))))
+
+(deftest pure-authorization-never-treats-an-async-decision-as-allow
+  (let [state (d/make-state :me #{:t}
+                            {:authorize (fn [_] (chan))})
+        result (d/handler
+                state
+                {:type :message :from :peer
+                 :payload {:type :gossip :topic :t :origin :writer
+                           :epoch 0 :seq 0 :hops 0 :payload :value}}
+                {:now 0})]
+    (is (empty? (:actions result)))
+    (is (= 1 (get-in result [:state :stats :unauthorized])))
+    (is (false? (d/seen? (:state result) :writer 0 :t 0)))))
 
 (deftest a-new-subscriber-catches-up-without-waiting-for-a-timer
   (testing "the backlog arrives on connect, not on the next digest tick"

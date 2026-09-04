@@ -5,13 +5,16 @@
   behaviour is covered by `netz.overlay.integration-test`."
   (:require [boring.core :as boring]
             [clojure.test :refer [deftest testing is are]]
+            [netz.dissemination-adapter :as dissemination-adapter]
+            [netz.dissemination-wire :as dissemination-wire]
             [netz.identity :as id]
             [netz.overlay.runtime :as rt]
             [netz.sync :as sync]
             [netz.wire :as wire]
             #?@(:clj [[netz.dissemination :as d]
                       [superv.async :refer [S <??]]
-                      [clojure.core.async :refer [alts!! chan <!! >!! timeout]]])))
+                      [clojure.core.async :as async
+                       :refer [alts!! chan <!! >!! timeout close!]]])))
 
 (defn- recording-effects
   "Effects that record instead of acting."
@@ -280,6 +283,126 @@
            :portable)))
        (is (nil? (<!! out))))))
 
+#?(:clj
+   (deftest outbound-dissemination-selects-the-negotiated-portable-carrier
+     (let [identity (<!! (id/generate-identity))
+           local-id (id/peer-id (:genesis identity))
+           authority (id/authority-id (:genesis identity))
+           state (d/make-state local-id #{"db/roots"}
+                               {:authority-id authority})
+           remote-authority (apply str (repeat 64 "b"))
+           seen-policy (atom nil)
+           ctx (rt/make-runtime
+                {:id local-id :state {:dissemination state}
+                 :handler (fn [s _ _] {:state s :actions []})
+                 :effects nil
+                 :authorize-dissemination?
+                 (fn [context] (reset! seen-policy context) true)})
+           peer (atom {})
+           out (chan 1)
+           capabilities #{wire/profile-capability
+                          rt/extension-carrier-capability
+                          dissemination-wire/capability}
+           effects (rt/kabel-effects S peer ctx identity nil {})
+           unsigned {:type :gossip :topic "db/roots" :origin local-id
+                     :epoch 0 :seq 0 :hops 0
+                     :payload (id/seq->bytes [1 2 3])}
+           signed (<!! (rt/sign-gossip S identity unsigned))]
+       (rt/connections peer)
+       (swap! (:netz.overlay/connections @peer)
+              (fn [registry]
+                (-> registry
+                    (assoc-in [:by-id :remote] out)
+                    (assoc-in [:facts :remote]
+                              {:authenticated? true
+                               :authority-id remote-authority
+                               :capabilities capabilities}))))
+       ((:send! effects) :remote (rt/frame signed))
+       (let [carrier (<!! out)
+             envelope (rt/decode-extension-envelope (second carrier))
+             restored (dissemination-adapter/from-wire
+                       (d/make-state :receiver) (:payload envelope))]
+         (is (rt/extension-carrier? carrier))
+         (is (= dissemination-wire/capability (:capability envelope)))
+         (is (= "db/roots" (:topic restored)))
+         (is (= authority (:origin-authority restored)))
+         (is (= {:op :publish :direction :outbound :peer-id :remote
+                 :authority-id remote-authority
+                 :origin-authority authority :topic "db/roots"}
+                (select-keys @seen-policy
+                             [:op :direction :peer-id :authority-id
+                              :origin-authority :topic])))
+         (is (true? (<!! (rt/verify-gossip S restored))))))))
+
+#?(:clj
+   (deftest portable-dissemination-awaits-policy-and-fails-closed
+     (let [local (<!! (id/generate-identity))
+           remote (<!! (id/generate-identity))
+           remote-record (<!! (id/sign-record remote [] 1))
+           remote-id (id/peer-id (:genesis remote))
+           remote-authority (id/authority-id (:genesis remote))
+           capabilities #{wire/profile-capability
+                          rt/extension-carrier-capability
+                          dissemination-wire/capability}
+           authenticated-context
+           (atom {:netz.transport.noise/authenticated-record remote-record
+                  :netz.transport.noise/authenticated-routing-id remote-id
+                  :kabel.transport/authenticated-authority remote-authority
+                  :kabel.transport/negotiated-capabilities capabilities})
+           unsigned {:type :gossip :topic "db/roots" :origin remote-id
+                     :epoch 0 :seq 0 :hops 0
+                     :payload (id/seq->bytes [4 5 6])}
+           signed (<!! (rt/sign-gossip S remote unsigned))
+           carrier (rt/extension-carrier
+                    dissemination-wire/capability
+                    (dissemination-wire/frame->wire signed))]
+       (testing "an asynchronous allow decision preserves order into the machine"
+         (let [seen (atom nil)
+               ctx (runtime-with [] (atom []))
+               peer (atom {})
+               in (chan)
+               out (chan)]
+           ((rt/middleware
+             {:ctx ctx :identity local :addresses [] :seq-no 1
+              :authenticated-context-fn (constantly authenticated-context)
+              :authorize-dissemination?
+              (fn [context]
+                (reset! seen context)
+                (async/go (async/<! (timeout 10)) true))})
+            [S peer [in out]])
+           (>!! in carrier)
+           (let [[event port] (alts!! [(:events ctx) (timeout 1000)])]
+             (is (= (:events ctx) port))
+             (is (= :message (:type event)))
+             (is (= "db/roots" (get-in event [:payload :topic])))
+             (is (= {:op :publish :direction :inbound
+                     :frame-type :gossip :authority-id remote-authority
+                     :origin-authority remote-authority
+                     :topic "db/roots"}
+                    (select-keys @seen
+                                 [:op :direction :frame-type
+                                  :authority-id :origin-authority :topic]))))
+           (close! in)
+           (close! out)))
+
+       (testing "a policy that never settles is bounded and denies"
+         (let [ctx (runtime-with [] (atom []))
+               peer (atom {})
+               in (chan)
+               out (chan)]
+           ((rt/middleware
+             {:ctx ctx :identity local :addresses [] :seq-no 1
+              :authenticated-context-fn (constantly authenticated-context)
+              :authorize-dissemination? (fn [_] (chan))
+              :authorization-timeout-ms 20})
+            [S peer [in out]])
+           (>!! in carrier)
+           (let [[value port] (alts!! [out (timeout 1000)])]
+             (is (= out port))
+             (is (nil? value)))
+           (is (nil? (async/poll! (:events ctx))))
+           (close! in))))))
+
 (def extension-fixture
   {"v" 1
    "type" "blob/need"
@@ -455,6 +578,29 @@
          (assert-portable-extension-closes!
           normal-handler base-capabilities
           (rt/extension-carrier "example/1" payload)))
+
+       (testing "the reserved marker never falls through as application data"
+         (assert-portable-extension-closes!
+          normal-handler #{}
+          (rt/extension-carrier "example/1" payload)))
+
+       (testing "portable dissemination is deny-by-default"
+         (assert-portable-extension-closes!
+          normal-handler
+          (conj base-capabilities dissemination-wire/capability)
+          (rt/extension-carrier
+           dissemination-wire/capability
+           (dissemination-wire/frame->wire
+            {:type :interests :topics #{"db/roots"}
+             :carries #{["db/roots"]}}))))
+
+       (testing "negotiated portable dissemination rejects the native downgrade"
+         (assert-portable-extension-closes!
+          normal-handler
+          (conj base-capabilities dissemination-wire/capability)
+          {:type rt/frame-type
+           :payload {:type :interests :topics #{"db/roots"}
+                     :carries #{["db/roots"]}}}))
 
        (testing "unknown named handlers are rejected"
          (assert-portable-extension-closes!

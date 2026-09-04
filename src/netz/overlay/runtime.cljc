@@ -48,8 +48,11 @@
   (:refer-clojure :exclude [run!])
   (:require [clojure.string :as str]
             [replikativ.logging :as log]
+            [kabel.authorize :as authz]
             [netz.content :as content]
             [netz.dissemination :as d]
+            [netz.dissemination-adapter :as dissemination-adapter]
+            [netz.dissemination-wire :as dissemination-wire]
             [netz.identity :as id]
             [netz.publication :as publication]
             [netz.ratelimit :as rl]
@@ -213,7 +216,8 @@
 
   Returns a context map. Feed it events with `submit!` and start it with
   `run!`."
-  [{:keys [id state handler effects now-fn ratelimit]}]
+  [{:keys [id state handler effects now-fn ratelimit
+           authorize-dissemination? authorization-timeout-ms]}]
   {:id id
    :state (atom state)
    :handler (or handler overlay/handler)
@@ -228,6 +232,15 @@
    ;; Late-bound too, and for the same reason: what a horizon gap MEANS is the
    ;; application's business, not the transport's.
    :state-sync-fn (atom nil)
+   ;; Portable disclosure/acceptance policy is shared by the connection's
+   ;; inbound loop and the control plane's outbound action interpreter.
+   :authorize-dissemination? (or authorize-dissemination?
+                                 (constantly false))
+   :authorization-timeout-ms
+   (if (and (integer? authorization-timeout-ms)
+            (pos? authorization-timeout-ms))
+     authorization-timeout-ms
+     5000)
    ;; Optional capability-gated protocols sharing the authenticated overlay
    ;; carrier. Each handler owns its own bounded event queue/state machines;
    ;; the overlay supplies connection identity, rate limiting and routing.
@@ -479,6 +492,13 @@
           [wire/profile-capability extension-carrier-capability
            sync/capability]))
 
+(defn portable-dissemination-connection?
+  "Whether `peer-id` selected the complete portable dissemination carrier."
+  [peer peer-id]
+  (every? #(connection-supports? peer peer-id %)
+          [wire/profile-capability extension-carrier-capability
+           dissemination-wire/capability]))
+
 (defn register-extension!
   "Register one capability-gated direct protocol on a running node.
 
@@ -494,8 +514,8 @@
     (throw (ex-info "Invalid overlay extension handler"
                     {:type :netz.overlay.runtime/invalid-extension
                      :extension extension-id})))
-  (when (= sync/capability capability)
-    (throw (ex-info "The portable sync capability is reserved by Netz"
+  (when (contains? #{sync/capability dissemination-wire/capability} capability)
+    (throw (ex-info "The built-in portable capability is reserved by Netz"
                     {:type :netz.overlay.runtime/reserved-extension-capability
                      :extension extension-id
                      :capability capability})))
@@ -519,7 +539,7 @@
   wire profile and dedicated extension-carrier capability receives the portable
   carrier; older Clojure peers retain the transitional native overlay frame."
   [{:keys [ctx peer]} to capability payload]
-  (if (or (= sync/capability capability)
+  (if (or (contains? #{sync/capability dissemination-wire/capability} capability)
           (not (connection-supports? peer to capability)))
     false
     (do ((get-in ctx [:effects :send!])
@@ -791,6 +811,45 @@
   (contains? #{:sync/open :sync/chunk :sync/ack :sync/done :sync/abort}
              (:type payload)))
 
+(defn- dissemination-payload? [payload]
+  (contains? #{:interests :have :want :gossip} (:type payload)))
+
+(defn- dissemination-authorization-context
+  [peer remote direction frame]
+  (let [connection (connection-info peer remote)]
+    (cond-> {:op (case (:type frame)
+                   :gossip :publish
+                   :interests :advertise-interests
+                   :have :advertise-history
+                   :want :request-history)
+             :direction direction
+             :peer-id remote
+             ;; The immediate authenticated transport Authority and the
+             ;; publication origin are distinct for relayed gossip.
+             :authority-id (:authority-id connection)
+             :connection connection
+             :frame-type (:type frame)
+             :frame frame}
+      (:origin-authority frame)
+      (assoc :origin-authority (:origin-authority frame))
+
+      (:topic frame)
+      (assoc :topic (:topic frame))
+
+      (= :gossip (:type frame))
+      (assoc :payload (:payload frame)))))
+
+(defn- authorize-with-timeout!
+  "Await a boolean or channel policy result. Closed, timed-out and non-true
+  decisions deny; predicate exceptions remain exceptions so the connection
+  loop records them before failing closed."
+  [S authorize? context timeout-ms]
+  (go-try S
+          (let [decision (authz/decision (authorize? context))
+                deadline (timeout timeout-ms)
+                [value port] (async/alts! [decision deadline] :priority true)]
+            (and (= port decision) (true? value)))))
+
 (defn- accept-or-drop!
   "Submit an event, or close the connection if the machine cannot keep up.
 
@@ -842,12 +901,23 @@
   connection under their peer id, and funnel overlay frames into the runtime.
   Everything else passes through."
   [{:keys [ctx identity addresses seq-no require-signed? handshake-max-attempts
-           handshake-timeout-ms authenticated-context-fn authorize-sync?]
+           handshake-timeout-ms authenticated-context-fn authorize-sync?
+           authorize-dissemination? authorization-timeout-ms]
     :or {require-signed? true handshake-max-attempts 4
          handshake-timeout-ms 15000
          authorize-sync? (constantly false)}}]
   (fn [[S peer [in out] :as connection]]
     (let [authorize-sync? (or authorize-sync? (constantly false))
+          authorize-dissemination? (or authorize-dissemination?
+                                       (:authorize-dissemination? ctx)
+                                       (constantly false))
+          authorization-timeout-ms (let [configured
+                                         (or authorization-timeout-ms
+                                             (:authorization-timeout-ms ctx))]
+                                     (if (and (integer? configured)
+                                              (pos? configured))
+                                       configured
+                                       5000))
           pass-in (chan)
           pass-out (chan)
           authenticated-context (when authenticated-context-fn
@@ -1027,19 +1097,22 @@
                                  (when-let [record @pending-record]
                                    (<? S (complete! record @pending-nonce (:sig m))))))
 
-                             ;; A reserved carrier is claimed only after the
-                             ;; authenticated session negotiated profile 1.
-                             ;; Other vectors (including ordinary application
-                             ;; values) still pass through untouched.
+                             ;; The reserved marker is never application data.
+                             ;; Claim it unconditionally, then require the
+                             ;; authenticated session to have negotiated the
+                             ;; complete outer carrier. This prevents a peer
+                             ;; from smuggling a reserved frame through to an
+                             ;; application merely by omitting a capability.
                              (and (vector? m)
-                                  (= extension-carrier-type (first m))
-                                  (when-let [from @conn-peer-id]
-                                    (and (connection-supports?
-                                          peer from wire/profile-capability)
-                                         (connection-supports?
-                                          peer from
-                                          extension-carrier-capability))))
-                             (if-not (extension-carrier? m)
+                                  (= extension-carrier-type (first m)))
+                             (if-not (and @conn-peer-id
+                                          (extension-carrier? m)
+                                          (connection-supports?
+                                           peer @conn-peer-id
+                                           wire/profile-capability)
+                                          (connection-supports?
+                                           peer @conn-peer-id
+                                           extension-carrier-capability))
                                (close! out)
                                (when-let [from @conn-peer-id]
                                  (let [{:keys [capability payload] :as decoded}
@@ -1057,7 +1130,8 @@
                                    (when decoded
                                      (if (= :reject verdict)
                                        (log-rejected ctx from)
-                                       (if (= sync/capability capability)
+                                       (cond
+                                         (= sync/capability capability)
                                          (if-not (connection-supports?
                                                   peer from sync/capability)
                                            (close! out)
@@ -1096,12 +1170,39 @@
                                                ;; disclosing whether the topic
                                                ;; or profile exists.
                                                (close! out))))
+
+                                         (= dissemination-wire/capability capability)
+                                         (if-not (portable-dissemination-connection?
+                                                  peer from)
+                                           (close! out)
+                                           (let [frame (dissemination-adapter/from-wire
+                                                        (:dissemination
+                                                         @(:state ctx))
+                                                        payload)
+                                                 genuine? (or
+                                                           (not= :gossip (:type frame))
+                                                           (<? S (verify-gossip S frame)))
+                                                 authorized?
+                                                 (and genuine?
+                                                      (<? S
+                                                          (authorize-with-timeout!
+                                                           S authorize-dissemination?
+                                                           (dissemination-authorization-context
+                                                            peer from :inbound frame)
+                                                           authorization-timeout-ms)))]
+                                             (if authorized?
+                                               (accept-or-drop!
+                                                S ctx peer out from frame
+                                                (:kabel/encoded-bytes (meta m)))
+                                               (close! out))))
+
+                                         :else
                                          (case (dispatch-extension!
                                                 ctx peer from capability payload)
                                            :accepted true
-                                         ;; A named portable extension can
-                                         ;; never be an overlay or application
-                                         ;; frame. Unknown, malformed and
+                                           ;; A named portable extension can
+                                           ;; never be an overlay or application
+                                           ;; frame. Unknown, malformed and
                                            ;; handler-refused values fail closed.
                                            (:rejected :unmatched)
                                            (close! out))))))))
@@ -1119,12 +1220,15 @@
                                      verdict (<? S (meter-frame! S ctx from))]
                                  (if (= :reject verdict)
                                    (log-rejected ctx from)
-                                   (if (and (sync-payload? payload)
-                                            (portable-sync-connection? peer from))
+                                   (if (or (and (sync-payload? payload)
+                                                (portable-sync-connection? peer from))
+                                           (and (dissemination-payload? payload)
+                                                (portable-dissemination-connection?
+                                                 peer from)))
                                      ;; Once selected, the strict portable
-                                     ;; carrier is the only sync grammar on
-                                     ;; this connection. Native input would be
-                                     ;; a schema downgrade.
+                                     ;; carrier is the only grammar for that
+                                     ;; protocol on this connection. Native
+                                     ;; input would be a schema downgrade.
                                      (close! out)
                                      (case (dispatch-extension!
                                             ctx peer from nil payload)
@@ -1201,36 +1305,67 @@
   repair serves) keeps the state machine free of credentials entirely, and
   Ed25519 is deterministic, so the same message always yields the same bytes."
   [S peer ctx identity to m]
-  (if (and (gossip? m)
-           (= (:origin (:payload m)) (:id ctx))
-           (not (d/signed? (:payload m))))
-    (go
-      (let [signed (<? S (sign-gossip S identity (:payload m)))]
-        (send-frame! S peer to (assoc m :payload signed))))
-    (let [payload (:payload m)]
-      (if-not (and (= frame-type (:type m)) (sync-payload? payload))
-        (send-frame! S peer to m)
-        ;; A synchronization session pins its carrier when it opens. Never
-        ;; reinterpret a queued or later frame using mutable reconnect facts.
-        (case (sync/transport-mode payload)
-          :portable
-          (if (portable-sync-connection? peer to)
-            (send-frame! S peer to
-                         (extension-carrier
-                          sync/capability
-                          (wire/sync-frame->wire payload)))
-            (close-peer-connection! peer to))
+  (letfn [(send-routed! [m]
+            (let [payload (:payload m)]
+              (cond
+                (and (= frame-type (:type m))
+                     (dissemination-payload? payload))
+                ;; Dissemination is repairable state, so never queue a frame
+                ;; while disconnected and later reinterpret it using a new
+                ;; connection's capabilities. The immediate interests/have
+                ;; exchange after reconnect recovers everything safely.
+                (if (connection-info peer to)
+                  (if (portable-dissemination-connection? peer to)
+                    (go-try S
+                            (if (<? S
+                                    (authorize-with-timeout!
+                                     S (:authorize-dissemination? ctx)
+                                     (dissemination-authorization-context
+                                      peer to :outbound payload)
+                                     (:authorization-timeout-ms ctx)))
+                              (send-frame!
+                               S peer to
+                               (extension-carrier
+                                dissemination-wire/capability
+                                (dissemination-adapter/to-wire
+                                 (:dissemination @(:state ctx)) payload)))
+                              (close-peer-connection! peer to)))
+                    (send-frame! S peer to m))
+                  false)
 
-          :native
-          (if (and (connection-info peer to)
-                   (not (portable-sync-connection? peer to)))
-            (send-frame! S peer to m)
-            (close-peer-connection! peer to))
+                (and (= frame-type (:type m)) (sync-payload? payload))
+                ;; A synchronization session pins its carrier when it opens.
+                ;; Never reinterpret a queued or later frame using mutable
+                ;; reconnect facts.
+                (case (sync/transport-mode payload)
+                  :portable
+                  (if (portable-sync-connection? peer to)
+                    (send-frame! S peer to
+                                 (extension-carrier
+                                  sync/capability
+                                  (wire/sync-frame->wire payload)))
+                    (close-peer-connection! peer to))
 
-          ;; Runtime-originated sync always carries a pinned mode. An
-          ;; unmarked frame is an implementation error, not permission to
-          ;; guess a wire format.
-          (close-peer-connection! peer to))))))
+                  :native
+                  (if (and (connection-info peer to)
+                           (not (portable-sync-connection? peer to)))
+                    (send-frame! S peer to m)
+                    (close-peer-connection! peer to))
+
+                  ;; Runtime-originated sync always carries a pinned mode. An
+                  ;; unmarked frame is an implementation error, not permission
+                  ;; to guess a wire format.
+                  (close-peer-connection! peer to))
+
+                :else
+                (send-frame! S peer to m))))]
+    (if (and (gossip? m)
+             (= (:origin (:payload m)) (:id ctx))
+             (not (d/signed? (:payload m))))
+      (go
+        (let [signed (<? S (sign-gossip S identity (:payload m)))]
+          (send-routed! (assoc m :payload signed))))
+      (send-routed! m))))
 
 (defn websocket-address?
   "Is `address` an absolute ws/wss URL without embedded credentials?
@@ -1414,6 +1549,11 @@
   - `:authorize-sync?` — synchronous portable `sync/open` authorization over
                          authenticated connection facts, topic and profile;
                          omitted or non-true results reject the connection
+  - `:authorize-dissemination?` — boolean or core.async channel policy for
+                                 inbound and outbound portable interests,
+                                 repair and publications; defaults to deny
+  - `:authorization-timeout-ms` — maximum wait for an asynchronous portable
+                                  dissemination policy; defaults to 5000
   - `:seed`      — rng seed; derived from the peer id when absent
 
   Returns a channel yielding a context map with `:ctx` (the runtime) and
@@ -1421,7 +1561,8 @@
   [S peer {:keys [identity addresses seeds topics store recovery-store seed
                   overlay-opts require-signed? allow-address?
                   handshake-max-attempts handshake-timeout-ms
-                  authenticated-context-fn authorize-sync?]}]
+                  authenticated-context-fn authorize-sync?
+                  authorize-dissemination? authorization-timeout-ms]}]
   (go-try S
           (let [stored-identity (when (and (nil? identity) store)
                                   (<? S (store/-load store :identity)))
@@ -1453,7 +1594,10 @@
                           ;; mitigation: peers that behaved well before start
                           ;; ahead of strangers after a restart.
                           (cond-> book (assoc-in [:membership :book] book)))
-                ctx (make-runtime {:id peer-id :state state :effects nil})
+                ctx (make-runtime
+                     {:id peer-id :state state :effects nil
+                      :authorize-dissemination? authorize-dissemination?
+                      :authorization-timeout-ms authorization-timeout-ms})
                 ctx (assoc ctx :effects
                            (kabel-effects S peer ctx identity store
                                           {:allow-address? (or allow-address?
@@ -1484,6 +1628,11 @@
                                       authenticated-context-fn
                                       :authorize-sync?
                                       (or authorize-sync? (constantly false))
+                                      :authorize-dissemination?
+                                      (or authorize-dissemination?
+                                          (constantly false))
+                                      :authorization-timeout-ms
+                                      (or authorization-timeout-ms 5000)
                                       :handshake-max-attempts (or handshake-max-attempts 4)
                                       :handshake-timeout-ms (or handshake-timeout-ms 15000)
                                       :require-signed? (if (nil? require-signed?)

@@ -12,6 +12,13 @@ may make incompatible protocol changes.
   opaque signed bytes, and reject unknown, unsorted, duplicate or unbounded
   control data. Profile 1 exposes exact text-topic carrying plus `relay_all`;
   native Clojure vector-prefix ranges remain outside the standard boundary.
+  The runtime now selects this grammar only after exact wire/carrier/profile
+  negotiation, maps full Authorities to compact routing IDs with collision
+  rejection, refuses native downgrade and reserved-carrier smuggling, and
+  applies bounded fail-closed boolean/channel policy in both directions. A real
+  Noise/Kabel test repairs a publication created while its subscriber was
+  offline. Kabel 0.3.134 also closes the concurrent unsubscribe/resubscribe
+  generation race exercised by Netz's managed pub/sub lifecycle.
 
 - Added a separately negotiated portable `netz/sync/1` carrier path and real
   bidirectional Python/JVM synchronization tests. Portable bytes16 sessions

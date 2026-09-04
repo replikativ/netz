@@ -58,7 +58,8 @@ Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
       tests, and a real http-kit/Kabel/CBOR/Noise overlay test now exist behind
       `:secure-test`. `netz.transport.secure/start!` consumes the authenticated
       connection context without the transitional hello/proof exchange. This
-      Kabel 0.3.126 contains the required transport context and Python carrier;
+      Kabel 0.3.134 contains the required transport context, Python carrier,
+      idempotent generation-safe unsubscribe, and asynchronous policy gates;
       Geheimnis 0.2.39 contains the Noise binding.
 - [x] Publication sequence, deduplication, repair, and bounded ordered delivery
       are scoped per origin/topic stream.
@@ -267,10 +268,12 @@ This extension is not part of the alpha interoperability claim yet.
       frame conversion through the separately negotiated `netz/sync/1` named
       extension, wire-profile and carrier capabilities; byte-array sessions are
       keyed by tagged content on the JVM. Named extension traffic uses the same
-      portable carrier. Dissemination now has strict JVM/JS/Python interests,
-      signed-publication, flattened `have`, and bounded `want` codecs plus a
-      shared fixture; negotiated runtime routing, Authority/routing-ID adaptation
-      and policy hooks remain. Base membership and content remain native.
+      portable carrier. Dissemination now routes strict JVM/JS/Python interests,
+      signed publications, flattened `have`, and bounded `want` through exact
+      three-capability negotiation. Its full-Authority/routing-ID adapter rejects
+      collisions, native downgrade is closed, and bounded boolean/channel policy
+      gates fail closed. A real Noise/Kabel test repairs an offline publication
+      through portable `have`/`want`. Base membership and content remain native.
 - [x] Add canonical identity, publication signature and malformed-input
       fixtures.
 - [x] Implement cryptographically bound capability/version negotiation in the
@@ -311,7 +314,7 @@ This extension is not part of the alpha interoperability claim yet.
 
 ```sh
 clojure -X:test :dirs '["test"]'
-# Released Kabel 0.3.126 and Geheimnis 0.2.39:
+# Released Kabel 0.3.134 and Geheimnis 0.2.39:
 clojure -X:secure-test :dirs '["test" "test-secure"]'
 # After installing `.[secure-client]` into the selected interpreter:
 NETZ_PYTHON=python3 clojure -X:secure-test:mixed-test :dirs '["test-mixed"]'
