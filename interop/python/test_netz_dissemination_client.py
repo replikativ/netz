@@ -7,7 +7,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from netz_protocol import (
+    CONTENT_CAPABILITY,
     CommitReceipt,
+    ContentService,
     FileFrontierStore,
     JoinSetProfile,
     MemoryFrontierStore,
@@ -16,9 +18,12 @@ from netz_protocol import (
     SyncSnapshot,
     SyncSource,
     dumps,
+    content_block_frame,
+    content_want_frame,
     genesis,
     loads,
     open_frame,
+    raw_cid,
 )
 from netz_protocol.dissemination import DISSEMINATION_CAPABILITY
 from netz_protocol.dissemination_client import (
@@ -385,6 +390,205 @@ class DisseminationClientTest(unittest.IsolatedAsyncioTestCase):
                 for context in contexts))
             await client.close()
             await asyncio.wait_for(running, timeout=1)
+
+    async def test_fetches_verified_content_on_the_live_connection(self):
+        socket = FakeSocket(CLIENT_CAPABILITIES)
+        remote = bytes([26]) * 32
+        data = b"content through the reconnecting client"
+        cid = raw_cid(data)
+        contexts = []
+
+        def authorize(context):
+            contexts.append(context)
+            return True
+
+        client = DisseminationClient(
+            identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+            expected_authority=remote, topics=("db/roots",),
+            authorize=authorize,
+        )
+        with patch("netz_protocol.dissemination_client.open_secure_websocket",
+                   return_value=socket):
+            running = asyncio.create_task(client.run(
+                "wss://peer", reconnect=False))
+            await asyncio.wait_for(client.connected.wait(), timeout=1)
+            fetching = asyncio.create_task(client.fetch_content(cid))
+            for _ in range(100):
+                if len(socket.sent) >= 3:
+                    break
+                await asyncio.sleep(0.01)
+            capability, wanted = decode_extension_frame(
+                socket.sent[2], selected_capabilities=socket.peer.capabilities)
+            self.assertEqual(CONTENT_CAPABILITY, capability)
+            self.assertEqual("content/want", wanted["type"])
+            await socket.incoming.put(encode_extension_frame(
+                CONTENT_CAPABILITY,
+                content_block_frame(wanted["request"], cid, data),
+                selected_capabilities=socket.peer.capabilities,
+            ))
+            result = await asyncio.wait_for(fetching, timeout=1)
+            self.assertEqual(data, result.data)
+            self.assertTrue(any(
+                context["op"] == "content/read"
+                and context["direction"] == "inbound"
+                for context in contexts))
+            await client.close()
+            await asyncio.wait_for(running, timeout=1)
+
+    async def test_content_timeout_retires_request_without_recreating_state(self):
+        socket = FakeSocket(CLIENT_CAPABILITIES)
+        client = DisseminationClient(
+            identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+            expected_authority=bytes([28]) * 32, topics=("db/roots",),
+            authorize=lambda _context: True,
+        )
+        cid = raw_cid(b"late")
+        with patch("netz_protocol.dissemination_client.open_secure_websocket",
+                   return_value=socket):
+            running = asyncio.create_task(client.run(
+                "wss://peer", reconnect=False))
+            await asyncio.wait_for(client.connected.wait(), timeout=1)
+            with self.assertRaisesRegex(DisseminationClientError, "timed out"):
+                await client.fetch_content(cid, timeout=0.01)
+            self.assertEqual({}, client.content.pending)
+            self.assertEqual({}, client._content_waiters)
+            await client.close()
+            await asyncio.wait_for(running, timeout=1)
+
+    async def test_serves_content_only_after_both_policy_layers(self):
+        socket = FakeSocket(CLIENT_CAPABILITIES)
+        remote = bytes([27]) * 32
+        data = b"authorized content service"
+        cid = raw_cid(data)
+        events = []
+
+        def transport_authorize(context):
+            if context["frame_type"].startswith("content/"):
+                events.append(("transport", context["direction"]))
+            return True
+
+        def storage_authorize(_context):
+            events.append(("storage-authorize", "inbound"))
+            return True
+
+        def get_block(requested):
+            events.append(("storage-read", "inbound"))
+            return data if requested == cid else None
+
+        client = DisseminationClient(
+            identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+            expected_authority=remote, topics=("db/roots",),
+            authorize=transport_authorize,
+            content_service=ContentService(
+                authorize=storage_authorize, get_block=get_block),
+        )
+        with patch("netz_protocol.dissemination_client.open_secure_websocket",
+                   return_value=socket):
+            running = asyncio.create_task(client.run(
+                "wss://peer", reconnect=False))
+            await asyncio.wait_for(client.connected.wait(), timeout=1)
+            await socket.incoming.put(encode_extension_frame(
+                CONTENT_CAPABILITY,
+                content_want_frame(bytes(range(16)), cid),
+                selected_capabilities=socket.peer.capabilities,
+            ))
+            for _ in range(100):
+                if len(socket.sent) >= 3:
+                    break
+                await asyncio.sleep(0.01)
+            capability, response = decode_extension_frame(
+                socket.sent[2], selected_capabilities=socket.peer.capabilities)
+            self.assertEqual(CONTENT_CAPABILITY, capability)
+            self.assertEqual("content/block", response["type"])
+            self.assertEqual(
+                [("transport", "inbound"),
+                 ("storage-authorize", "inbound"),
+                 ("storage-read", "inbound"),
+                 ("transport", "outbound")],
+                events,
+            )
+            await client.close()
+            await asyncio.wait_for(running, timeout=1)
+
+    async def test_slow_content_backend_does_not_block_dissemination(self):
+        socket = FakeSocket(CLIENT_CAPABILITIES)
+        remote = bytes([29]) * 32
+        data = b"slow content"
+        cid = raw_cid(data)
+        backend_started = asyncio.Event()
+        release_backend = asyncio.Event()
+
+        async def get_block(_cid):
+            backend_started.set()
+            await release_backend.wait()
+            return data
+
+        client = DisseminationClient(
+            identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+            expected_authority=remote, topics=("db/roots",),
+            authorize=lambda _context: True,
+            content_service=ContentService(
+                authorize=lambda _context: True, get_block=get_block),
+        )
+        with patch("netz_protocol.dissemination_client.open_secure_websocket",
+                   return_value=socket):
+            running = asyncio.create_task(client.run(
+                "wss://peer", reconnect=False))
+            await asyncio.wait_for(client.connected.wait(), timeout=1)
+            await socket.incoming.put(encode_extension_frame(
+                CONTENT_CAPABILITY,
+                content_want_frame(bytes(range(16)), cid),
+                selected_capabilities=socket.peer.capabilities,
+            ))
+            await asyncio.wait_for(backend_started.wait(), timeout=1)
+            publication = fixture_publisher().publish("db/roots", b"root")
+            await socket.incoming.put(encode_extension_frame(
+                DISSEMINATION_CAPABILITY, publication,
+                selected_capabilities=socket.peer.capabilities,
+            ))
+            delivery = await asyncio.wait_for(client.recv(), timeout=1)
+            self.assertEqual(b"root", delivery.publication["payload"])
+            self.assertEqual(2, len(socket.sent))
+            release_backend.set()
+            for _ in range(100):
+                if len(socket.sent) >= 3:
+                    break
+                await asyncio.sleep(0.01)
+            capability, response = decode_extension_frame(
+                socket.sent[2], selected_capabilities=socket.peer.capabilities)
+            self.assertEqual(CONTENT_CAPABILITY, capability)
+            self.assertEqual("content/block", response["type"])
+            await client.close()
+            await asyncio.wait_for(running, timeout=1)
+
+    async def test_content_service_failure_closes_without_reconnect(self):
+        socket = FakeSocket(CLIENT_CAPABILITIES)
+        cid = raw_cid(b"failed backend")
+
+        def fail(_cid):
+            raise OSError("storage unavailable")
+
+        client = DisseminationClient(
+            identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+            expected_authority=bytes([30]) * 32, topics=("db/roots",),
+            authorize=lambda _context: True,
+            content_service=ContentService(
+                authorize=lambda _context: True, get_block=fail),
+        )
+        with patch("netz_protocol.dissemination_client.open_secure_websocket",
+                   return_value=socket) as opening:
+            running = asyncio.create_task(client.run("wss://peer"))
+            await asyncio.wait_for(client.connected.wait(), timeout=1)
+            await socket.incoming.put(encode_extension_frame(
+                CONTENT_CAPABILITY,
+                content_want_frame(bytes(range(16)), cid),
+                selected_capabilities=socket.peer.capabilities,
+            ))
+            with self.assertRaisesRegex(
+                    DisseminationClientError, "content service request failed"):
+                await asyncio.wait_for(running, timeout=1)
+            self.assertEqual(1, opening.call_count)
+            self.assertTrue(socket.closed)
 
     async def test_sync_timeout_sends_abort_and_releases_session(self):
         socket = FakeSocket(CLIENT_CAPABILITIES)

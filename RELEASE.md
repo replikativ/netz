@@ -306,8 +306,11 @@ This extension is not part of the alpha interoperability claim yet.
       under TTL, per-CID, per-provider, and total-CID bounds and can try a
       randomized bounded candidate set after timeout, disconnect, or
       `dont-have`; concurrent requests cannot race past the outstanding cap.
-      Integrating content into the reconnecting Python client and active
-      multi-peer discovery remain.
+      The reconnecting Python client now multiplexes direct find/fetch and
+      authorization-first serving on its existing authenticated carrier, with
+      separate transport/storage policy, bounded request/backend timeouts and
+      bounded service tasks so slow storage cannot block dissemination.
+      Active multi-peer discovery remains.
 - [x] The optional Python secure-client prototype signs and verifies identity
       records, binds Authority IDs to authenticated Noise statics, enforces the
       expected dial target, fragments bounded inner frames, and passes a real

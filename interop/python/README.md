@@ -36,6 +36,11 @@ its data as CBOR. `netz_protocol.ContentRequester` provides bounded deadlines,
 reply correlation and disconnect cleanup. `netz_protocol.ContentService`
 authorizes an authenticated peer before consulting its injected block store or
 provider index, so policy denial does not become a content-existence oracle.
+The reusable asyncio client exposes `fetch_content` and `find_content` on its
+live authenticated connection and can install a `ContentService`; transport
+policy and storage policy are separate fail-closed gates. Request timeouts,
+disconnect cleanup, backend waits, service concurrency, and outstanding state
+are bounded. Slow storage does not block dissemination on the shared carrier.
 
 `netz_protocol.replication` implements transport-independent deterministic
 placement for the experimental durable-blob extension. The companion
@@ -169,9 +174,9 @@ complete general-purpose P2P node. Both session roles are bounded;
 the receiver is ordered and atomic, and carrier framing, identities, signed
 publications and the secure capability handshake are pinned. The optional
 `DisseminationClient` supplies authenticated subscription repair and bounded
-reconnect/backoff, durable frontiers, and bounded synchronization in both
-directions. Content exchange and multi-peer discovery remain explicit
-application work.
+reconnect/backoff, durable frontiers, bounded synchronization in both
+directions, and direct verified content exchange. Multi-peer provider discovery
+and retry remain explicit application work in Python.
 
 The experimental optional secure-client layer can be installed with:
 

@@ -56,7 +56,9 @@ may make incompatible protocol changes.
   live in an expiring cache bounded per CID, per provider, and globally;
   resilient fetches randomize and try only a configured candidate count.
   Concurrent requests atomically reserve their outstanding slots, and repeated
-  request-ID collisions fail boundedly.
+  request-ID collisions fail boundedly. The reconnecting Python client now
+  multiplexes direct content find/fetch and authorization-first serving over
+  its existing secure carrier with separate transport and storage policy.
 
 - Added an experimental private durable-blob extension: deterministic
   Authority-ID placement across owner/site failure domains, explicit durable

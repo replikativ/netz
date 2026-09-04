@@ -10,15 +10,12 @@ from netz_protocol import (
     CONTENT_CAPABILITY,
     EXTENSION_CARRIER_CAPABILITY,
     WIRE_PROFILE_CAPABILITY,
-    ContentRequester,
-    authority_id,
-    decode_extension_frame,
-    encode_extension_frame,
+    DisseminationClient,
     genesis,
     raw_cid,
 )
 from netz_protocol.crypto import DEFAULT_CAPABILITIES
-from netz_protocol.secure import LocalIdentity, open_secure_websocket
+from netz_protocol.secure import LocalIdentity
 
 DATA = b"portable content over authenticated Kabel"
 
@@ -39,26 +36,26 @@ def identity() -> LocalIdentity:
 
 async def fetch(uri: str, remote_authority: bytes) -> None:
     local = identity()
-    socket = await open_secure_websocket(
-        uri, identity=local, expected_authority=remote_authority)
-    selected = frozenset(socket.peer.capabilities)
-    requester = ContentRequester(timeout_ms=15_000)
-    request = bytes(range(16))
     cid = raw_cid(DATA)
-    want = requester.want(remote_authority, cid, now_ms=0, request=request)
+    client = DisseminationClient(
+        identity=local,
+        expected_authority=remote_authority,
+        topics=(),
+        authorize=lambda context: (
+            context["peer_authority"] == remote_authority
+            and context["op"] == "content/read"),
+        content_timeout_ms=15_000,
+        require_dissemination=False,
+    )
+    running = asyncio.create_task(client.run(uri, reconnect=False))
     try:
-        await socket.send_frame(encode_extension_frame(
-            CONTENT_CAPABILITY, want, selected_capabilities=selected))
-        capability, response = decode_extension_frame(
-            await asyncio.wait_for(socket.recv_frame(), timeout=15),
-            selected_capabilities=selected)
-        if capability != CONTENT_CAPABILITY:
-            raise RuntimeError("JVM replied under the wrong capability")
-        result = requester.receive(remote_authority, response, now_ms=1)
-        if result is None or result.data != DATA:
+        await asyncio.wait_for(client.connected.wait(), timeout=15)
+        result = await client.fetch_content(cid, timeout=15)
+        if result.data != DATA:
             raise RuntimeError("JVM returned the wrong content block")
     finally:
-        await socket.websocket.close()
+        await client.close()
+        await running
 
 
 def main() -> None:

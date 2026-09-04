@@ -23,7 +23,8 @@ machines define the path to implementations outside the Clojure ecosystem.
 > run a bounded state-sync pull on that same authenticated connection. Python
 > can also fetch a verified raw-CID block from the JVM content service, while
 > the bounded JVM requester verifies a block served by Python over the same
-> negotiated authenticated carrier.
+> negotiated authenticated carrier. Both Python directions use the reusable
+> reconnecting client with separate transport and storage authorization.
 > Exact configured
 > `wss` gateways have a supported dial policy. Arbitrary public discovery still
 > waits on socket-level resolved-IP pinning. The authenticated transport uses
