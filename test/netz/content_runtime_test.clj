@@ -158,3 +158,83 @@
           ((:disconnected! handler) peer-id)
           (is (= :disconnected (:status (async/<!! result))))
           (stop!))))))
+
+(deftest concurrent-requesters-cannot-race-past-the-outstanding-bound
+  (let [running (fake-running)]
+    (with-redefs [overlay-runtime/send-extension! (fn [& _] true)]
+      (let [{:keys [fetch! stop! pending]}
+            (content-runtime/start-requester!
+             running {:max-outstanding 8 :timeout-ms 30000})
+            results (->> (range 100)
+                         (mapv (fn [_] (future (fetch! peer-id cid))))
+                         (mapv deref))
+            immediate (keep async/poll! results)]
+        (is (= 8 (count @pending)))
+        (is (= 92 (count immediate)))
+        (is (every? #(= :overloaded (:reason %)) immediate))
+        (stop!)))))
+
+(deftest repeated-request-ids-fail-boundedly
+  (let [running (fake-running)]
+    (with-redefs [identity/random-bytes (fn [_] request)
+                  overlay-runtime/send-extension! (fn [& _] true)]
+      (let [{:keys [fetch! stop!]}
+            (content-runtime/start-requester!
+             running {:max-outstanding 2 :timeout-ms 30000})
+            first-result (fetch! peer-id cid)
+            collision (async/<!! (fetch! peer-id cid))]
+        (is (= :request-id-exhausted (:reason collision)))
+        (stop!)
+        (is (= :stopped (:status (async/<!! first-result))))))))
+
+(deftest portable-requester-learns-expires-and-fails-over-providers
+  (let [running (fake-running)
+        now (atom 100)
+        outbound (async/chan 8)
+        authority-a (identity/seq->bytes (repeat 32 2))
+        authority-b (identity/seq->bytes (repeat 32 3))
+        peer-a (identity/authority-routing-id authority-a)
+        peer-b (identity/authority-routing-id authority-b)]
+    (with-redefs [overlay-runtime/send-extension!
+                  (fn [_ to _ payload]
+                    (async/offer! outbound
+                                  [to (content-wire/frame-from-wire payload)]))]
+      (let [{:keys [find! fetch-any! providers-for stop!]}
+            (content-runtime/start-requester!
+             running {:now-fn #(deref now) :max-provider-attempts 2
+                      :provider-order-fn identity})
+            handler (service-handler running)
+            found-result (find! peer-id cid)
+            [_ find-frame] (async/<!! outbound)]
+        (is ((:receive! handler)
+             peer-id {}
+             (content-wire/frame->wire
+              {:type :content/found :request (:request find-frame) :cid cid
+               :providers [authority-a authority-b] :ttl-ms 50})))
+        (is (= :found (:status (async/<!! found-result))))
+        (is (= [peer-a peer-b] (mapv :peer (providers-for cid))))
+
+        (let [result (fetch-any! cid)
+              [first-peer first-want] (async/<!! outbound)]
+          (is (= peer-a first-peer))
+          (is ((:receive! handler)
+               first-peer {}
+               (content-wire/frame->wire
+                {:type :content/dont-have :request (:request first-want)
+                 :cid cid})))
+          (let [[second-peer second-want] (async/<!! outbound)]
+            (is (= peer-b second-peer))
+            (is ((:receive! handler)
+                 second-peer {}
+                 (content-wire/frame->wire
+                  {:type :content/block :request (:request second-want)
+                   :cid cid :data data}))))
+          (let [completed (async/<!! result)]
+            (is (= :ok (:status completed)))
+            (is (= [:not-found :ok] (mapv :status (:attempts completed))))
+            (is (identity/bufs= authority-b (:provider-authority completed)))))
+
+        (reset! now 150)
+        (is (empty? (providers-for cid)))
+        (is (= :no-providers (:reason (async/<!! (fetch-any! cid)))))
+        (stop!)))))

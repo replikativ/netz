@@ -38,6 +38,13 @@ duplication; shrinking a numeric seed would produce an unrelated execution.
 The 10/100/1,000-peer scale matrix disables traces and asserts delivery,
 traffic amplification, and peak in-flight bounds.
 
+Portable content-provider routing has a smaller pure resource model alongside
+the network simulator. It drives thousands of hostile CID/Authority hints into
+the same cache used by the JVM/JavaScript requester and asserts total-CID,
+per-CID, and per-provider limits plus exact virtual-clock expiry. Runtime tests
+then race 100 callers against the atomic outstanding-request cap and exercise
+provider failover without sockets.
+
 The profile apply boundary is also a pure machine. Its schedule tests cover
 snapshot/live cuts, per-stream reordering, slow application, item/byte
 capacity, bounded duplicate waiters, exact success values, stale generations,

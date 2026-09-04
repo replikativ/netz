@@ -197,19 +197,31 @@ A node that fetches portable blocks installs the matching requester once:
 
 ```clojure
 (def content (content-runtime/start-requester! node
-               {:max-outstanding 16 :timeout-ms 5000}))
+               {:max-outstanding 16
+                :timeout-ms 5000
+                :max-provider-attempts 4}))
 
 ;; The channel yields {:status :ok :data bytes ...}, :not-found, :timeout,
 ;; :disconnected, or :unavailable. A failed fetch can be retried at another
 ;; provider without reusing its request ID.
 (def result ((:fetch! content) provider-routing-id cid-bytes))
+
+;; A successful find stores only bounded, expiring routing hints. fetch-any!
+;; randomizes the live candidates and tries at most :max-provider-attempts.
+(def discovery-result
+  ((:find! content) discovery-peer-routing-id cid-bytes))
+;; Wait for discovery-result before starting the resilient fetch.
+(def resilient-result ((:fetch-any! content) cid-bytes))
 ```
 
 Reply correlation includes the live routing peer, random request ID, CID, and
 operation. Completion, timeout, disconnect, and shutdown each remove the entry
 before resolving the result, so a late or duplicate response cannot recreate
-state. `(:find! content)` has the same shape and returns bounded, expiring full
-Authority ID hints.
+state. Concurrent opens reserve their slots atomically. `(:find! content)` has
+the same shape and caches bounded, expiring full-Authority-ID hints under
+per-CID, per-provider, and total-CID caps. Hints only select whom to ask; every
+returned block is still accepted by its CID. `(:providers-for content)` exposes
+the currently live records for diagnostics.
 
 ## Public API
 

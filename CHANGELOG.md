@@ -49,6 +49,15 @@ may make incompatible protocol changes.
   each session pins its negotiated carrier and rejects native schema downgrade
   or reconnect-time reinterpretation.
 
+- Added the language-neutral `netz/content/1` single-block profile using
+  CIDv1/raw/SHA-256, with strict Clojure/ClojureScript and Python codecs and
+  fixtures. Authorization-first services and bounded correlated requesters pass
+  real authenticated Python/JVM fetches in both directions. Provider hints now
+  live in an expiring cache bounded per CID, per provider, and globally;
+  resilient fetches randomize and try only a configured candidate count.
+  Concurrent requests atomically reserve their outstanding slots, and repeated
+  request-ID collisions fail boundedly.
+
 - Added an experimental private durable-blob extension: deterministic
   Authority-ID placement across owner/site failure domains, explicit durable
   outbox and receipt fencing, portable piece manifests/resume bitmaps with

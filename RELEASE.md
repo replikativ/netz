@@ -302,8 +302,12 @@ This extension is not part of the alpha interoperability claim yet.
       bounded inbound serving and load consistent snapshots only after policy.
       Strict single-block content frames, bounded request correlation, and an
       authorization-first service now exist, including real Python-to-JVM and
-      JVM-to-Python fetches. Integrating them into the reconnecting client and
-      multi-peer provider discovery remain.
+      JVM-to-Python fetches. The JVM/JS requester now retains provider hints
+      under TTL, per-CID, per-provider, and total-CID bounds and can try a
+      randomized bounded candidate set after timeout, disconnect, or
+      `dont-have`; concurrent requests cannot race past the outstanding cap.
+      Integrating content into the reconnecting Python client and active
+      multi-peer discovery remain.
 - [x] The optional Python secure-client prototype signs and verifies identity
       records, binds Authority IDs to authenticated Noise statics, enforces the
       expected dial target, fragments bounded inner frames, and passes a real
