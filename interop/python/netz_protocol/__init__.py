@@ -163,6 +163,13 @@ from .content import (
     verify_block,
     want_frame as content_want_frame,
 )
+from .content_session import (
+    ContentRequester,
+    ContentResult,
+    ContentService,
+    ContentSessionError,
+    PendingRequest,
+)
 
 __all__ = [
     "CBORError",
@@ -176,6 +183,10 @@ __all__ = [
     "CommitReceipt",
     "CONTENT_CAPABILITY",
     "ContentError",
+    "ContentRequester",
+    "ContentResult",
+    "ContentService",
+    "ContentSessionError",
     "CLIENT_CAPABILITIES",
     "DISSEMINATION_CAPABILITY",
     "DISSEMINATION_CAPABILITIES",
@@ -203,6 +214,7 @@ __all__ = [
     "MemoryFrontierStore",
     "LayoutError",
     "PublicationError",
+    "PendingRequest",
     "Publisher",
     "ReceiveResult",
     "ReplicationError",
