@@ -193,6 +193,24 @@ block bytes are hashed again before they cross the connection. Calling the
 returned function unregisters the capability handler and stops its worker.
 Stopping the overlay does this automatically.
 
+A node that fetches portable blocks installs the matching requester once:
+
+```clojure
+(def content (content-runtime/start-requester! node
+               {:max-outstanding 16 :timeout-ms 5000}))
+
+;; The channel yields {:status :ok :data bytes ...}, :not-found, :timeout,
+;; :disconnected, or :unavailable. A failed fetch can be retried at another
+;; provider without reusing its request ID.
+(def result ((:fetch! content) provider-routing-id cid-bytes))
+```
+
+Reply correlation includes the live routing peer, random request ID, CID, and
+operation. Completion, timeout, disconnect, and shutdown each remove the entry
+before resolving the result, so a late or duplicate response cannot recreate
+state. `(:find! content)` has the same shape and returns bounded, expiring full
+Authority ID hints.
+
 ## Public API
 
 | Operation | Meaning |
@@ -200,6 +218,7 @@ Stopping the overlay does this automatically.
 | `generate-identity` | Create genesis, hot operational key, and recovery material |
 | `start!` / `stop!` | Own the Netz runtime lifecycle |
 | `start-content-service!` | Install authorization-first portable CID serving |
+| `start-content-requester!` | Install bounded portable CID discovery/fetching |
 | `install-pubsub!` | Select the overlay as a Kabel pub/sub transport |
 | `subscribe!` | Register topic interest and a `PSyncStrategy` |
 | `publish!` | Submit a live value; completion is local acceptance, not global delivery |

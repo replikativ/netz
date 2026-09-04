@@ -276,7 +276,9 @@ This extension is not part of the alpha interoperability claim yet.
       through portable `have`/`want`. A separately installed portable content
       service now authorizes before storage/provider lookup and serves verified
       CIDv1/raw blocks through the same authenticated carrier; Python fetches a
-      block from the JVM in the mixed-runtime gate. Base membership and the
+      block from the JVM in the mixed-runtime gate. A bounded JVM/JS requester
+      now returns explicit completion channels and correlates peer, request,
+      CID and operation across timeout and disconnect. Base membership and the
       legacy Hasch-value content machine remain native.
 - [x] Add canonical identity, publication signature and malformed-input
       fixtures.
