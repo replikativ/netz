@@ -31,8 +31,8 @@ class ContentRequesterTest(unittest.TestCase):
         with self.assertRaises(ContentSessionError):
             requester.receive(OTHER, block_frame(REQUEST, CID, DATA), now_ms=20)
         self.assertEqual("timeout", requester.expire(now_ms=110)[0].reason)
-        with self.assertRaises(ContentSessionError):
-            requester.receive(PEER, block_frame(REQUEST, CID, DATA), now_ms=112)
+        self.assertIsNone(
+            requester.receive(PEER, block_frame(REQUEST, CID, DATA), now_ms=112))
 
         requester.want(PEER, CID, now_ms=200, request=REQUEST)
         self.assertEqual("disconnected",

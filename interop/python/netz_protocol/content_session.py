@@ -106,7 +106,7 @@ class ContentRequester:
         return find_frame(request, cid)
 
     def receive(self, provider: Authority, frame: object, *,
-                now_ms: int) -> ContentResult:
+                now_ms: int) -> ContentResult | None:
         provider = _authority(provider)
         now_ms = self._now(now_ms)
         checked = validate_frame(frame)
@@ -116,9 +116,13 @@ class ContentRequester:
         request = cast(bytes, checked["request"])
         pending = self.pending.get(request)
         if pending is None:
-            raise ContentSessionError("unsolicited or expired content response")
-        if (provider != pending.provider or checked["cid"] != pending.cid
-                or now_ms >= pending.deadline_ms):
+            # A duplicate or a reply from a retired connection can arrive
+            # after completion/expiry. It has no authority to recreate state.
+            return None
+        if now_ms >= pending.deadline_ms:
+            del self.pending[request]
+            return None
+        if provider != pending.provider or checked["cid"] != pending.cid:
             raise ContentSessionError("content response correlation failed")
         expected = ({"content/block", "content/dont-have"}
                     if pending.operation == "content/want"
