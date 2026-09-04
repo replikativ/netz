@@ -36,6 +36,20 @@
     (is (contains? (:portable-streams (:state result))
                    [:writer 0 "db/roots"]))))
 
+(deftest negotiated-dissemination-session-does-not-imply-native-protocols
+  (let [initial (o/make-state :server {:topics #{"db/roots"}})
+        {:keys [state actions]}
+        (o/handler initial {:type :dissemination-connected :peer :python}
+                   {:now 0})
+        frames (map #(nth % 2) (filter #(= :send (first %)) actions))]
+    (is (= #{:python} (:dissemination-peers state)))
+    (is (= #{:interests :have} (set (map :type frames))))
+    (is (not-any? #(= :content/announce (:type %)) frames))
+    (let [{disconnected :state}
+          (o/handler state {:type :disconnected :peer :python} {:now 1})]
+      (is (empty? (:dissemination-peers disconnected)))
+      (is (empty? (get-in disconnected [:dissemination :peers]))))))
+
 (deftest seen-tracking
   (testing "marking and testing"
     (let [s (-> (d/make-state :me)

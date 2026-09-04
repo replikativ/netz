@@ -69,6 +69,13 @@ from .dissemination import (
     validate_frame as validate_dissemination_frame,
     want_frame,
 )
+from .dissemination_session import DisseminationSession, SessionResult
+from .dissemination_client import (
+    DISSEMINATION_CAPABILITIES,
+    DisseminationClient,
+    DisseminationClientError,
+    dissemination_identity,
+)
 from .replication import (
     ReplicationError,
     domain_counts,
@@ -136,7 +143,11 @@ __all__ = [
     "BLOB_STORE_FSYNC",
     "CommitReceipt",
     "DISSEMINATION_CAPABILITY",
+    "DISSEMINATION_CAPABILITIES",
+    "DisseminationClient",
+    "DisseminationClientError",
     "DisseminationError",
+    "DisseminationSession",
     "EXTENSION_CARRIER_CAPABILITY",
     "EXTENSION_CARRIER_TYPE",
     "EXTENSION_ENVELOPE_TYPE",
@@ -163,6 +174,7 @@ __all__ = [
     "SyncReceiver",
     "SyncResponse",
     "SyncSender",
+    "SessionResult",
     "TransferAction",
     "WIRE_PROFILE_CAPABILITY",
     "authority_id",
@@ -209,6 +221,7 @@ __all__ = [
     "replication_signing_bytes",
     "replica_score",
     "domain_counts",
+    "dissemination_identity",
     "routing_id",
     "sign_publication",
     "sign_replication_statement",

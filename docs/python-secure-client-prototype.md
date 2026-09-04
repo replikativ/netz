@@ -1,6 +1,7 @@
 # Python secure-client dependency assessment
 
-Status: prototype decision record, not a production endorsement.
+Status: experimental reusable dissemination client, not a production security
+endorsement.
 
 ## Recommendation
 
