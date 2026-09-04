@@ -7,6 +7,7 @@
             [kabel.http-kit :as http-kit]
             [kabel.middleware.cbor :refer [cbor]]
             [kabel.peer :as peer]
+            [netz.dissemination-wire :as dissemination-wire]
             [netz.identity :as identity]
             [netz.overlay.runtime :as overlay-runtime]
             [netz.replication.blob :as blob]
@@ -79,7 +80,8 @@
          (delete-tree! ~target-binding)))))
 
 (defn- start-server
-  [url identity capabilities & [overlay-opts authorize-sync?]]
+  [url identity capabilities & [overlay-opts authorize-sync?
+                                authorize-dissemination?]]
   (let [id (identity/peer-id (:genesis identity))
         [app install!] (overlay-runtime/deferred-middleware)
         socket
@@ -97,6 +99,7 @@
                       :addresses [url]
                       :topics #{:blob-test}
                       :authorize-sync? authorize-sync?
+                      :authorize-dissemination? authorize-dissemination?
                       :overlay-opts
                       (merge {:membership {:require-authority? true}}
                              overlay-opts)}))]
@@ -222,6 +225,28 @@
   (let [python (or (System/getenv "NETZ_PYTHON") "python3")
         arguments
         [python "test-mixed/python/mixed_sync_sender.py"
+         "--uri" url
+         "--remote-authority" (identity/bytes->hex server-authority)]
+        builder (doto (ProcessBuilder. ^java.util.List arguments)
+                  (.redirectErrorStream true))
+        process (.start builder)
+        stream (.getInputStream process)
+        output (future (slurp stream))]
+    (try
+      (let [finished? (.waitFor process timeout-seconds TimeUnit/SECONDS)]
+        (when-not finished? (stop-process! process))
+        {:exit (when finished? (.exitValue process))
+         :output (deref output 5000 "process output did not close")
+         :timed-out? (not finished?)})
+      (finally
+        (stop-process! process)
+        (.close stream)
+        (future-cancel output)))))
+
+(defn- run-python-dissemination [url server-authority timeout-seconds]
+  (let [python (or (System/getenv "NETZ_PYTHON") "python3")
+        arguments
+        [python "test-mixed/python/mixed_dissemination_receiver.py"
          "--uri" url
          "--remote-authority" (identity/bytes->hex server-authority)]
         builder (doto (ProcessBuilder. ^java.util.List arguments)
@@ -532,5 +557,33 @@
                        [:sync :status "demo/join"])))
         (is (empty? (get-in (overlay-runtime/overlay-state (:node server))
                             [:sync :sessions]))))
+      (finally
+        (stop-node! server)))))
+
+(deftest python-client-repairs-an-offline-jvm-publication
+  (let [port (swap! port-counter inc)
+        url (str "ws://localhost:" port)
+        topic "datahike/roots/python-demo"
+        capabilities (conj noise/default-capabilities
+                           wire/profile-capability
+                           overlay-runtime/extension-carrier-capability
+                           dissemination-wire/capability)
+        server-identity (<?? S (identity/generate-identity))
+        authorize? (fn [{:keys [authority-id]}]
+                     (= python-sync-authority authority-id))
+        server (start-server url server-identity capabilities nil nil authorize?)
+        server-authority
+        (identity/authority-id-bytes (:genesis server-identity))]
+    (try
+      ;; There is no subscriber yet, so success proves initial have/want repair
+      ;; rather than merely exercising the live forwarding path.
+      (is (overlay-runtime/publish!
+           (:node server) topic (identity/utf8-bytes "root-42")))
+      (let [{:keys [exit output timed-out?]}
+            (run-python-dissemination url server-authority 30)]
+        (is (false? timed-out?) output)
+        (is (= 0 exit) output)
+        (is (= "NETZ_MIXED_DISSEMINATION_OK root-42"
+               (last (remove str/blank? (str/split-lines output))))))
       (finally
         (stop-node! server)))))

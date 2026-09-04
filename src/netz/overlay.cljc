@@ -40,6 +40,11 @@
        :or {seeds [] topics #{} relay? true}}]
   {:id id
    :rng (rng/make-rng 0)
+   ;; A standards-only peer may negotiate dissemination without implementing
+   ;; the transitional native membership or content protocols. Keep that
+   ;; authenticated session visible only to dissemination until those base
+   ;; protocols have portable profiles of their own.
+   :dissemination-peers #{}
    ;; `:carries` and `:topics` have to reach membership too, or topic-aware
    ;; peer selection is inert: `candidates`' relevance scoring compares a
    ;; peer's advertised `:carries` against what WE want, and with `:topics`
@@ -66,18 +71,28 @@
 
 (defn handler
   [state event ctx]
-  (let [;; Membership first: its connection set is dissemination's input.
+  (let [state (case (:type event)
+                :dissemination-connected
+                (update state :dissemination-peers (fnil conj #{}) (:peer event))
+
+                :disconnected
+                (update state :dissemination-peers disj (:peer event))
+
+                state)
+        ;; Membership first: its connection set is dissemination's input.
         ms (assoc (:membership state) :rng (:rng state) :id (:id state))
         {ms' :state ma :actions} (m/handler ms event ctx)
 
-        peers (keys (:connections ms'))
+        membership-peers (set (keys (:connections ms')))
+        dissemination-peers (into membership-peers
+                                  (:dissemination-peers state))
 
         ds (assoc (:dissemination state) :rng (:rng ms') :id (:id state))
-        [ds d-sync] (d/sync-peers ds peers (:now ctx))
+        [ds d-sync] (d/sync-peers ds dissemination-peers (:now ctx))
         {ds' :state da :actions} (d/handler ds event ctx)
 
         cs (assoc (:content state) :rng (:rng ds') :id (:id state))
-        [cs c-sync] (c/sync-peers cs peers)
+        [cs c-sync] (c/sync-peers cs membership-peers)
         {cs' :state ca :actions} (c/handler cs event ctx)
 
         ss (:sync state)

@@ -19,6 +19,12 @@ may make incompatible protocol changes.
   Noise/Kabel test repairs a publication created while its subscriber was
   offline. Kabel 0.3.134 also closes the concurrent unsubscribe/resubscribe
   generation race exercised by Netz's managed pub/sub lifecycle.
+  The Python package now composes these pieces into a bounded dissemination
+  session and reconnecting asyncio client with mandatory fail-closed policy,
+  periodic `have`, bounded repair serving, ordered delivery and explicit state
+  sync escalation. A real Python/JVM test repairs an offline signed root. The
+  JVM treats a negotiated portable dissemination connection as a dissemination
+  peer without implicitly exposing native membership or content protocols.
 
 - Added a separately negotiated portable `netz/sync/1` carrier path and real
   bidirectional Python/JVM synchronization tests. Portable bytes16 sessions

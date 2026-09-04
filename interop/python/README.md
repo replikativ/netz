@@ -24,8 +24,9 @@ an application-specific format. `netz_protocol.dissemination` adds the strict
 `netz/dissemination/1` `interests`, flattened `have`, and bounded `want` frames,
 plus canonical constructors and a bounded per-stream ordered receiver. The
 control schemas use full Authority IDs and share an exact fixture with the JVM
-and JavaScript codecs; live subscription and repair orchestration remain the
-next client layer.
+and JavaScript codecs. `netz_protocol.DisseminationSession` composes them into
+bounded transport-independent interests, recent history, anti-entropy, repair,
+ordered delivery, and state-sync escalation.
 
 `netz_protocol.replication` implements transport-independent deterministic
 placement for the experimental durable-blob extension. The companion
@@ -156,11 +157,13 @@ NETZ_PYTHON=python3 clojure -X:secure-test:mixed-test :dirs '["test-mixed"]'
 ```
 
 This is intentionally a protocol core plus a conformance carrier, not yet a
-high-level reconnecting application client. Both session roles are bounded;
+complete general-purpose P2P node. Both session roles are bounded;
 the receiver is ordered and atomic, and carrier framing, identities, signed
-publications and the secure capability handshake are pinned. Transport
-orchestration for subscription repair, content exchange, discovery policy, and
-reconnect/backoff remains explicit application-client work.
+publications and the secure capability handshake are pinned. The optional
+`DisseminationClient` supplies authenticated subscription repair and bounded
+reconnect/backoff. Unified synchronization orchestration, content exchange,
+durable subscription frontiers, and multi-peer discovery remain explicit
+application work.
 
 The experimental optional secure-client layer can be installed with:
 
@@ -183,3 +186,46 @@ Noise primitive already shares the exact Cacophony transcript fixture used by
 Geheimnis. `spec/fixtures/netz-kabel-noise-binding-1.json` additionally pins the
 normative offer, identities, capability selection, authenticated handshake and
 fragmented serializer-14 carrier for the JVM/CLJS suite to consume.
+
+The same extra provides a fail-closed asyncio dissemination client. Policy is
+mandatory and sees the authenticated immediate peer separately from a relayed
+publication's signed origin:
+
+```python
+import asyncio
+
+from netz_protocol import DisseminationClient
+from netz_protocol.secure import LocalIdentity
+
+remote = bytes.fromhex("00" * 32)  # replace with the expected Authority ID
+
+def authorize(context):
+    if context["peer_authority"] != remote:
+        return False
+    return (context["frame_type"] != "gossip"
+            or (context["origin_authority"] == remote
+                and context["topic"] == "datahike/roots/example"))
+
+client = DisseminationClient(
+    identity=LocalIdentity(genesis=my_genesis,
+                           operational_private=my_private_key),
+    expected_authority=remote,
+    topics=("datahike/roots/example",),
+    authorize=authorize,
+)
+
+async def main():
+    running = asyncio.create_task(client.run("wss://peer.example/netz"))
+    publication = await client.recv()
+    await persist_root(publication["payload"])
+    await client.close()
+    await running
+```
+
+The session frontier is in-memory in this alpha. A consumer should persist a
+delivered root before relying on it, and handle `recv_state_sync()` when recent
+history cannot close a gap. Crash-safe application acknowledgements and
+restored subscription frontiers are deliberately not claimed yet.
+Publishing is opt-in with `publish=True` and requires an explicitly managed
+`epoch`; silently restarting a publisher at sequence zero in the same epoch
+would create an ambiguous signed stream.

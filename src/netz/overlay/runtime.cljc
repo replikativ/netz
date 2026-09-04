@@ -992,20 +992,26 @@
                        (= routing-id (:netz/peer-id record))
                        (= authority (:netz/authority-id record)))
                   (do
-                    (reset! conn-peer-id
-                            (register!
-                             S peer routing-id out
-                             {:authenticated? true
-                              :transport :noise
-                              :routing-id routing-id
-                              :authority-id authority
-                              :capabilities
-                              (set (or (:kabel.transport/negotiated-capabilities
-                                        facts)
-                                       #{}))
-                              :identity-record record
-                              :handshake-hash
-                              (:netz.transport.noise/handshake-hash facts)}))
+                    (let [capabilities
+                          (set (or (:kabel.transport/negotiated-capabilities facts)
+                                   #{}))]
+                      (reset! conn-peer-id
+                              (register!
+                               S peer routing-id out
+                               {:authenticated? true
+                                :transport :noise
+                                :routing-id routing-id
+                                :authority-id authority
+                                :capabilities capabilities
+                                :identity-record record
+                                :handshake-hash
+                                (:netz.transport.noise/handshake-hash facts)}))
+                      (when (every? capabilities
+                                    [wire/profile-capability
+                                     extension-carrier-capability
+                                     dissemination-wire/capability])
+                        (submit! ctx {:type :dissemination-connected
+                                      :peer routing-id})))
                     (reset! handshake-state :complete)
                     (go-try S
                             (doseq [app @pending-app]

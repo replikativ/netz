@@ -371,6 +371,8 @@
                 (async/go (async/<! (timeout 10)) true))})
             [S peer [in out]])
            (>!! in carrier)
+           (is (= {:type :dissemination-connected :peer remote-id}
+                  (<!! (:events ctx))))
            (let [[event port] (alts!! [(:events ctx) (timeout 1000)])]
              (is (= (:events ctx) port))
              (is (= :message (:type event)))
@@ -397,6 +399,8 @@
               :authorization-timeout-ms 20})
             [S peer [in out]])
            (>!! in carrier)
+           (is (= {:type :dissemination-connected :peer remote-id}
+                  (<!! (:events ctx))))
            (let [[value port] (alts!! [out (timeout 1000)])]
              (is (= out port))
              (is (nil? value)))
