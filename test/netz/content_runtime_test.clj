@@ -1,6 +1,7 @@
 (ns netz.content-runtime-test
   (:require [clojure.core.async :as async]
             [clojure.test :refer [deftest is testing]]
+            [netz.content-provider :as content-provider]
             [netz.content-runtime :as content-runtime]
             [netz.content-wire :as content-wire]
             [netz.identity :as identity]
@@ -70,6 +71,28 @@
         (is (zero? @reads))
         (stop!)))))
 
+(deftest denied-announcements-never-reach-admission-or-cache
+  (let [running (fake-running)
+        admissions (atom 0)
+        cache (atom (content-provider/make-cache))
+        disconnected (async/promise-chan)]
+    (with-redefs [overlay-runtime/disconnect-peer!
+                  (fn [_ peer] (async/put! disconnected peer) false)]
+      (let [stop! (content-runtime/start-service!
+                   running
+                   {:authorize? (constantly false)
+                    :get-block (constantly nil)
+                    :accept-announcement!
+                    (fn [_] (swap! admissions inc) true)
+                    :provider-cache cache
+                    :now-fn (constantly 100)})
+            handler (service-handler running)]
+        (is (offer! handler {:type :content/announce :cids [cid]}))
+        (is (= peer-id (async/<!! disconnected)))
+        (is (zero? @admissions))
+        (is (empty? (content-provider/providers-for @cache cid 100)))
+        (stop!)))))
+
 (deftest backend-results-must-pass-wire-integrity-checks
   (testing "a corrupt provider result closes the requesting connection"
     (let [running (fake-running)
@@ -105,6 +128,46 @@
         (let [response (content-wire/frame-from-wire (async/<!! sent))]
           (is (= :content/found (:type response)))
           (is (= 10000 (:ttl-ms response)))
+          (is (identity/bufs= authority (first (:providers response)))))
+        (stop!)))))
+
+(deftest authorized-announcements-feed-bounded-two-hop-finds
+  (let [running (fake-running)
+        cache (atom (content-provider/make-cache))
+        events (atom [])
+        called (async/promise-chan)
+        accepted (async/promise-chan)
+        sent (async/promise-chan)]
+    (with-redefs [overlay-runtime/send-extension!
+                  (fn [_ _ _ payload] (async/put! sent payload) true)
+                  overlay-runtime/disconnect-peer! (fn [& _] false)]
+      (let [stop! (content-runtime/start-service!
+                   running
+                   {:authorize? (fn [context]
+                                  (swap! events conj [:authorize (:op context)])
+                                  true)
+                    :get-block (constantly nil)
+                    :accept-announcement!
+                    (fn [context]
+                      (swap! events conj [:accept (:cids context)])
+                      (async/put! called true)
+                      accepted)
+                    :provider-cache cache
+                    :announcement-ttl-ms 50
+                    :provider-ttl-ms 40
+                    :now-fn (constantly 100)})
+            handler (service-handler running)]
+        (is (offer! handler {:type :content/announce :cids [cid]}))
+        (is (true? (async/<!! called)))
+        (is (= [[:authorize :content/announce] [:accept [cid]]]
+               @events))
+        (async/>!! accepted true)
+        ;; FIFO service processing ensures the accepted announcement is cached
+        ;; before the following lookup is served.
+        (is (offer! handler {:type :content/find :request request :cid cid}))
+        (let [response (content-wire/frame-from-wire (async/<!! sent))]
+          (is (= :content/found (:type response)))
+          (is (= 40 (:ttl-ms response)))
           (is (identity/bufs= authority (first (:providers response)))))
         (stop!)))))
 
@@ -237,4 +300,106 @@
         (reset! now 150)
         (is (empty? (providers-for cid)))
         (is (= :no-providers (:reason (async/<!! (fetch-any! cid)))))
+        (stop!)))))
+
+(deftest connected-discovery-is-capability-filtered-bounded-and-fetches
+  (let [running (fake-running)
+        peer-a #uuid "02020202-0202-0202-0202-020202020202"
+        peer-b #uuid "03030303-0303-0303-0303-030303030303"
+        peer-c #uuid "04040404-0404-0404-0404-040404040404"
+        provider-authority (identity/seq->bytes (repeat 32 9))
+        provider-peer (identity/authority-routing-id provider-authority)
+        outbound (async/chan 8)]
+    (with-redefs [overlay-runtime/portable-extension-connection?
+                  (fn [_ peer _] (not= peer peer-c))
+                  overlay-runtime/send-extension!
+                  (fn [_ to _ payload]
+                    (async/offer! outbound
+                                  [to (content-wire/frame-from-wire payload)]))]
+      (let [{:keys [announce-connected! discover! discover-and-fetch! stop!]}
+            (content-runtime/start-requester!
+             running {:connected-peers-fn #(vector peer-a peer-b peer-c)
+                      :peer-order-fn identity
+                      :provider-order-fn identity
+                      :discovery-parallelism 1
+                      :discovery-min-providers 1
+                      :max-announcement-peers 1})
+            handler (service-handler running)
+            announcement (announce-connected! [cid])
+            [announced-peer announce-frame] (async/<!! outbound)]
+        (is (= :ok (:status announcement)))
+        (is (= [peer-a] (:attempted announcement)))
+        (is (= peer-a announced-peer))
+        (is (= :content/announce (:type announce-frame)))
+
+        (let [result (discover! cid)
+              [first-peer first-find] (async/<!! outbound)]
+          (is (= peer-a first-peer))
+          (is ((:receive! handler)
+               first-peer {}
+               (content-wire/frame->wire
+                {:type :content/found :request (:request first-find) :cid cid
+                 :providers [] :ttl-ms 50})))
+          (let [[second-peer second-find] (async/<!! outbound)]
+            (is (= peer-b second-peer))
+            (is ((:receive! handler)
+                 second-peer {}
+                 (content-wire/frame->wire
+                  {:type :content/found :request (:request second-find) :cid cid
+                   :providers [provider-authority] :ttl-ms 50}))))
+          (let [discovered (async/<!! result)]
+            (is (= :found (:status discovered)))
+            (is (= [peer-a peer-b] (:queried discovered)))
+            (is (= [provider-peer] (mapv :peer (:providers discovered))))))
+
+        (let [result (discover-and-fetch! cid)
+              [to want] (async/<!! outbound)]
+          (is (= provider-peer to))
+          (is (= :content/want (:type want)))
+          (is ((:receive! handler)
+               to {}
+               (content-wire/frame->wire
+                {:type :content/block :request (:request want)
+                 :cid cid :data data})))
+          (let [fetched (async/<!! result)]
+            (is (= :ok (:status fetched)))
+            (is (empty? (get-in fetched [:discovery :queried])))))
+        (stop!)))))
+
+(deftest discovery-fanout-remains-bounded-with-a-large-peer-view
+  (let [running (fake-running)
+        peers (mapv #(java.util.UUID. 0 %) (range 1 101))
+        outbound (async/chan 16)
+        pending-ref (atom nil)
+        max-in-flight (atom 0)]
+    (with-redefs [overlay-runtime/portable-extension-connection?
+                  (fn [& _] true)
+                  overlay-runtime/send-extension!
+                  (fn [_ to _ payload]
+                    (when-let [pending @pending-ref]
+                      (swap! max-in-flight max (count @pending)))
+                    (async/offer! outbound
+                                  [to (content-wire/frame-from-wire payload)]))]
+      (let [{:keys [discover! pending stop!]}
+            (content-runtime/start-requester!
+             running {:connected-peers-fn (constantly peers)
+                      :peer-order-fn identity
+                      :max-discovery-peers 8
+                      :discovery-parallelism 2
+                      :timeout-ms 30000})
+            _ (reset! pending-ref pending)
+            result (discover! cid)
+            handler (service-handler running)]
+        (dotimes [_ 8]
+          (let [[peer find-frame] (async/<!! outbound)]
+            (is ((:receive! handler)
+                 peer {}
+                 (content-wire/frame->wire
+                  {:type :content/found :request (:request find-frame)
+                   :cid cid :providers [] :ttl-ms 50})))))
+        (let [completed (async/<!! result)]
+          (is (= :not-found (:status completed)))
+          (is (= (subvec peers 0 8) (:queried completed)))
+          (is (= 2 @max-in-flight))
+          (is (nil? (async/poll! outbound))))
         (stop!)))))

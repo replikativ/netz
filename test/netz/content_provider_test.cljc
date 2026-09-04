@@ -40,6 +40,18 @@
     (is (= 23 (:expires-at (first (provider/providers-for cache cid-a 3)))))
     (is (= {:learned 1 :refused 0 :expired 0} (:stats cache)))))
 
+(deftest one-provider-announcement-obeys-every-cache-bound
+  (let [cache (provider/remember-provider-cids
+               (provider/make-cache {:max-keys 2
+                                     :max-keys-per-provider 1})
+               [cid-a cid-b cid-c] authority-a 10 100)]
+    (is (= [authority-a]
+           (mapv :authority (provider/providers-for cache cid-a 100))))
+    (is (empty? (provider/providers-for cache cid-b 100)))
+    (is (empty? (provider/providers-for cache cid-c 100)))
+    (is (= {:learned 1 :refused 2 :expired 0} (:stats cache)))
+    (is (empty? (provider/providers-for cache cid-a 110)))))
+
 (deftest malformed-records-fail-closed
   (testing "CID, Authority, TTL and clock are exact"
     (doseq [args [[(identity/seq->bytes [1]) authority-a 1 0]

@@ -111,6 +111,18 @@
               (remember-record current cid authority ttl-ms now-ms))
             cache authorities)))
 
+(defn remember-provider-cids
+  "Remember that one authenticated provider announced several CIDs.
+
+  Expiry is computed once and every record still passes the same per-CID,
+  per-provider, and global limits as solicited provider hints."
+  [cache cids authority ttl-ms now-ms]
+  (let [cache (expire cache now-ms)]
+    (reduce (fn [current cid]
+              (valid-record! cid authority ttl-ms now-ms)
+              (remember-record current cid authority ttl-ms now-ms))
+            cache cids)))
+
 (defn providers-for
   "Return live provider records in deterministic Authority-ID order."
   [cache cid now-ms]
