@@ -510,15 +510,63 @@ members but MUST NOT select them.
 
 ## 10. Content exchange
 
-Content identifiers in the standards profile are multicodec CIDs. The initial
-required hash is SHA-256. Blocks are opaque byte strings and MUST hash to the
-requested CID before storage or forwarding.
+The capability for the initial portable content profile is `netz/content/1`.
+It defines discovery and transfer of single immutable blocks. It does not
+define an application object model or require a block to contain CBOR.
 
-`content/find`, `content/found`, `content/want`, `content/block`,
-`content/dont-have`, `content/want-tree`, `content/tree-batch` and
-`content/tree-done` retain the reference implementation's semantics. Requests,
-batches, retries and provider records are bounded. A tree request MUST have a
-deadline and MUST retry another provider after timeout or disconnect.
+Every profile-1 content identifier is the following 36-byte CIDv1 binary value:
+
+```text
+0x01 0x55 0x12 0x20 || SHA-256(block)
+```
+
+The four prefix bytes are, in order, CID version 1, the `raw` multicodec, the
+`sha2-256` multihash code, and the 32-byte digest length. Text CID encodings are
+not carried in profile-1 frames. A receiver MUST reject any other CID version,
+codec, hash algorithm or digest width. This deliberately narrow mandatory
+profile provides one interoperable baseline; a future capability can negotiate
+additional registered multicodecs without changing these frames.
+
+Blocks are opaque byte strings of at most 1 MiB. They may contain deterministic
+CBOR, encrypted Konserve data, Git-compatible objects, or application-specific
+bytes. A receiver MUST recompute the CID and compare it with the requested CID
+before storage, delivery or forwarding. Application keys, this CID, and the
+domain-separated addresses used by the durable-blob profile are distinct.
+
+All maps below are closed: an implementation MUST reject missing or unknown
+fields. `request` is an opaque, connection-local 16-byte identifier generated
+by the requester. Responses MUST echo it and a receiver MUST match both
+`request` and `cid` to an outstanding request before accepting a response.
+
+| Type | Additional fields | Meaning |
+|---|---|---|
+| `content/announce` | `cids`: sorted unique array of at most 256 CIDs | Sender claims it can currently serve the blocks. |
+| `content/find` | `request`, `cid` | Ask for provider hints for one CID. |
+| `content/found` | `request`, `cid`, `providers`, `ttl_ms` | Return up to 64 sorted unique full 32-byte Authority IDs and a non-negative TTL no greater than 1,200,000 ms. |
+| `content/want` | `request`, `cid` | Request one block from this identified peer. |
+| `content/block` | `request`, `cid`, `data` | Return the verified opaque block bytes. |
+| `content/dont-have` | `request`, `cid` | Complete the request negatively. |
+
+Each map also carries `"v": 1` and its text `"type"`. CID and Authority ID
+array order is ascending unsigned byte order. Empty announcement and provider
+arrays are valid. Provider hints expire locally no later than the advertised
+TTL; announcements without a TTL use a bounded local lifetime. They are routing
+information, not authorization to read data.
+An implementation MUST authorize an identified requester according to local
+policy before disclosing providers or block bytes.
+
+Request tables, retries, queued sends and aggregate buffered block bytes MUST
+be bounded. A request MUST have a deadline. On timeout, disconnect, hash
+mismatch or `content/dont-have`, a requester may retry a different known
+provider under a fresh request ID. A late response to an expired request is
+ignored.
+
+The native reference implementation also has `content/want-tree`,
+`content/tree-batch` and `content/tree-done`. Those frames are not part of
+`netz/content/1`: portable DAG traversal needs to specify link extraction,
+batch accounting and partial completion independently of a Clojure value
+model. Applications can already traverse a DAG by issuing bounded single-block
+requests for links interpreted by their own content codec.
 
 Two-hop provider discovery is the draft-00 baseline. A DHT is an optional
 routing provider, not part of the core protocol.

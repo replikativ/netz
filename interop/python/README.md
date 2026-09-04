@@ -28,6 +28,12 @@ and JavaScript codecs. `netz_protocol.DisseminationSession` composes them into
 bounded transport-independent interests, recent history, anti-entropy, repair,
 ordered delivery, and state-sync escalation.
 
+`netz_protocol.content` implements the strict `netz/content/1` single-block
+profile: CIDv1/raw/SHA-256 construction, bounded provider discovery and
+request-correlated transfer. Block contents remain opaque and are verified
+before delivery; using this profile does not require an application to encode
+its data as CBOR.
+
 `netz_protocol.replication` implements transport-independent deterministic
 placement for the experimental durable-blob extension. The companion
 `netz_protocol.replication_wire` module validates the frozen retention, lease,
