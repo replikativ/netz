@@ -31,6 +31,11 @@ may make incompatible protocol changes.
   corrupt records, and never advances memory when persistence fails. Restart,
   contiguous-commit, mutation, regression and stale-queue tests pin its
   at-least-once semantics.
+  The same reconnecting client now multiplexes bounded outbound
+  `netz/sync/1` pulls on its authenticated connection, applies mandatory
+  peer/topic/profile policy to every frame, aborts timed-out sessions, and
+  persists only locally committed profile frontiers before returning repaired
+  state. The prior one-shot JVM-to-Python conformance peer now uses this API.
 
 - Added a separately negotiated portable `netz/sync/1` carrier path and real
   bidirectional Python/JVM synchronization tests. Portable bytes16 sessions

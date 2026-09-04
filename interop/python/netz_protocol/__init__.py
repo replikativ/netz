@@ -71,10 +71,12 @@ from .dissemination import (
 )
 from .dissemination_session import DisseminationSession, SessionResult
 from .dissemination_client import (
+    CLIENT_CAPABILITIES,
     DISSEMINATION_CAPABILITIES,
     Delivery,
     DisseminationClient,
     DisseminationClientError,
+    SyncPullResult,
     dissemination_identity,
 )
 from .frontier_store import (
@@ -152,6 +154,7 @@ __all__ = [
     "BLOB_STORE_BEST_EFFORT",
     "BLOB_STORE_FSYNC",
     "CommitReceipt",
+    "CLIENT_CAPABILITIES",
     "DISSEMINATION_CAPABILITY",
     "DISSEMINATION_CAPABILITIES",
     "Delivery",
@@ -187,6 +190,7 @@ __all__ = [
     "SyncError",
     "SYNC_CAPABILITY",
     "SyncProfile",
+    "SyncPullResult",
     "SyncReceiver",
     "SyncResponse",
     "SyncSender",

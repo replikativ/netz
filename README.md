@@ -19,7 +19,8 @@ machines define the path to implementations outside the Clojure ecosystem.
 > after a durable piece but before its ACK. The JVM runtime also repairs an
 > offline signed publication through the negotiated portable dissemination
 > carrier over a real Noise/Kabel WebSocket, and the Python subscriber can
-> restore application-committed frontiers from an atomic fsynced record.
+> restore application-committed frontiers from an atomic fsynced record and
+> run a bounded state-sync pull on that same authenticated connection.
 > Exact configured
 > `wss` gateways have a supported dial policy. Arbitrary public discovery still
 > waits on socket-level resolved-IP pinning. The authenticated transport uses
