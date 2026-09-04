@@ -1,15 +1,17 @@
 import asyncio
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from netz_protocol import Publisher, genesis
+from netz_protocol import FileFrontierStore, MemoryFrontierStore, Publisher, genesis
 from netz_protocol.dissemination import DISSEMINATION_CAPABILITY
 from netz_protocol.dissemination_client import (
     DISSEMINATION_CAPABILITIES,
     DisseminationClient,
+    DisseminationClientError,
 )
 from netz_protocol.extension import decode_extension_frame, encode_extension_frame
 from netz_protocol.secure import LocalIdentity
@@ -51,6 +53,22 @@ class FakeSocket:
         if not self.closed:
             self.closed = True
             await self.incoming.put(ConnectionError("closed"))
+
+
+class FailingFrontierStore:
+    async def load_frontiers(self):
+        return {}
+
+    async def save_frontiers(self, _frontiers):
+        raise OSError("disk unavailable")
+
+
+class CorruptFrontierStore:
+    async def load_frontiers(self):
+        raise ValueError("corrupt")
+
+    async def save_frontiers(self, _frontiers):
+        raise AssertionError("unreachable")
 
 
 class DisseminationClientTest(unittest.IsolatedAsyncioTestCase):
@@ -97,7 +115,8 @@ class DisseminationClientTest(unittest.IsolatedAsyncioTestCase):
                 selected_capabilities=selected,
             ))
             delivered = await asyncio.wait_for(client.recv(), timeout=1)
-            self.assertEqual(b"root", delivered["payload"])
+            self.assertEqual(b"root", delivered.publication["payload"])
+            await delivered.commit()
             self.assertTrue(any(value["direction"] == "inbound"
                                 and value.get("origin_authority") == publication["origin"]
                                 for value in contexts))
@@ -140,7 +159,8 @@ class DisseminationClientTest(unittest.IsolatedAsyncioTestCase):
                 DISSEMINATION_CAPABILITY, publication,
                 selected_capabilities=first.peer.capabilities,
             ))
-            await asyncio.wait_for(client.recv(), timeout=1)
+            delivery = await asyncio.wait_for(client.recv(), timeout=1)
+            await delivery.commit()
             await first.incoming.put(ConnectionError("partition"))
             for _ in range(100):
                 if opening.call_count >= 2 and len(second.sent) >= 2:
@@ -153,6 +173,130 @@ class DisseminationClientTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([[0, 0]], announced[1]["streams"][0]["ranges"])
             await client.close()
             await asyncio.wait_for(running, timeout=1)
+
+    async def test_committed_frontier_restores_after_process_restart(self):
+        remote = bytes([11]) * 32
+        publication = fixture_publisher().publish("db/roots", b"durable")
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "frontiers.cbor"
+            first = FakeSocket()
+            client = DisseminationClient(
+                identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+                expected_authority=remote, topics=("db/roots",),
+                authorize=lambda _context: True,
+                frontier_store=FileFrontierStore(path),
+            )
+            with patch("netz_protocol.dissemination_client.open_secure_websocket",
+                       return_value=first):
+                running = asyncio.create_task(client.run(
+                    "wss://peer", reconnect=False))
+                await asyncio.wait_for(client.connected.wait(), timeout=1)
+                await first.incoming.put(encode_extension_frame(
+                    DISSEMINATION_CAPABILITY, publication,
+                    selected_capabilities=first.peer.capabilities,
+                ))
+                delivery = await asyncio.wait_for(client.recv(), timeout=1)
+                self.assertFalse(path.exists(),
+                                 "network receipt must not commit application state")
+                await delivery.commit()
+                self.assertTrue(path.exists())
+                await client.close()
+                await asyncio.wait_for(running, timeout=1)
+
+            second = FakeSocket()
+            restored = DisseminationClient(
+                identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+                expected_authority=remote, topics=("db/roots",),
+                authorize=lambda _context: True,
+                frontier_store=FileFrontierStore(path),
+            )
+            with patch("netz_protocol.dissemination_client.open_secure_websocket",
+                       return_value=second):
+                running = asyncio.create_task(restored.run(
+                    "wss://peer", reconnect=False))
+                await asyncio.wait_for(restored.connected.wait(), timeout=1)
+                selected = second.peer.capabilities
+                announced = [decode_extension_frame(
+                    value, selected_capabilities=selected)[1]
+                    for value in second.sent[:2]]
+                self.assertEqual([[0, 0]],
+                                 announced[1]["streams"][0]["ranges"])
+                await second.incoming.put(encode_extension_frame(
+                    DISSEMINATION_CAPABILITY, publication,
+                    selected_capabilities=selected,
+                ))
+                await asyncio.sleep(0.02)
+                self.assertTrue(restored.publications.empty())
+                await restored.close()
+                await asyncio.wait_for(running, timeout=1)
+
+    async def test_commit_is_contiguous_and_captures_verified_sequence(self):
+        publisher = fixture_publisher()
+        first = publisher.publish("db/roots", b"first")
+        second = publisher.publish("db/roots", b"second")
+        client = DisseminationClient(
+            identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+            expected_authority=bytes([12]) * 32, topics=("db/roots",),
+            authorize=lambda _context: True,
+            frontier_store=MemoryFrontierStore(),
+        )
+        await client._restore()
+        first_delivery = client._delivery(first)
+        second_delivery = client._delivery(second)
+        with self.assertRaisesRegex(DisseminationClientError, "contiguous"):
+            await second_delivery.commit()
+        first_delivery.publication["seq"] = 99
+        await first_delivery.commit()
+        await second_delivery.commit()
+        stream = client.session.receiver.stream(first)
+        self.assertEqual({stream: 1}, client.committed_frontiers)
+
+    async def test_failed_store_never_advances_memory_frontier(self):
+        publication = fixture_publisher().publish("db/roots", b"root")
+        client = DisseminationClient(
+            identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+            expected_authority=bytes([13]) * 32, topics=("db/roots",),
+            authorize=lambda _context: True,
+            frontier_store=FailingFrontierStore(),
+        )
+        await client._restore()
+        with self.assertRaisesRegex(DisseminationClientError, "not persisted"):
+            await client._delivery(publication).commit()
+        self.assertEqual({}, client.committed_frontiers)
+
+    async def test_corrupt_frontier_fails_before_network_disclosure(self):
+        client = DisseminationClient(
+            identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+            expected_authority=bytes([15]) * 32, topics=("db/roots",),
+            authorize=lambda _context: True,
+            frontier_store=CorruptFrontierStore(),
+        )
+        with patch("netz_protocol.dissemination_client.open_secure_websocket") \
+                as opening:
+            with self.assertRaisesRegex(DisseminationClientError,
+                                        "could not be restored"):
+                await client.run("wss://peer", reconnect=False)
+        opening.assert_not_called()
+
+    async def test_state_sync_commit_persists_then_skips_covered_queue(self):
+        publisher = fixture_publisher()
+        first = publisher.publish("db/roots", b"first")
+        second = publisher.publish("db/roots", b"second")
+        client = DisseminationClient(
+            identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+            expected_authority=bytes([14]) * 32, topics=("db/roots",),
+            authorize=lambda _context: True,
+        )
+        await client._restore()
+        stream = client.session.receiver.stream(first)
+        await client.publications.put(client._delivery(first))
+        await client.commit_frontiers({stream: 0})
+        await client.publications.put(client._delivery(second))
+        delivery = await asyncio.wait_for(client.recv(), timeout=1)
+        self.assertEqual(1, delivery.publication["seq"])
+        await delivery.commit()
+        with self.assertRaisesRegex(DisseminationClientError, "could not be committed"):
+            await client.commit_frontiers({stream: 0})
 
 
 if __name__ == "__main__":

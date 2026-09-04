@@ -194,7 +194,7 @@ publication's signed origin:
 ```python
 import asyncio
 
-from netz_protocol import DisseminationClient
+from netz_protocol import DisseminationClient, FileFrontierStore
 from netz_protocol.secure import LocalIdentity
 
 remote = bytes.fromhex("00" * 32)  # replace with the expected Authority ID
@@ -212,20 +212,34 @@ client = DisseminationClient(
     expected_authority=remote,
     topics=("datahike/roots/example",),
     authorize=authorize,
+    frontier_store=FileFrontierStore("./netz-frontiers.cbor"),
 )
 
 async def main():
     running = asyncio.create_task(client.run("wss://peer.example/netz"))
-    publication = await client.recv()
-    await persist_root(publication["payload"])
+    delivery = await client.recv()
+    await persist_root(delivery.publication["payload"])
+    await delivery.commit()  # frontier fsync happens before this returns
     await client.close()
     await running
 ```
 
-The session frontier is in-memory in this alpha. A consumer should persist a
-delivered root before relying on it, and handle `recv_state_sync()` when recent
-history cannot close a gap. Crash-safe application acknowledgements and
-restored subscription frontiers are deliberately not claimed yet.
+The default `MemoryFrontierStore` is process-local. The optional
+`FileFrontierStore` writes canonical CBOR to a temporary file, fsyncs it,
+atomically replaces the prior record, and fsyncs its directory. It is a
+single-process reference store; a corrupt or non-regular record fails closed
+before dialing. `Delivery.commit()` records the authenticated stream and
+sequence captured at receipt, not fields in the caller-visible dictionary.
+
+Persist the application value before committing its delivery. If application
+storage succeeds but the frontier write fails, the publication may be replayed
+and application writes must therefore be idempotent. A committed frontier is
+restored before the first `have` announcement. This provides at-least-once
+recovery across process restart while retained history can close the gap; it is
+not exactly-once delivery. Handle `recv_state_sync()` when history cannot close
+a gap, atomically persist the recovered application state, then pass its
+per-stream through-sequences to `commit_frontiers()`. Serialize state-sync
+commits with application delivery handling.
 Publishing is opt-in with `publish=True` and requires an explicitly managed
 `epoch`; silently restarting a publisher at sequence zero in the same epoch
 would create an ambiguous signed stream.

@@ -287,8 +287,10 @@ This extension is not part of the alpha interoperability claim yet.
       sync escalation pass an offline-root Python/JVM test. The bounded
       cumulative-ACK sync sender/atomic receiver also exist. Real peers exercise both
       Python-initiated JVM-to-Python and JVM-initiated Python-to-JVM
-      join-semilattice transfers. Unified sync orchestration, content exchange,
-      durable subscription frontiers and multi-peer discovery remain.
+      join-semilattice transfers. Application-explicit delivery commits now use
+      a pluggable frontier store; the fsynced file reference restores before
+      dialing and passes restart and persist-before-advance tests. Unified sync
+      orchestration, content exchange and multi-peer discovery remain.
 - [x] The optional Python secure-client prototype signs and verifies identity
       records, binds Authority IDs to authenticated Noise statics, enforces the
       expected dial target, fragments bounded inner frames, and passes a real

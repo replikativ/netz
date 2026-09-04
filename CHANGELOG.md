@@ -25,6 +25,12 @@ may make incompatible protocol changes.
   sync escalation. A real Python/JVM test repairs an offline signed root. The
   JVM treats a negotiated portable dissemination connection as a dissemination
   peer without implicitly exposing native membership or content protocols.
+  Python delivery acknowledgement is now application-explicit and backed by a
+  pluggable frontier store. The single-owner file reference atomically replaces
+  fsynced deterministic-CBOR records, restores before dialing, fails closed on
+  corrupt records, and never advances memory when persistence fails. Restart,
+  contiguous-commit, mutation, regression and stale-queue tests pin its
+  at-least-once semantics.
 
 - Added a separately negotiated portable `netz/sync/1` carrier path and real
   bidirectional Python/JVM synchronization tests. Portable bytes16 sessions

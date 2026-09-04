@@ -40,8 +40,12 @@ async def receive(uri: str, remote_authority: bytes) -> bytes:
     )
     running = asyncio.create_task(client.run(uri, reconnect=False))
     try:
-        publication = await asyncio.wait_for(client.recv(), timeout=20)
-        return publication["payload"]
+        delivery = await asyncio.wait_for(client.recv(), timeout=20)
+        # A real application writes the root before this call. The conformance
+        # client has no application store, so retaining the bytes is its commit.
+        payload = delivery.publication["payload"]
+        await delivery.commit()
+        return payload
     finally:
         await client.close()
         await running

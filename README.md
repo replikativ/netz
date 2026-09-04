@@ -18,7 +18,8 @@ machines define the path to implementations outside the Clojure ecosystem.
 > the reverse JVM-provider/Python-receiver path also survives a process restart
 > after a durable piece but before its ACK. The JVM runtime also repairs an
 > offline signed publication through the negotiated portable dissemination
-> carrier over a real Noise/Kabel WebSocket.
+> carrier over a real Noise/Kabel WebSocket, and the Python subscriber can
+> restore application-committed frontiers from an atomic fsynced record.
 > Exact configured
 > `wss` gateways have a supported dial policy. Arbitrary public discovery still
 > waits on socket-level resolved-IP pinning. The authenticated transport uses
@@ -125,8 +126,8 @@ clojure -M:blob-demo
   [extension draft](spec/blob-replication-draft-00.md) — optional private replicas
 - [Konserve-backed object exchange](docs/konserve-object-exchange.md) — stack
   integration, object/ref publication boundary, and Git-like materialization
-- [Python interoperability core](interop/python/README.md) — CBOR, sync, and
-  durable-blob session API
+- [Python interoperability core](interop/python/README.md) — CBOR, sync,
+  reconnecting dissemination, and durable-blob APIs
 - [Release readiness](RELEASE.md), [security policy](SECURITY.md), and
   [changelog](CHANGELOG.md)
 

@@ -72,9 +72,19 @@ from .dissemination import (
 from .dissemination_session import DisseminationSession, SessionResult
 from .dissemination_client import (
     DISSEMINATION_CAPABILITIES,
+    Delivery,
     DisseminationClient,
     DisseminationClientError,
     dissemination_identity,
+)
+from .frontier_store import (
+    FRONTIER_TYPE,
+    FileFrontierStore,
+    FrontierStore,
+    FrontierStoreError,
+    MemoryFrontierStore,
+    decode_frontiers,
+    encode_frontiers,
 )
 from .replication import (
     ReplicationError,
@@ -144,6 +154,7 @@ __all__ = [
     "CommitReceipt",
     "DISSEMINATION_CAPABILITY",
     "DISSEMINATION_CAPABILITIES",
+    "Delivery",
     "DisseminationClient",
     "DisseminationClientError",
     "DisseminationError",
@@ -152,7 +163,11 @@ __all__ = [
     "EXTENSION_CARRIER_TYPE",
     "EXTENSION_ENVELOPE_TYPE",
     "ExtensionError",
+    "FRONTIER_TYPE",
+    "FileFrontierStore",
     "FramingError",
+    "FrontierStore",
+    "FrontierStoreError",
     "FileBlobStore",
     "IdentityError",
     "JOIN_PROFILE",
@@ -160,6 +175,7 @@ __all__ = [
     "KABEL_CBOR_SERIALIZER_ID",
     "OrderedReceiver",
     "MaterializationError",
+    "MemoryFrontierStore",
     "LayoutError",
     "PublicationError",
     "Publisher",
@@ -190,6 +206,7 @@ __all__ = [
     "decode_kabel",
     "decode_extension_envelope",
     "decode_extension_frame",
+    "decode_frontiers",
     "decode_dissemination_frame",
     "decode_websocket",
     "decode_publication",
@@ -197,6 +214,7 @@ __all__ = [
     "encode_kabel",
     "encode_extension_envelope",
     "encode_extension_frame",
+    "encode_frontiers",
     "encode_dissemination_frame",
     "encode_websocket",
     "encode_publication",
