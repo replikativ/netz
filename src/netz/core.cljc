@@ -19,6 +19,7 @@
 (def fetch-tree! runtime/fetch-tree!)
 (def start-sync! runtime/start-sync!)
 (def start-content-service! content-runtime/start-service!)
+(def start-content-requester! content-runtime/start-requester!)
 
 (defn install-pubsub!
   "Install the ordered Netz transport on a running Kabel peer."

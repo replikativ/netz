@@ -107,3 +107,51 @@
           (is (= 10000 (:ttl-ms response)))
           (is (identity/bufs= authority (first (:providers response)))))
         (stop!)))))
+
+(deftest portable-requester-correlates-and-completes-fetches
+  (let [running (fake-running)
+        outbound (atom nil)]
+    (with-redefs [overlay-runtime/send-extension!
+                  (fn [_ to capability payload]
+                    (reset! outbound [to capability payload]) true)]
+      (let [{:keys [fetch! stop! pending]}
+            (content-runtime/start-requester! running)
+            result (fetch! peer-id cid)
+            handler (service-handler running)
+            [_ capability request-wire] @outbound
+            request-frame (content-wire/frame-from-wire request-wire)
+            response {:type :content/block
+                      :request (:request request-frame) :cid cid :data data}]
+        (is (= content-wire/capability capability))
+        (is (= :content/want (:type request-frame)))
+        (is ((:receive! handler) peer-id {}
+                                 (content-wire/frame->wire response)))
+        (let [completed (async/<!! result)]
+          (is (= :ok (:status completed)))
+          (is (identity/bufs= data (:data completed))))
+        (is (empty? @pending))
+        (stop!)))))
+
+(deftest portable-requester-bounds-timeout-and-disconnect
+  (testing "one in-flight slot is explicit and expires"
+    (let [running (fake-running)]
+      (with-redefs [overlay-runtime/send-extension! (fn [& _] true)]
+        (let [{:keys [fetch! stop!]}
+              (content-runtime/start-requester!
+               running {:max-outstanding 1 :timeout-ms 5})
+              first-result (fetch! peer-id cid)
+              refused (fetch! peer-id cid)]
+          (is (= :unavailable (:status (async/<!! refused))))
+          (is (= :timeout (:status (async/<!! first-result))))
+          (stop!)))))
+
+  (testing "disconnect resolves every request for that peer"
+    (let [running (fake-running)]
+      (with-redefs [overlay-runtime/send-extension! (fn [& _] true)]
+        (let [{:keys [fetch! stop!]}
+              (content-runtime/start-requester! running)
+              result (fetch! peer-id cid)
+              handler (service-handler running)]
+          ((:disconnected! handler) peer-id)
+          (is (= :disconnected (:status (async/<!! result))))
+          (stop!))))))

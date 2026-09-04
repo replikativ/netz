@@ -7,6 +7,7 @@
   (:require [clojure.core.async :as async :refer [chan close! timeout]]
             [kabel.authorize :as authz]
             [netz.content-wire :as content-wire]
+            [netz.identity :as identity]
             [netz.overlay.runtime :as overlay-runtime]))
 
 (def default-opts
@@ -26,6 +27,9 @@
      (contains? #{:content/find :content/want}
                 (:type (content-wire/frame-from-wire payload)))
      (catch #?(:clj Throwable :cljs :default) _ false))))
+
+(defn- wire-type? [types payload]
+  (and (map? payload) (contains? types (get payload "type"))))
 
 (defn- authorization-context [peer facts frame]
   {:op (case (:type frame)
@@ -85,8 +89,7 @@
         cleanup (overlay-runtime/register-extension!
                  running ::service
                  {:capability content-wire/capability
-                  :match? #(and (map? %) (string? (get % "type"))
-                                (.startsWith (get % "type") "content/"))
+                  :match? #(wire-type? #{"content/find" "content/want"} %)
                   :valid? valid-wire-frame?
                   :receive!
                   (fn [peer facts payload]
@@ -134,3 +137,129 @@
         (recur)))
     (overlay-runtime/on-stop! running stop!)
     stop!))
+
+(defn- valid-response-wire? [payload]
+  (boolean
+   (try
+     (contains? #{:content/found :content/block :content/dont-have}
+                (:type (content-wire/frame-from-wire payload)))
+     (catch #?(:clj Throwable :cljs :default) _ false))))
+
+(defn- finish! [entry result]
+  (async/offer! (:result entry) result)
+  (close! (:result entry)))
+
+(defn start-requester!
+  "Install bounded portable find/fetch response handling.
+
+  Returns `{:fetch! f :find! f :stop! f :pending atom}`. Each operation takes
+  a routing peer ID and CID and immediately returns a one-value channel. The
+  result status is `:ok`, `:found`, `:not-found`, `:timeout`, `:disconnected`,
+  `:unavailable`, or `:stopped`."
+  [running & [{:keys [max-outstanding timeout-ms]
+               :or {max-outstanding 16 timeout-ms 5000}}]]
+  (when-not (and (integer? max-outstanding) (<= 1 max-outstanding 1024)
+                 (integer? timeout-ms) (<= 1 timeout-ms 300000))
+    (throw (ex-info "invalid portable content requester bounds"
+                    {:type :netz.content-runtime/invalid-options})))
+  (let [pending (atom {})
+        stopped? (atom false)
+        remove-entry!
+        (fn [request-key]
+          (let [removed (atom nil)]
+            (swap! pending
+                   (fn [entries]
+                     (if-let [entry (get entries request-key)]
+                       (do (reset! removed entry) (dissoc entries request-key))
+                       entries)))
+            @removed))
+        fail-peer!
+        (fn [peer status]
+          (doseq [[request-key entry] @pending
+                  :when (= peer (:peer entry))]
+            (when-let [removed (remove-entry! request-key)]
+              (finish! removed {:status status :peer peer :cid (:cid removed)}))))
+        receive!
+        (fn [peer _facts payload]
+          (let [frame (content-wire/frame-from-wire payload)
+                request-key (identity/bytes->hex (:request frame))]
+            (if-let [entry (get @pending request-key)]
+              (let [expected (if (= :content/want (:operation entry))
+                               #{:content/block :content/dont-have}
+                               #{:content/found})]
+                (if-not (and (= peer (:peer entry))
+                             (identity/bufs= (:cid frame) (:cid entry))
+                             (contains? expected (:type frame)))
+                  false
+                  (when-let [removed (remove-entry! request-key)]
+                    (finish!
+                     removed
+                     (case (:type frame)
+                       :content/block
+                       {:status :ok :peer peer :cid (:cid frame)
+                        :data (:data frame)}
+                       :content/found
+                       {:status :found :peer peer :cid (:cid frame)
+                        :providers (:providers frame) :ttl-ms (:ttl-ms frame)}
+                       :content/dont-have
+                       {:status :not-found :peer peer :cid (:cid frame)}))
+                    true)))
+              ;; Duplicate and retired-connection responses are harmless.
+              true)))
+        cleanup (overlay-runtime/register-extension!
+                 running ::requester
+                 {:capability content-wire/capability
+                  :match? #(wire-type? #{"content/found" "content/block"
+                                         "content/dont-have"} %)
+                  :valid? valid-response-wire?
+                  :receive! receive!
+                  :disconnected! #(fail-peer! % :disconnected)})
+        open!
+        (fn [operation peer cid]
+          (let [result (chan 1)]
+            (cond
+              @stopped?
+              (do (finish! {:result result}
+                           {:status :stopped :peer peer :cid cid}) result)
+
+              (not (content-wire/valid-cid? cid))
+              (do (finish! {:result result}
+                           {:status :unavailable :peer peer :cid cid
+                            :reason :invalid-cid}) result)
+
+              (>= (count @pending) max-outstanding)
+              (do (finish! {:result result}
+                           {:status :unavailable :peer peer :cid cid
+                            :reason :overloaded}) result)
+
+              :else
+              (let [request (identity/random-bytes content-wire/request-size)
+                    request-key (identity/bytes->hex request)
+                    frame {:type operation :request request :cid cid}
+                    entry {:peer peer :cid cid :operation operation
+                           :result result}]
+                (swap! pending assoc request-key entry)
+                (if (overlay-runtime/send-extension!
+                     running peer content-wire/capability
+                     (content-wire/frame->wire frame))
+                  (async/go
+                    (async/<! (timeout timeout-ms))
+                    (when-let [expired (remove-entry! request-key)]
+                      (finish! expired {:status :timeout :peer peer :cid cid})))
+                  (when-let [unavailable (remove-entry! request-key)]
+                    (finish! unavailable
+                             {:status :unavailable :peer peer :cid cid})))
+                result))))
+        stop! (fn []
+                (when (compare-and-set! stopped? false true)
+                  (cleanup)
+                  (doseq [[request-key _] @pending]
+                    (when-let [entry (remove-entry! request-key)]
+                      (finish! entry {:status :stopped :peer (:peer entry)
+                                      :cid (:cid entry)})))
+                  true))]
+    (overlay-runtime/on-stop! running stop!)
+    {:fetch! #(open! :content/want %1 %2)
+     :find! #(open! :content/find %1 %2)
+     :stop! stop!
+     :pending pending}))
