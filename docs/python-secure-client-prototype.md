@@ -1,7 +1,7 @@
 # Python secure-client dependency assessment
 
-Status: experimental reusable dissemination client, not a production security
-endorsement.
+Status: experimental reusable dissemination client with durable subscription
+frontiers, not a production security endorsement.
 
 ## Recommendation
 
