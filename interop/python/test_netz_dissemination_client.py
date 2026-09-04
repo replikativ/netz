@@ -13,8 +13,12 @@ from netz_protocol import (
     MemoryFrontierStore,
     Publisher,
     SYNC_CAPABILITY,
+    SyncSnapshot,
+    SyncSource,
     dumps,
     genesis,
+    loads,
+    open_frame,
 )
 from netz_protocol.dissemination import DISSEMINATION_CAPABILITY
 from netz_protocol.dissemination_client import (
@@ -404,6 +408,134 @@ class DisseminationClientTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(SYNC_CAPABILITY, capability)
             self.assertEqual("sync/abort", aborted["type"])
             self.assertEqual("timeout", aborted["code"])
+            await client.close()
+            await asyncio.wait_for(running, timeout=1)
+
+    async def test_serves_authorized_sync_source_on_live_connection(self):
+        socket = FakeSocket(CLIENT_CAPABILITIES)
+        snapshots = []
+        profile = JoinSetProfile()
+
+        async def snapshot(context):
+            snapshots.append(context)
+            return SyncSnapshot({"python"})
+
+        client = DisseminationClient(
+            identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+            expected_authority=bytes([19]) * 32, topics=("demo/join",),
+            authorize=lambda _context: True,
+            sync_sources=(SyncSource("demo/join", profile, snapshot),),
+        )
+        session = bytes(range(48, 64))
+        with patch("netz_protocol.dissemination_client.open_secure_websocket",
+                   return_value=socket):
+            running = asyncio.create_task(client.run(
+                "wss://peer", reconnect=False))
+            await asyncio.wait_for(client.connected.wait(), timeout=1)
+            await socket.incoming.put(encode_extension_frame(
+                SYNC_CAPABILITY,
+                open_frame(session, "demo/join", profile, {"jvm"}),
+                selected_capabilities=socket.peer.capabilities,
+            ))
+            for _ in range(100):
+                if len(socket.sent) >= 3:
+                    break
+                await asyncio.sleep(0.01)
+            capability, chunk = decode_extension_frame(
+                socket.sent[2], selected_capabilities=socket.peer.capabilities)
+            self.assertEqual(SYNC_CAPABILITY, capability)
+            self.assertEqual("sync/chunk", chunk["type"])
+            self.assertEqual(["python"], loads(chunk["data"]))
+            await socket.incoming.put(encode_extension_frame(
+                SYNC_CAPABILITY,
+                {"v": 1, "type": "sync/ack", "session": session,
+                 "through": 0},
+                selected_capabilities=socket.peer.capabilities,
+            ))
+            for _ in range(100):
+                if len(socket.sent) >= 4:
+                    break
+                await asyncio.sleep(0.01)
+            _, done = decode_extension_frame(
+                socket.sent[3], selected_capabilities=socket.peer.capabilities)
+            self.assertEqual("sync/done", done["type"])
+            served = await asyncio.wait_for(client.recv_sync_served(), timeout=1)
+            self.assertEqual(session, served.session)
+            self.assertEqual("synchronized", served.status)
+            self.assertEqual({}, client._sync_senders)
+            self.assertEqual(1, len(snapshots))
+            self.assertEqual(bytes([19]) * 32,
+                             snapshots[0]["peer_authority"])
+            await client.close()
+            await asyncio.wait_for(running, timeout=1)
+
+    async def test_denied_sync_open_never_loads_source(self):
+        socket = FakeSocket(CLIENT_CAPABILITIES)
+        loaded = False
+        profile = JoinSetProfile()
+
+        def snapshot(_context):
+            nonlocal loaded
+            loaded = True
+            return SyncSnapshot(set())
+
+        client = DisseminationClient(
+            identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+            expected_authority=bytes([20]) * 32, topics=("demo/join",),
+            authorize=lambda context: context["op"] != "synchronize",
+            sync_sources=(SyncSource("demo/join", profile, snapshot),),
+        )
+        with patch("netz_protocol.dissemination_client.open_secure_websocket",
+                   return_value=socket):
+            running = asyncio.create_task(client.run(
+                "wss://peer", reconnect=False))
+            await asyncio.wait_for(client.connected.wait(), timeout=1)
+            await socket.incoming.put(encode_extension_frame(
+                SYNC_CAPABILITY,
+                open_frame(bytes(range(64, 80)), "demo/join", profile, set()),
+                selected_capabilities=socket.peer.capabilities,
+            ))
+            with self.assertRaisesRegex(DisseminationClientError,
+                                        "authorization denied"):
+                await asyncio.wait_for(running, timeout=1)
+        self.assertFalse(loaded)
+
+    async def test_unacknowledged_served_sync_times_out_boundedly(self):
+        socket = FakeSocket(CLIENT_CAPABILITIES)
+        profile = JoinSetProfile()
+        session = bytes(range(80, 96))
+        client = DisseminationClient(
+            identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+            expected_authority=bytes([21]) * 32, topics=(),
+            authorize=lambda _context: True,
+            sync_sources=(SyncSource(
+                "demo/join", profile,
+                lambda _context: SyncSnapshot({"python"})),),
+            sync_timeout=0.01,
+            require_dissemination=False,
+        )
+        with patch("netz_protocol.dissemination_client.open_secure_websocket",
+                   return_value=socket):
+            running = asyncio.create_task(client.run(
+                "wss://peer", reconnect=False))
+            await asyncio.wait_for(client.connected.wait(), timeout=1)
+            await socket.incoming.put(encode_extension_frame(
+                SYNC_CAPABILITY,
+                open_frame(session, "demo/join", profile, set()),
+                selected_capabilities=socket.peer.capabilities,
+            ))
+            served = await asyncio.wait_for(client.recv_sync_served(), timeout=1)
+            self.assertEqual("timed-out", served.status)
+            self.assertEqual({}, client._sync_senders)
+            for _ in range(100):
+                if len(socket.sent) >= 2:
+                    _, last = decode_extension_frame(
+                        socket.sent[-1],
+                        selected_capabilities=socket.peer.capabilities)
+                    if last["type"] == "sync/abort":
+                        break
+                await asyncio.sleep(0.01)
+            self.assertEqual("sync/abort", last["type"])
             await client.close()
             await asyncio.wait_for(running, timeout=1)
 

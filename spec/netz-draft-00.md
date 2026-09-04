@@ -487,11 +487,12 @@ runtime interoperability claim.
 The Python reference exposes the same pure receiver plus a bounded sender that
 accepts exact `sync/open` frames, enforces the cumulative-ACK chunk window, and
 emits `sync/done` only after all transmitted chunks are acknowledged.
-Its reconnecting client can also multiplex bounded outbound pull sessions with
-dissemination on one authenticated connection. It authorizes each frame using
-the pinned peer, topic and profile, aborts on timeout or disconnect, and writes
-only frontiers returned by the successful local profile commit. This is an
-implementation facility, not an additional wire message or profile rule.
+Its reconnecting client can also multiplex bounded pull and serving sessions
+with dissemination on one authenticated connection. It authorizes each frame
+using the pinned peer, topic and profile, performs source lookup and snapshot IO
+only after an incoming open is authorized, aborts on timeout or disconnect, and
+writes only frontiers returned by the successful local profile commit. This is
+an implementation facility, not an additional wire message or profile rule.
 
 The reference implementation includes executable models of two initial
 profiles:

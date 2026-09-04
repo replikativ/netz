@@ -25,7 +25,13 @@ from .extension import (
 from .frontier_store import FrontierStore, MemoryFrontierStore, encode_frontiers
 from .publication import verify_publication
 from .secure import LocalIdentity, SecureWebSocket, open_secure_websocket
-from .sync import SYNC_CAPABILITY, SyncProfile, SyncReceiver, open_frame
+from .sync import (
+    SYNC_CAPABILITY,
+    SyncProfile,
+    SyncReceiver,
+    SyncSender,
+    open_frame,
+)
 
 DISSEMINATION_CAPABILITIES = (
     WIRE_PROFILE_CAPABILITY,
@@ -35,6 +41,9 @@ DISSEMINATION_CAPABILITIES = (
 CLIENT_CAPABILITIES = DISSEMINATION_CAPABILITIES + (SYNC_CAPABILITY,)
 
 Authorization = Callable[[Mapping[str, object]], bool | Awaitable[bool]]
+SnapshotProvider = Callable[
+    [Mapping[str, object]], "SyncSnapshot | Awaitable[SyncSnapshot]"
+]
 
 
 class DisseminationClientError(ConnectionError):
@@ -62,6 +71,40 @@ class SyncPullResult:
 
     value: Any
     frontiers: Mapping[Stream, int]
+
+
+@dataclass(frozen=True)
+class SyncSnapshot:
+    """One authorized, internally consistent state-sync source snapshot."""
+
+    value: Any
+    frontiers: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SyncServeResult:
+    """Terminal outcome for one authorized incoming sync session."""
+
+    session: bytes
+    topic: str
+    profile: str
+    status: str
+
+
+@dataclass(frozen=True)
+class SyncSource:
+    """A fixed topic/profile route whose snapshot is loaded after policy."""
+
+    topic: str
+    profile: SyncProfile
+    snapshot: SnapshotProvider
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.topic, str) or not self.topic:
+            raise ValueError("sync source topic must be non-empty text")
+        if (not isinstance(getattr(self.profile, "name", None), str)
+                or not self.profile.name or not callable(self.snapshot)):
+            raise TypeError("sync source requires a named profile and callback")
 
 
 def dissemination_identity(identity: LocalIdentity, *,
@@ -102,7 +145,9 @@ class DisseminationClient:
                  frontier_store: FrontierStore | None = None,
                  sync_timeout: float = 30.0,
                  max_sync_sessions: int = 16,
-                 require_dissemination: bool = True) -> None:
+                 require_dissemination: bool = True,
+                 sync_sources: tuple[SyncSource, ...] = (),
+                 max_sync_sources: int = 64) -> None:
         if not callable(authorize):
             raise TypeError("authorize must be callable")
         if not isinstance(expected_authority, bytes) or len(expected_authority) != 32:
@@ -110,8 +155,12 @@ class DisseminationClient:
         if queue_size < 1 or not 0 < authorization_timeout <= 60 \
                 or not 0 < have_interval <= 3600:
             raise ValueError("invalid client queue or timeout bound")
-        if not 0 < sync_timeout <= 3600 or not 0 < max_sync_sessions <= 256:
+        if (not 0 < sync_timeout <= 3600
+                or not 0 < max_sync_sessions <= 256
+                or not 0 < max_sync_sources <= 1024):
             raise ValueError("invalid synchronization timeout or session bound")
+        if not isinstance(sync_sources, tuple) or len(sync_sources) > max_sync_sources:
+            raise ValueError("invalid or excessive synchronization sources")
         if publish and epoch is None:
             raise ValueError(
                 "a publishing client requires an explicitly managed epoch")
@@ -126,6 +175,14 @@ class DisseminationClient:
         self.have_interval = have_interval
         self.sync_timeout = sync_timeout
         self.max_sync_sessions = max_sync_sessions
+        self._sync_sources: dict[tuple[str, str], SyncSource] = {}
+        for source in sync_sources:
+            if not isinstance(source, SyncSource):
+                raise TypeError("sync_sources must contain SyncSource values")
+            key = (source.topic, source.profile.name)
+            if key in self._sync_sources:
+                raise ValueError("duplicate synchronization source")
+            self._sync_sources[key] = source
         publisher = Publisher(identity.genesis, identity.operational_private,
                               epoch=cast(int, epoch)) if publish else None
         self.session = DisseminationSession(
@@ -139,6 +196,8 @@ class DisseminationClient:
         self.publications: asyncio.Queue[Delivery] = asyncio.Queue(queue_size)
         self.state_sync: asyncio.Queue[tuple[Stream, int, int]] = asyncio.Queue(
             queue_size)
+        self.served_sync: asyncio.Queue[SyncServeResult] = asyncio.Queue(
+            queue_size)
         self.connected = asyncio.Event()
         self.last_error: BaseException | None = None
         self._socket: SecureWebSocket | None = None
@@ -150,6 +209,8 @@ class DisseminationClient:
         self._sync_receivers: dict[
             bytes, tuple[SyncReceiver, asyncio.Future[SyncPullResult]]
         ] = {}
+        self._sync_senders: dict[bytes, SyncSender] = {}
+        self._sync_sender_timeouts: dict[bytes, asyncio.Task[None]] = {}
 
     async def _restore(self) -> None:
         async with self._commit_lock:
@@ -286,13 +347,143 @@ class DisseminationClient:
             selected_capabilities=socket.peer.capabilities,
         ))
 
+    def _remove_sync_sender(self, session: bytes) -> None:
+        self._sync_senders.pop(session, None)
+        timeout = self._sync_sender_timeouts.pop(session, None)
+        if timeout is not None and timeout is not asyncio.current_task():
+            timeout.cancel()
+
+    def _record_sync_served(self, result: SyncServeResult) -> None:
+        try:
+            self.served_sync.put_nowait(result)
+        except asyncio.QueueFull as error:
+            raise DisseminationClientError(
+                "synchronization completion queue is full") from error
+
+    async def _expire_sync_sender(self, socket: SecureWebSocket,
+                                  session: bytes, topic: str,
+                                  profile: str) -> None:
+        try:
+            await asyncio.sleep(self.sync_timeout)
+            sender = self._sync_senders.get(session)
+            if sender is None:
+                return
+            self._remove_sync_sender(session)
+            self._record_sync_served(SyncServeResult(
+                session, topic, profile, "timed-out"))
+            await self._send_sync(
+                socket,
+                {"v": 1, "type": "sync/abort", "session": session,
+                 "code": "timeout"},
+                topic=topic,
+                profile=profile,
+            )
+        except asyncio.CancelledError:
+            return
+        except BaseException:
+            await socket.websocket.close()
+
+    @staticmethod
+    def _sync_open_scope(frame: Mapping[str, object]) -> tuple[bytes, str, str]:
+        if (set(frame) != {"v", "type", "session", "topic", "profile",
+                           "summary"}
+                or frame.get("v") != 1 or frame.get("type") != "sync/open"
+                or not isinstance(frame.get("session"), bytes)
+                or len(cast(bytes, frame["session"])) != 16
+                or not isinstance(frame.get("topic"), str)
+                or not cast(str, frame["topic"])
+                or not isinstance(frame.get("profile"), str)
+                or not cast(str, frame["profile"])
+                or not isinstance(frame.get("summary"), bytes)):
+            raise DisseminationClientError("invalid synchronization open frame")
+        return (cast(bytes, frame["session"]), cast(str, frame["topic"]),
+                cast(str, frame["profile"]))
+
+    async def _open_sync_sender(self, socket: SecureWebSocket,
+                                frame: Mapping[str, object]) -> None:
+        session, topic, profile_name = self._sync_open_scope(frame)
+        if (session in self._sync_receivers or session in self._sync_senders
+                or len(self._sync_receivers) + len(self._sync_senders)
+                >= self.max_sync_sessions):
+            raise DisseminationClientError("sync session limit or collision")
+        # Policy runs before source lookup or snapshot IO so an unauthorized
+        # peer cannot probe whether an application topic exists.
+        await self._authorized(
+            "inbound", frame, topic=topic, profile=profile_name)
+        source = self._sync_sources.get((topic, profile_name))
+        if source is None:
+            raise DisseminationClientError("synchronization open was not served")
+        context: dict[str, object] = {
+            "op": "synchronize",
+            "direction": "inbound",
+            "peer_authority": self.expected_authority,
+            "topic": topic,
+            "profile": profile_name,
+            "frame": dict(frame),
+        }
+        try:
+            snapshot = source.snapshot(context)
+            if inspect.isawaitable(snapshot):
+                snapshot = await asyncio.wait_for(
+                    cast(Awaitable[SyncSnapshot], snapshot), self.sync_timeout)
+            if not isinstance(snapshot, SyncSnapshot):
+                raise TypeError("snapshot callback returned the wrong type")
+            sender = SyncSender.from_open(
+                dict(frame), source.profile, snapshot.value,
+                snapshot.frontiers)
+        except Exception as error:
+            raise DisseminationClientError(
+                "synchronization source failed") from error
+        self._sync_senders[session] = sender
+        pending = sender.start()
+        if sender.status == "synchronizing":
+            self._sync_sender_timeouts[session] = asyncio.create_task(
+                self._expire_sync_sender(
+                    socket, session, topic, profile_name))
+        for reply in pending:
+            await self._send_sync(
+                socket, reply, topic=topic, profile=profile_name)
+        if sender.status != "synchronizing":
+            self._remove_sync_sender(session)
+            self._record_sync_served(SyncServeResult(
+                session, topic, profile_name, sender.status))
+
+    async def _receive_sync_sender(self, socket: SecureWebSocket,
+                                   sender: SyncSender,
+                                   frame: Mapping[str, object]) -> None:
+        await self._authorized(
+            "inbound", frame, topic=sender.topic,
+            profile=sender.profile.name)
+        try:
+            pending = sender.receive(dict(frame))
+        except Exception as error:
+            raise DisseminationClientError(
+                "synchronization sender rejected a frame") from error
+        for reply in pending:
+            await self._send_sync(
+                socket, reply, topic=sender.topic,
+                profile=sender.profile.name)
+        if sender.status != "synchronizing":
+            self._remove_sync_sender(sender.session)
+            self._record_sync_served(SyncServeResult(
+                sender.session, sender.topic, sender.profile.name,
+                sender.status))
+
     async def _receive_sync(self, socket: SecureWebSocket,
                             frame: object) -> None:
         if not isinstance(frame, dict):
             raise DisseminationClientError("invalid synchronization frame")
+        if frame.get("type") == "sync/open":
+            await self._open_sync_sender(socket, frame)
+            return
         session = frame.get("session")
         active = self._sync_receivers.get(session) \
             if isinstance(session, bytes) else None
+        serving = self._sync_senders.get(session) \
+            if isinstance(session, bytes) else None
+        if serving is not None:
+            await self._receive_sync_sender(socket, serving, frame)
+            return
         if active is None:
             raise DisseminationClientError("frame is for an unknown sync session")
         receiver, completed = active
@@ -401,6 +592,8 @@ class DisseminationClient:
                     completed.set_exception(DisseminationClientError(
                         "connection closed during synchronization"))
             self._sync_receivers.clear()
+            for session in tuple(self._sync_senders):
+                self._remove_sync_sender(session)
             await socket.websocket.close()
 
     async def run(self, uri: str, *, reconnect: bool = True,
@@ -466,6 +659,10 @@ class DisseminationClient:
         """Wait for a repair horizon or bounded-order overflow escalation."""
         return await self.state_sync.get()
 
+    async def recv_sync_served(self) -> SyncServeResult:
+        """Wait for one incoming sync session to finish, abort, or time out."""
+        return await self.served_sync.get()
+
     async def synchronize(self, topic: str, profile: SyncProfile,
                           value: Any, *, session: bytes | None = None,
                           timeout: float | None = None) -> SyncPullResult:
@@ -475,7 +672,8 @@ class DisseminationClient:
             raise DisseminationClientError("synchronization requires a connection")
         if SYNC_CAPABILITY not in set(socket.peer.capabilities):
             raise DisseminationClientError("peer did not negotiate synchronization")
-        if len(self._sync_receivers) >= self.max_sync_sessions:
+        if (len(self._sync_receivers) + len(self._sync_senders)
+                >= self.max_sync_sessions):
             raise DisseminationClientError("too many active sync sessions")
         deadline = self.sync_timeout if timeout is None else timeout
         if not 0 < deadline <= 3600:
@@ -521,5 +719,6 @@ class DisseminationClient:
 __all__ = [
     "Authorization", "CLIENT_CAPABILITIES", "DISSEMINATION_CAPABILITIES",
     "Delivery", "DisseminationClient", "DisseminationClientError",
-    "SyncPullResult", "dissemination_identity",
+    "SnapshotProvider", "SyncPullResult", "SyncServeResult", "SyncSnapshot",
+    "SyncSource", "dissemination_identity",
 ]
