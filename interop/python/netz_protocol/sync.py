@@ -3,6 +3,7 @@
 from netz_sync import (
     JOIN_PROFILE,
     ROOT_PROFILE,
+    SYNC_CAPABILITY,
     CommitReceipt,
     JoinSetProfile,
     RootLogProfile,
@@ -21,6 +22,7 @@ __all__ = [
     "ROOT_PROFILE",
     "RootLogProfile",
     "SyncError",
+    "SYNC_CAPABILITY",
     "SyncProfile",
     "SyncReceiver",
     "SyncResponse",

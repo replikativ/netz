@@ -6,9 +6,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from netz_protocol import FileFrontierStore, MemoryFrontierStore, Publisher, genesis
+from netz_protocol import (
+    CommitReceipt,
+    FileFrontierStore,
+    JoinSetProfile,
+    MemoryFrontierStore,
+    Publisher,
+    SYNC_CAPABILITY,
+    dumps,
+    genesis,
+)
 from netz_protocol.dissemination import DISSEMINATION_CAPABILITY
 from netz_protocol.dissemination_client import (
+    CLIENT_CAPABILITIES,
     DISSEMINATION_CAPABILITIES,
     DisseminationClient,
     DisseminationClientError,
@@ -33,8 +43,8 @@ def fixture_publisher():
 
 
 class FakeSocket:
-    def __init__(self):
-        self.peer = SimpleNamespace(capabilities=DISSEMINATION_CAPABILITIES)
+    def __init__(self, capabilities=DISSEMINATION_CAPABILITIES):
+        self.peer = SimpleNamespace(capabilities=capabilities)
         self.websocket = self
         self.sent = []
         self.incoming = asyncio.Queue()
@@ -69,6 +79,13 @@ class CorruptFrontierStore:
 
     async def save_frontiers(self, _frontiers):
         raise AssertionError("unreachable")
+
+
+class BoundJoinProfile(JoinSetProfile):
+    def commit(self, value, staging, checkpoint, claimed_frontiers):
+        receipt = super().commit(value, staging, checkpoint, claimed_frontiers)
+        return CommitReceipt(receipt.value, claimed_frontiers,
+                             len(dumps(claimed_frontiers)))
 
 
 class DisseminationClientTest(unittest.IsolatedAsyncioTestCase):
@@ -297,6 +314,98 @@ class DisseminationClientTest(unittest.IsolatedAsyncioTestCase):
         await delivery.commit()
         with self.assertRaisesRegex(DisseminationClientError, "could not be committed"):
             await client.commit_frontiers({stream: 0})
+
+    async def test_sync_pull_runs_on_live_connection_and_commits_frontier(self):
+        socket = FakeSocket(CLIENT_CAPABILITIES)
+        remote = bytes([16]) * 32
+        contexts = []
+
+        async def authorize(context):
+            contexts.append(context)
+            return True
+
+        client = DisseminationClient(
+            identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+            expected_authority=remote, topics=("demo/join",),
+            authorize=authorize,
+        )
+        session = bytes(range(16))
+        profile = BoundJoinProfile()
+        stream = (bytes([17]) * 32, 3, "demo/join")
+        claims = [{"origin": stream[0], "epoch": stream[1],
+                   "topic": stream[2], "through": 8}]
+        with patch("netz_protocol.dissemination_client.open_secure_websocket",
+                   return_value=socket):
+            running = asyncio.create_task(client.run(
+                "wss://peer", reconnect=False))
+            await asyncio.wait_for(client.connected.wait(), timeout=1)
+            pulling = asyncio.create_task(client.synchronize(
+                "demo/join", profile, {"python"}, session=session))
+            for _ in range(100):
+                if len(socket.sent) >= 3:
+                    break
+                await asyncio.sleep(0.01)
+            capability, opened = decode_extension_frame(
+                socket.sent[2], selected_capabilities=socket.peer.capabilities)
+            self.assertEqual(SYNC_CAPABILITY, capability)
+            self.assertEqual("sync/open", opened["type"])
+
+            await socket.incoming.put(encode_extension_frame(
+                SYNC_CAPABILITY,
+                {"v": 1, "type": "sync/chunk", "session": session,
+                 "index": 0, "data": dumps(["jvm"])},
+                selected_capabilities=socket.peer.capabilities,
+            ))
+            for _ in range(100):
+                if len(socket.sent) >= 4:
+                    break
+                await asyncio.sleep(0.01)
+            _, acknowledged = decode_extension_frame(
+                socket.sent[3], selected_capabilities=socket.peer.capabilities)
+            self.assertEqual("sync/ack", acknowledged["type"])
+            await socket.incoming.put(encode_extension_frame(
+                SYNC_CAPABILITY,
+                {"v": 1, "type": "sync/done", "session": session,
+                 "count": 1, "topic": "demo/join",
+                 "checkpoint": dumps(["jvm"]), "frontiers": claims},
+                selected_capabilities=socket.peer.capabilities,
+            ))
+            result = await asyncio.wait_for(pulling, timeout=1)
+            self.assertEqual({"jvm", "python"}, result.value)
+            self.assertEqual({stream: 8}, result.frontiers)
+            self.assertEqual({stream: 8}, client.committed_frontiers)
+            self.assertTrue(any(
+                context["op"] == "synchronize"
+                and context.get("topic") == "demo/join"
+                and context.get("profile") == profile.name
+                for context in contexts))
+            await client.close()
+            await asyncio.wait_for(running, timeout=1)
+
+    async def test_sync_timeout_sends_abort_and_releases_session(self):
+        socket = FakeSocket(CLIENT_CAPABILITIES)
+        client = DisseminationClient(
+            identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
+            expected_authority=bytes([18]) * 32, topics=("demo/join",),
+            authorize=lambda _context: True,
+        )
+        with patch("netz_protocol.dissemination_client.open_secure_websocket",
+                   return_value=socket):
+            running = asyncio.create_task(client.run(
+                "wss://peer", reconnect=False))
+            await asyncio.wait_for(client.connected.wait(), timeout=1)
+            with self.assertRaisesRegex(DisseminationClientError, "timed out"):
+                await client.synchronize(
+                    "demo/join", JoinSetProfile(), set(),
+                    session=bytes(range(32, 48)), timeout=0.01)
+            self.assertEqual({}, client._sync_receivers)
+            capability, aborted = decode_extension_frame(
+                socket.sent[-1], selected_capabilities=socket.peer.capabilities)
+            self.assertEqual(SYNC_CAPABILITY, capability)
+            self.assertEqual("sync/abort", aborted["type"])
+            self.assertEqual("timeout", aborted["code"])
+            await client.close()
+            await asyncio.wait_for(running, timeout=1)
 
 
 if __name__ == "__main__":

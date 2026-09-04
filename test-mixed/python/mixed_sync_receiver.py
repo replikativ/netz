@@ -9,22 +9,17 @@ import asyncio
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from netz_protocol import (
+    DisseminationClient,
     EXTENSION_CARRIER_CAPABILITY,
     WIRE_PROFILE_CAPABILITY,
     JoinSetProfile,
     SYNC_CAPABILITY,
-    SyncReceiver,
-    authority_id,
-    decode_extension_frame,
-    encode_extension_frame,
     genesis,
-    open_frame,
 )
 from netz_protocol.crypto import DEFAULT_CAPABILITIES
-from netz_protocol.secure import LocalIdentity, open_secure_websocket
+from netz_protocol.secure import LocalIdentity
 
 TOPIC = "demo/join"
-PEER = "jvm"
 
 
 def _identity() -> LocalIdentity:
@@ -45,39 +40,30 @@ def _identity() -> LocalIdentity:
 
 async def synchronize(uri: str, remote_authority: bytes) -> set[str]:
     identity = _identity()
-    socket = await open_secure_websocket(
-        uri, identity=identity, expected_authority=remote_authority
+    client = DisseminationClient(
+        identity=identity,
+        expected_authority=remote_authority,
+        topics=(TOPIC,),
+        authorize=lambda context: (
+            context["peer_authority"] == remote_authority
+            and (context["op"] != "synchronize"
+                 or (context.get("topic") == TOPIC
+                     and context.get("profile") == JoinSetProfile.name))
+        ),
+        sync_timeout=15,
+        require_dissemination=False,
     )
-    selected = frozenset(socket.peer.capabilities)
     session = bytes(range(96, 112))
     profile = JoinSetProfile()
-    receiver = SyncReceiver(session, TOPIC, profile, {"python"})
+    running = asyncio.create_task(client.run(uri, reconnect=False))
     try:
-        await socket.send_frame(encode_extension_frame(
-            SYNC_CAPABILITY,
-            open_frame(session, TOPIC, profile, receiver.value),
-            selected_capabilities=selected,
-        ))
-        while receiver.status == "synchronizing":
-            encoded = await asyncio.wait_for(socket.recv_frame(), timeout=15)
-            capability, frame = decode_extension_frame(
-                encoded, selected_capabilities=selected
-            )
-            if capability != SYNC_CAPABILITY or not isinstance(frame, dict):
-                raise RuntimeError("JVM returned an unexpected extension frame")
-            if frame.get("type") == "sync/abort":
-                raise RuntimeError(f"JVM aborted synchronization: {frame.get('code')}")
-            reply = receiver.receive(frame)
-            if reply is not None:
-                await socket.send_frame(encode_extension_frame(
-                    SYNC_CAPABILITY, reply,
-                    selected_capabilities=selected,
-                ))
-        if receiver.status != "synchronized":
-            raise RuntimeError(f"synchronization ended as {receiver.status}")
-        return receiver.value
+        await asyncio.wait_for(client.connected.wait(), timeout=15)
+        result = await client.synchronize(
+            TOPIC, profile, {"python"}, session=session)
+        return result.value
     finally:
-        await socket.websocket.close()
+        await client.close()
+        await running
 
 
 def main() -> None:

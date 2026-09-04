@@ -240,6 +240,26 @@ not exactly-once delivery. Handle `recv_state_sync()` when history cannot close
 a gap, atomically persist the recovered application state, then pass its
 per-stream through-sequences to `commit_frontiers()`. Serialize state-sync
 commits with application delivery handling.
+
+The same live authenticated connection can perform the repair instead of
+opening an unrelated transport stack:
+
+```python
+stream, _unavailable_before, _remote_through = await client.recv_state_sync()
+repaired = await client.synchronize(stream[2], my_profile, local_state)
+local_state = repaired.value
+```
+
+`synchronize()` multiplexes `netz/sync/1` beside dissemination, bounds active
+sessions and time, authorizes every sync frame with the pinned peer, topic and
+profile, sends cumulative ACKs, and aborts on timeout. After the profile has
+atomically committed application state, it persists only the frontiers minted
+by that local profile before returning. Sender claims remain inert. The
+reference join and root profiles intentionally mint no frontiers because their
+checkpoints do not yet bind a causal publication position. Set
+`require_dissemination=False` only for a sync-only endpoint; dissemination is
+required by default. Reusable incoming sync serving is still separate work.
+
 Publishing is opt-in with `publish=True` and requires an explicitly managed
 `epoch`; silently restarting a publisher at sequence zero in the same epoch
 would create an ambiguous signed stream.
