@@ -159,12 +159,47 @@ are non-empty UTF-8 strings and
 publication payloads are opaque byte strings; Clojure keyword topics and
 arbitrary values remain part of the transitional native profile.
 
+### Portable content service
+
+Portable block serving is a separately negotiated capability. Add
+`netz.content-wire/capability` to the same wire and extension-carrier set, then
+install the service after starting the overlay:
+
+```clojure
+(require '[netz.content-runtime :as content-runtime]
+         '[netz.content-wire :as content-wire])
+
+(def stop-content!
+  (content-runtime/start-service!
+   node
+   {:authorize?
+    (fn [{:keys [op authority-id cid]}]
+      (and (= op :content/read)
+           (= authority-id configured-remote-authority)
+           (allowed-cid? cid)))
+    :get-block
+    (fn [cid]
+      ;; Return opaque bytes, nil, or a core.async channel yielding either.
+      (load-cid cid))
+    :find-providers
+    (fn [cid]
+      ;; Optional full 32-byte Authority IDs; [] discloses no hints.
+      (known-providers cid))}))
+```
+
+The request queue, authorization wait, backend wait, response sizes, and
+provider arrays are bounded. Policy runs before either callback, and returned
+block bytes are hashed again before they cross the connection. Calling the
+returned function unregisters the capability handler and stops its worker.
+Stopping the overlay does this automatically.
+
 ## Public API
 
 | Operation | Meaning |
 |---|---|
 | `generate-identity` | Create genesis, hot operational key, and recovery material |
 | `start!` / `stop!` | Own the Netz runtime lifecycle |
+| `start-content-service!` | Install authorization-first portable CID serving |
 | `install-pubsub!` | Select the overlay as a Kabel pub/sub transport |
 | `subscribe!` | Register topic interest and a `PSyncStrategy` |
 | `publish!` | Submit a live value; completion is local acceptance, not global delivery |

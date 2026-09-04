@@ -5,6 +5,7 @@
   but application code should start here so their implementation details can
   evolve during the alpha series."
   (:require [kabel.pubsub :as kabel-pubsub]
+            [netz.content-runtime :as content-runtime]
             [netz.identity :as identity]
             [netz.overlay.runtime :as runtime]
             [netz.pubsub :as overlay-pubsub]))
@@ -17,6 +18,7 @@
 (def fetch! runtime/fetch!)
 (def fetch-tree! runtime/fetch-tree!)
 (def start-sync! runtime/start-sync!)
+(def start-content-service! content-runtime/start-service!)
 
 (defn install-pubsub!
   "Install the ordered Netz transport on a running Kabel peer."

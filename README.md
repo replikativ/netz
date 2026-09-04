@@ -20,7 +20,9 @@ machines define the path to implementations outside the Clojure ecosystem.
 > offline signed publication through the negotiated portable dissemination
 > carrier over a real Noise/Kabel WebSocket, and the Python subscriber can
 > restore application-committed frontiers from an atomic fsynced record and
-> run a bounded state-sync pull on that same authenticated connection.
+> run a bounded state-sync pull on that same authenticated connection. Python
+> can also fetch a verified raw-CID block from the JVM content service over the
+> negotiated authenticated carrier.
 > Exact configured
 > `wss` gateways have a supported dial policy. Arbitrary public discovery still
 > waits on socket-level resolved-IP pinning. The authenticated transport uses
