@@ -116,6 +116,49 @@ secure seed therefore needs both the UUID-shaped routing ID and the full
 Kabel context value, so connecting to the right URL with the wrong key fails
 closed.
 
+### Portable dissemination
+
+Portable dissemination is explicit and requires all three capability tokens on
+both Noise peers:
+
+```clojure
+(require '[netz.dissemination-wire :as dissemination-wire]
+         '[netz.overlay.runtime :as runtime]
+         '[netz.transport.noise :as noise]
+         '[netz.wire :as wire])
+
+(def portable-dissemination
+  (conj noise/default-capabilities
+        wire/profile-capability
+        runtime/extension-carrier-capability
+        dissemination-wire/capability))
+```
+
+Pass that set as `:capabilities` to `secure/middleware`, and provide an explicit
+policy to `secure/start!`:
+
+```clojure
+{:topics #{"datahike/roots/example"}
+ :authorize-dissemination?
+ (fn [{:keys [direction authority-id origin-authority topic frame-type]}]
+   ;; Consult application policy here. The result may be a boolean or a
+   ;; core.async channel. This example is deliberately narrow.
+   (and (= authority-id configured-remote-authority)
+        (or (nil? topic)
+            (= topic "datahike/roots/example"))))
+ :authorization-timeout-ms 5000}
+```
+
+The hook runs for inbound and outbound interests, repair control, and
+publications. `authority-id` is the immediate authenticated connection peer;
+`origin-authority` is additionally present for a publication and may differ
+after relaying. Missing, false, exceptional, closed-channel, or timed-out
+decisions fail closed. The validated `:frame` is available when policy needs to
+inspect every topic in an interests or repair-control frame. Profile-1 topics
+are non-empty UTF-8 strings and
+publication payloads are opaque byte strings; Clojure keyword topics and
+arbitrary values remain part of the transitional native profile.
+
 ## Public API
 
 | Operation | Meaning |

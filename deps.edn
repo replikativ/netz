@@ -2,13 +2,13 @@
 
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
         ;; kabel supplies the transport (peers, WebSocket, codec middleware)
-        ;; and the pub/sub layer netz plugs a transport into. 0.3.126 exposes
+        ;; and the pub/sub layer netz plugs a transport into. 0.3.134 exposes
         ;; the peer/topic apply serializer, selected-connection unsubscribe,
         ;; exclusive inbound live ownership, exact decoded frame-size metadata,
         ;; and bounded 5 MiB WebSocket frames/queues. Jetty provides
         ;; completion-driven server writes and the bounded replikativ http-kit
         ;; adapter. Everything netz needs from kabel is public API.
-        org.replikativ/kabel {:mvn/version "0.3.126"}
+        org.replikativ/kabel {:mvn/version "0.3.134"}
         ;; Ed25519, SHA-256, constant-time compare, CSPRNG — portable across
         ;; JVM and ClojureScript. Unlike kabel, netz cannot make crypto
         ;; optional: self-certifying identity is the bottom of the design.

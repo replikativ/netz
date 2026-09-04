@@ -222,6 +222,58 @@
         nil)
       (finally (<?? S (peer/stop server))))))
 
+(deftest released-kabel-unsubscribe-race-does-not-retire-a-resubscription
+  (let [port (unique-port)
+        url (str "ws://localhost:" port)
+        server-strategy (recording-strategy (atom []))
+        client-strategy (recording-strategy (atom []))
+        server (peer/server-peer
+                S (http-kit/create-http-kit-handler! S url "server") "server"
+                (pubsub/make-pubsub-peer-middleware {}) identity)]
+    (<?? S (peer/start server))
+    (try
+      (pubsub/register-topic! server :race {:strategy server-strategy})
+      (let [client (peer/client-peer
+                    S "client" (pubsub/make-pubsub-peer-middleware {}) identity)
+            gate (promise)]
+        (<?? S (peer/connect S client url))
+        (<?? S (pubsub/subscribe! client #{:race}
+                                  {:strategies {:race client-strategy}}))
+        ;; `subscribe!` completes at the client-side ready marker; separately
+        ;; observe the server's live fan-out registration before asking it to
+        ;; drain. The race under test is between unsubscribe callers, not an
+        ;; unsubscribe of an intentionally active snapshot.
+        (is (wait-for 3000 #(seq (pubsub/get-subscribers server :race))))
+        (<?? S (timeout 200))
+        (let [release (fn [] (future @gate
+                                     (pubsub/unsubscribe! client #{:race})))
+              settle (fn [operation]
+                       (let [result-ch (deref operation 3000 ::future-timeout)]
+                         (if (= ::future-timeout result-ch)
+                           ::future-timeout
+                           (let [[value port]
+                                 (async/alts!! [result-ch (timeout 3000)])]
+                             (if (= port result-ch) value ::channel-timeout)))))
+              first-release (release)
+              second-release (release)]
+          (deliver gate true)
+          (is (= {:ok true} (settle first-release)))
+          (is (= {:ok true} (settle second-release))))
+
+        ;; The stale second drain used to enter this new subscription's lane
+        ;; and tear its snapshot handshake down. The released Kabel generation
+        ;; fence must leave it live after the old drain has had time to arrive.
+        (<?? S (pubsub/subscribe! client #{:race}
+                                  {:strategies {:race client-strategy}}))
+        (let [generation (:generation (pubsub/subscription client :race))]
+          (<?? S (timeout 300))
+          (is (= generation
+                 (:generation (pubsub/subscription client :race))))
+          (is (true? (:handshake-complete?
+                      (pubsub/subscription client :race))))))
+      (finally
+        (<?? S (peer/stop server))))))
+
 (defn- run-overlay
   "The same two peers and the same calls — but the middleware now carries the
   overlay as well, so the handshake stays point-to-point while the publish is

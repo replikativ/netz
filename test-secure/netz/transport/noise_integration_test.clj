@@ -6,6 +6,7 @@
             [kabel.middleware.cbor :refer [cbor]]
             [kabel.peer :as peer]
             [kabel.transport :as transport]
+            [netz.dissemination-wire :as dissemination-wire]
             [netz.identity :as id]
             [netz.overlay :as overlay]
             [netz.overlay.runtime :as rt]
@@ -159,6 +160,88 @@
             (is (wait-for 10000
                           #(some #{{:message "encrypted"}}
                                  (overlay/delivered (rt/overlay-state server))))))
+          (finally
+            (rt/stop! client)
+            (<?? S (peer/stop client-peer)))))
+      (finally
+        (rt/stop! server)
+        (<?? S (peer/stop server-peer))))))
+
+(deftest portable-dissemination-repairs-an-offline-publication
+  (let [port (swap! port-counter inc)
+        url (str "ws://localhost:" port)
+        topic "datahike/roots/example"
+        payload (id/utf8-bytes "signed-root-42")
+        capabilities (conj secure/default-capabilities
+                           wire/profile-capability
+                           rt/extension-carrier-capability
+                           dissemination-wire/capability)
+        allow? (constantly true)
+        server-identity (<?? S (id/generate-identity))
+        client-identity (<?? S (id/generate-identity))
+        server-id (id/peer-id (:genesis server-identity))
+        server-authority (id/authority-id (:genesis server-identity))
+        client-id (id/peer-id (:genesis client-identity))
+        [server-app install-server!] (rt/deferred-middleware)
+        server-peer
+        (peer/server-peer
+         S (http-kit/create-http-kit-handler! S url server-id)
+         server-id server-app cbor (atom {}) (atom {})
+         {:transport-middleware
+          (secure-overlay/middleware
+           {:identity server-identity :addresses [url] :seq-no 1
+            :capabilities capabilities})})
+        server (<?? S
+                    (secure-overlay/start!
+                     S server-peer
+                     {:identity server-identity :addresses [url]
+                      :topics #{topic}
+                      :authorize-dissemination? allow?
+                      :overlay-opts
+                      {:membership {:require-authority? true
+                                    :dial-interval-ms 20}}}))]
+    (install-server! (:middleware server))
+    (<?? S (peer/start server-peer))
+    (try
+      ;; Publish before the subscriber exists. Its only path is the portable
+      ;; have/want repair exchange after the authenticated connection forms.
+      (is (rt/publish! server topic payload))
+      (let [[client-app install-client!] (rt/deferred-middleware)
+            client-peer
+            (peer/client-peer
+             S client-id client-app cbor (atom {}) (atom {})
+             {:transport-middleware
+              (secure-overlay/middleware
+               {:identity client-identity :addresses [] :seq-no 1
+                :capabilities capabilities})})
+            client (<?? S
+                        (secure-overlay/start!
+                         S client-peer
+                         {:identity client-identity :topics #{topic}
+                          :authorize-dissemination? allow?
+                          :seeds [{:peer-id server-id
+                                   :authority-id server-authority
+                                   :addresses [url]
+                                   :group "seed"}]
+                          :overlay-opts
+                          {:membership {:require-authority? true
+                                        :dial-interval-ms 20}}}))]
+        (install-client! (:middleware client))
+        (try
+          (is (wait-for 10000
+                        #(and (rt/portable-dissemination-connection?
+                               client-peer server-id)
+                              (rt/portable-dissemination-connection?
+                               server-peer client-id)))
+              "portable dissemination capability was not selected")
+          (is (wait-for 10000
+                        #(some (fn [value] (id/bufs= payload value))
+                               (overlay/delivered
+                                (rt/overlay-state client))))
+              "offline publication was not repaired through have/want")
+          (is (= server-authority
+                 (get-in (rt/overlay-state client)
+                         [:dissemination :authority-ids server-id])))
           (finally
             (rt/stop! client)
             (<?? S (peer/stop client-peer)))))

@@ -480,8 +480,10 @@ peer MUST reject a native sync frame after all three portable capabilities are
 selected, and MUST fail the session or close the connection rather than change
 carrier after reconnect or changed negotiation. Peers without all three
 capabilities retain the transitional native sync path and MUST NOT reinterpret
-it. Base overlay, dissemination, and content frames remain transitional native
-values, so this is not yet a complete runtime interoperability claim.
+it. Dissemination independently selects its portable grammar through the same
+wire and carrier capabilities plus `netz/dissemination/1`. Base membership and
+content frames remain transitional native values, so this is not yet a complete
+runtime interoperability claim.
 The Python reference exposes the same pure receiver plus a bounded sender that
 accepts exact `sync/open` frames, enforces the cumulative-ACK chunk window, and
 emits `sync/done` only after all transmitted chunks are acknowledged.

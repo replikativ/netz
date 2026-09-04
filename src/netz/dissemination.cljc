@@ -136,7 +136,9 @@
    ;; Authorization at EVERY hop.
    ;;
    ;; `:authorize` — `(fn [{:keys [op principal topic payload]}] -> truthy)`,
-   ;; the shape defined by `kabel.authorize`.
+   ;; the shape defined by `kabel.authorize`. This pure-machine gate must answer
+   ;; synchronously; a channel is denied. Production asynchronous policy runs
+   ;; in `netz.overlay.runtime` before an event enters this reducer.
    ;;
    ;; `:principal` is the VERIFIED origin peer id, which is the principal a
    ;; self-certifying network actually has. `:payload` is present so a policy
@@ -163,11 +165,36 @@
    ;; nil disables it. `heartbeat!` is how an operator says they are present.
    :dormant-after-ms nil})
 
+(def ^:private max-portable-streams 1024)
+
+(defn- remember-portable
+  "Retain bounded routing-to-Authority metadata for portable repair streams."
+  [state authorities streams]
+  (let [portable (reduce (fn [known stream]
+                           (let [known (conj known stream)]
+                             (if (> (count known) max-portable-streams)
+                               (disj known
+                                     (first (sort-by pr-str (disj known stream))))
+                               known)))
+                         (:portable-streams state)
+                         (sort-by pr-str streams))
+        origins (conj (set (map first portable)) (:id state))]
+    (-> state
+        (assoc :portable-streams portable)
+        (update :authority-ids
+                #(select-keys (merge % authorities) origins)))))
+
 (defn make-state
   ([id] (make-state id #{} {}))
   ([id topics] (make-state id topics {}))
   ([id topics opts]
    {:id id
+    :authority-id (:authority-id opts)
+    :authority-ids (cond-> {} (:authority-id opts) (assoc id (:authority-id opts)))
+    ;; Streams known to use the deterministic signed publication profile.
+    ;; Runtime adapters use this to avoid advertising native EDN history to a
+    ;; foreign peer merely because its topic happened to be a string.
+    :portable-streams #{}
     :rng (rng/make-rng 0)
     :opts (merge default-opts opts)
     :topics (set topics)
@@ -588,8 +615,10 @@
 
 (defn- authorized?
   [state topic origin payload]
-  ((authz/gate (:opts state) {:op :publish})
-   {:principal origin :topic topic :payload payload}))
+  (let [decision ((authz/gate (:opts state) {:op :publish})
+                  {:principal origin :topic topic :payload payload})]
+    (and (not (authz/channel? decision))
+         (boolean decision))))
 
 (defn- accept-and-forward
   "Common path for a message we have not seen: record, deliver, relay."
@@ -597,9 +626,13 @@
   (let [{:keys [origin epoch seq topic hops payload]} msg
         {:keys [max-hops]} (:opts state)
         subscribed? (contains? (:topics state) topic)
+        stream [origin epoch topic]
         state (-> state
                   (mark-seen origin epoch topic seq)
                   (store-message msg))
+        state (if (= 1 (:wire-version msg))
+                (remember-portable state {origin (:origin-authority msg)} #{stream})
+                state)
         ;; Delivery to the APPLICATION is an action, not a callback. The state
         ;; machine stays pure and the runtime decides what delivery means —
         ;; which for `kabel.pubsub` is `-apply-publish` on the topic's
@@ -629,13 +662,16 @@
   Exposed separately from the handler so an application can call it directly."
   [state topic payload]
   (let [seq-no (get-in state [:next-seq topic] 0)
-        msg {:type :gossip
-             :topic topic
-             :origin (:id state)
-             :epoch (:epoch state)
-             :seq seq-no
-             :hops 0
-             :payload payload}
+        msg (cond-> {:type :gossip
+                     :topic topic
+                     :origin (:id state)
+                     :epoch (:epoch state)
+                     :seq seq-no
+                     :hops 0
+                     :payload payload}
+              (:authority-id state)
+              (assoc :origin-authority (:authority-id state)))
+        msg (cond-> msg (publication/portable? msg) (assoc :wire-version 1))
         state (-> state
                   (assoc-in [:next-seq topic] (inc seq-no))
                   (update-in [:stats :published] inc))
@@ -776,7 +812,10 @@
         ;; before use — the same reasoning that caps `:want` below. Without
         ;; this, one `:have` naming a million synthetic origins turns into a
         ;; million want-ranges we ask for in a single frame.
-        (let [{:keys [max-summary-origins]} (:opts state)
+        (let [state (remember-portable state
+                                       (:origin-authorities payload)
+                                       (:portable-streams payload))
+              {:keys [max-summary-origins]} (:opts state)
               summary (into {} (take max-summary-origins (:summary payload)))
               horizon (:horizon payload)
               wants (gaps-against state summary horizon)
