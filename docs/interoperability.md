@@ -154,8 +154,10 @@ signed opaque publication frames under `netz/dissemination/1`. A complete
 portable runtime now selects that grammar only with the wire, named-carrier and
 dissemination capability triple, rejects native downgrade and Authority-routing
 collisions, and applies bounded fail-closed policy before entering the pure
-machine. Base membership/content codec routing and reusable reconnect
-orchestration remain. A dedicated
+machine. The separately negotiated `netz/content/1` service and requester also
+pass authenticated raw-CID fetches in both Python/JVM directions, with the
+receiver independently verifying the returned bytes. Base membership routing
+and reusable reconnect orchestration remain. A dedicated
 conformance process now drives a real Python
 blob sender through Noise/Kabel and the negotiated portable carrier into the
 JVM fsync receiver, including verified and durably persisted receipt evidence.
