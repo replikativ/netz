@@ -36,6 +36,10 @@ may make incompatible protocol changes.
   peer/topic/profile policy to every frame, aborts timed-out sessions, and
   persists only locally committed profile frontiers before returning repaired
   state. The prior one-shot JVM-to-Python conformance peer now uses this API.
+  Fixed `SyncSource` routes now provide the inverse reusable serving path:
+  authorization precedes source lookup and snapshot IO, concurrent sessions
+  and completion queues are bounded, unacknowledged sessions expire, and the
+  JVM-to-Python reverse conformance peer uses the same runtime.
 
 - Added a separately negotiated portable `netz/sync/1` carrier path and real
   bidirectional Python/JVM synchronization tests. Portable bytes16 sessions

@@ -1,7 +1,8 @@
 # Python secure-client dependency assessment
 
-Status: experimental reusable dissemination client with durable subscription
-frontiers, not a production security endorsement.
+Status: experimental reusable dissemination and bidirectional synchronization
+client with durable subscription frontiers, not a production security
+endorsement.
 
 ## Recommendation
 

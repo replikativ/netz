@@ -69,10 +69,9 @@ ACK, then proves that a fresh process/session requests only the missing tail.
 `mixed_sync_receiver.py` independently opens `netz/sync/1` through the same
 negotiated carrier and atomically joins a JVM-provided reference state;
 `mixed_sync_sender.py` serves the inverse JVM-initiated pull and waits for its
-cumulative ACK before emitting `sync/done`. They are one-shot conformance peers
-rather than reconnecting application orchestration. Each provider pins the
-requester's full Authority ID, topic and profile; capability negotiation alone
-never grants access to state.
+cumulative ACK before emitting `sync/done`. Both now use the reusable client
+orchestration. Each provider pins the requester's full Authority ID, topic and
+profile; capability negotiation alone never grants access to state.
 
 This does not replace a full CBOR implementation for application values.
 Application payloads are opaque bytes and may use Boring's registered tags;
@@ -161,8 +160,8 @@ complete general-purpose P2P node. Both session roles are bounded;
 the receiver is ordered and atomic, and carrier framing, identities, signed
 publications and the secure capability handshake are pinned. The optional
 `DisseminationClient` supplies authenticated subscription repair and bounded
-reconnect/backoff. Unified synchronization orchestration, content exchange,
-durable subscription frontiers, and multi-peer discovery remain explicit
+reconnect/backoff, durable frontiers, and bounded synchronization in both
+directions. Content exchange and multi-peer discovery remain explicit
 application work.
 
 The experimental optional secure-client layer can be installed with:
@@ -258,7 +257,33 @@ by that local profile before returning. Sender claims remain inert. The
 reference join and root profiles intentionally mint no frontiers because their
 checkpoints do not yet bind a causal publication position. Set
 `require_dissemination=False` only for a sync-only endpoint; dissemination is
-required by default. Reusable incoming sync serving is still separate work.
+required by default.
+
+Incoming serving uses fixed routes and takes its snapshot only after the open
+frame has passed authorization:
+
+```python
+from netz_protocol import SyncSnapshot, SyncSource
+
+async def snapshot(context):
+    value, committed_frontiers = await load_consistent_snapshot()
+    return SyncSnapshot(value, committed_frontiers)
+
+client = DisseminationClient(
+    # identity, expected_authority, topics, authorize, ...
+    sync_sources=(SyncSource("demo/join", my_profile, snapshot),),
+)
+served = await client.recv_sync_served()
+```
+
+The callback receives the authenticated peer, exact topic/profile, direction,
+and open frame. Missing routes and callback failures close without revealing
+whether application state exists. Snapshots must bind their value and frontier
+array consistently; these frontiers are claims sent to the receiver and do not
+override the receiver profile's local commit rules. Terminal results report
+`synchronized`, `desynchronized`, or `timed-out`. Sender-side `synchronized`
+means that `sync/done` was transmitted after all chunks were acknowledged; the
+base protocol has no receipt proving the remote application commit.
 
 Publishing is opt-in with `publish=True` and requires an explicitly managed
 `epoch`; silently restarting a publisher at sequence zero in the same epoch

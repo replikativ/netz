@@ -291,15 +291,16 @@ This extension is not part of the alpha interoperability claim yet.
       a pluggable frontier store; the fsynced file reference restores before
       dialing and passes restart and persist-before-advance tests. The live
       client now multiplexes bounded, authorized outbound sync pulls and
-      commits locally validated frontiers. Reusable inbound sync serving,
-      content exchange and multi-peer discovery remain.
+      commits locally validated frontiers. Fixed authorized sources provide
+      bounded inbound serving and load consistent snapshots only after policy.
+      Content exchange and multi-peer discovery remain.
 - [x] The optional Python secure-client prototype signs and verifies identity
       records, binds Authority IDs to authenticated Noise statics, enforces the
       expected dial target, fragments bounded inner frames, and passes a real
       asyncio WebSocket round trip plus the same Cacophony vector as Geheimnis.
-      A one-shot outbound sync receiver now runs over that carrier;
-      dissemination and reusable orchestration remain before calling it a
-      complete application client.
+      The reconnecting client now carries dissemination plus bounded sync pull
+      and serving sessions. Content exchange and multi-peer orchestration remain
+      before calling it a complete application client.
 - [x] JVM and Python consume the same deterministic direct-binding fixture,
       covering both identity records and binding signatures, the offer, all
       three Noise messages, handshake hash, encrypted serializer-14 fragment,

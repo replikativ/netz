@@ -9,17 +9,17 @@ import asyncio
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from netz_protocol import (
+    DisseminationClient,
     EXTENSION_CARRIER_CAPABILITY,
     WIRE_PROFILE_CAPABILITY,
     JoinSetProfile,
     SYNC_CAPABILITY,
-    SyncSender,
-    decode_extension_frame,
-    encode_extension_frame,
+    SyncSnapshot,
+    SyncSource,
     genesis,
 )
 from netz_protocol.crypto import DEFAULT_CAPABILITIES
-from netz_protocol.secure import LocalIdentity, open_secure_websocket
+from netz_protocol.secure import LocalIdentity
 
 TOPIC = "demo/join"
 
@@ -41,43 +41,32 @@ def _identity() -> LocalIdentity:
 
 
 async def serve(uri: str, remote_authority: bytes) -> None:
-    socket = await open_secure_websocket(
-        uri, identity=_identity(), expected_authority=remote_authority
-    )
-    selected = frozenset(socket.peer.capabilities)
     profile = JoinSetProfile()
+    client = DisseminationClient(
+        identity=_identity(),
+        expected_authority=remote_authority,
+        topics=(),
+        authorize=lambda context: (
+            context["peer_authority"] == remote_authority
+            and (context["op"] != "synchronize"
+                 or (context.get("topic") == TOPIC
+                     and context.get("profile") == profile.name))
+        ),
+        sync_sources=(SyncSource(
+            TOPIC, profile,
+            lambda _context: SyncSnapshot({"python"})),),
+        sync_timeout=15,
+        require_dissemination=False,
+    )
+    running = asyncio.create_task(client.run(uri, reconnect=False))
     try:
-        encoded = await asyncio.wait_for(socket.recv_frame(), timeout=15)
-        capability, frame = decode_extension_frame(
-            encoded, selected_capabilities=selected
-        )
-        if capability != SYNC_CAPABILITY or not isinstance(frame, dict):
-            raise RuntimeError("JVM did not open the expected sync extension")
-        # Protocol support is not read authorization. The Noise dial already
-        # pins the JVM Authority; pin its only permitted topic here as well.
-        if frame.get("topic") != TOPIC or frame.get("profile") != profile.name:
-            raise RuntimeError("JVM requested an unauthorized sync scope")
-        sender = SyncSender.from_open(frame, profile, {"python"}, [])
-        pending = sender.start()
-        while pending or sender.status == "synchronizing":
-            for reply in pending:
-                await socket.send_frame(encode_extension_frame(
-                    SYNC_CAPABILITY, reply,
-                    selected_capabilities=selected,
-                ))
-            if sender.status != "synchronizing":
-                break
-            encoded = await asyncio.wait_for(socket.recv_frame(), timeout=15)
-            capability, frame = decode_extension_frame(
-                encoded, selected_capabilities=selected
-            )
-            if capability != SYNC_CAPABILITY or not isinstance(frame, dict):
-                raise RuntimeError("JVM returned an unexpected extension frame")
-            pending = sender.receive(frame)
-        if sender.status != "synchronized":
-            raise RuntimeError(f"synchronization ended as {sender.status}")
+        await asyncio.wait_for(client.connected.wait(), timeout=15)
+        served = await asyncio.wait_for(client.recv_sync_served(), timeout=15)
+        if served.status != "synchronized":
+            raise RuntimeError(f"synchronization ended as {served.status}")
     finally:
-        await socket.websocket.close()
+        await client.close()
+        await running
 
 
 def main() -> None:
