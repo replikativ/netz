@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 
 from netz_protocol.content import block_frame, raw_cid
@@ -114,6 +115,24 @@ class ContentServiceTest(unittest.IsolatedAsyncioTestCase):
             PEER, await service.receive(OTHER, find), now_ms=1)
         self.assertEqual((OTHER,), result.providers)
         self.assertEqual(10_000, result.ttl_ms)
+
+    async def test_backend_timeout_is_bounded_after_authorization(self):
+        entered = asyncio.Event()
+
+        async def get_block(_cid):
+            entered.set()
+            await asyncio.Future()
+
+        service = ContentService(
+            authorize=lambda _context: True,
+            get_block=get_block,
+            backend_timeout=0.01,
+        )
+        requester = ContentRequester()
+        want = requester.want(PEER, CID, now_ms=0, request=REQUEST)
+        with self.assertRaisesRegex(ContentSessionError, "backend failed"):
+            await service.receive(OTHER, want)
+        self.assertTrue(entered.is_set())
 
 
 if __name__ == "__main__":

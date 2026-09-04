@@ -1,13 +1,24 @@
-"""Reusable asyncio client for authenticated portable dissemination."""
+"""Reusable asyncio client for authenticated dissemination, sync and content."""
 
 from __future__ import annotations
 
 import asyncio
 import inspect
 import secrets
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, cast
+
+from .content import (
+    CONTENT_CAPABILITY,
+    validate_frame as validate_content_frame,
+)
+from .content_session import (
+    ContentRequester,
+    ContentResult,
+    ContentService,
+)
 
 from .dissemination import (
     DISSEMINATION_CAPABILITY,
@@ -38,7 +49,9 @@ DISSEMINATION_CAPABILITIES = (
     EXTENSION_CARRIER_CAPABILITY,
     DISSEMINATION_CAPABILITY,
 )
-CLIENT_CAPABILITIES = DISSEMINATION_CAPABILITIES + (SYNC_CAPABILITY,)
+CLIENT_CAPABILITIES = DISSEMINATION_CAPABILITIES + (
+    CONTENT_CAPABILITY, SYNC_CAPABILITY,
+)
 
 Authorization = Callable[[Mapping[str, object]], bool | Awaitable[bool]]
 SnapshotProvider = Callable[
@@ -109,7 +122,7 @@ class SyncSource:
 
 def dissemination_identity(identity: LocalIdentity, *,
                            require_dissemination: bool = True) -> LocalIdentity:
-    """Offer sync plus dissemination and optionally require dissemination."""
+    """Offer content, sync and dissemination; optionally require dissemination."""
     supported = tuple(sorted(set(identity.capabilities) |
                              set(CLIENT_CAPABILITIES)))
     required_capabilities = (set(DISSEMINATION_CAPABILITIES)
@@ -128,10 +141,10 @@ def _operation(frame: Mapping[str, object]) -> str:
 
 
 class DisseminationClient:
-    """A reconnecting secure subscriber/publisher with bounded repair state.
+    """A reconnecting secure client with bounded dissemination, sync and content.
 
     ``authorize`` is mandatory and runs for every inbound and outbound
-    dissemination or synchronization frame. It may return a boolean or
+    dissemination, synchronization, or content frame. It may return a boolean or
     awaitable; only exact ``True`` before the deadline permits disclosure or
     acceptance.
     """
@@ -147,7 +160,11 @@ class DisseminationClient:
                  max_sync_sessions: int = 16,
                  require_dissemination: bool = True,
                  sync_sources: tuple[SyncSource, ...] = (),
-                 max_sync_sources: int = 64) -> None:
+                 max_sync_sources: int = 64,
+                 content_service: ContentService | None = None,
+                 content_timeout_ms: int = 5_000,
+                 max_content_requests: int = 16,
+                 max_content_service_requests: int = 16) -> None:
         if not callable(authorize):
             raise TypeError("authorize must be callable")
         if not isinstance(expected_authority, bytes) or len(expected_authority) != 32:
@@ -166,6 +183,11 @@ class DisseminationClient:
                 "a publishing client requires an explicitly managed epoch")
         if type(require_dissemination) is not bool:
             raise TypeError("require_dissemination must be boolean")
+        if content_service is not None and not isinstance(
+                content_service, ContentService):
+            raise TypeError("content_service must be a ContentService")
+        if not 1 <= max_content_service_requests <= 256:
+            raise ValueError("invalid content service request bound")
         self.identity = dissemination_identity(
             identity, require_dissemination=require_dissemination)
         self.require_dissemination = require_dissemination
@@ -175,6 +197,12 @@ class DisseminationClient:
         self.have_interval = have_interval
         self.sync_timeout = sync_timeout
         self.max_sync_sessions = max_sync_sessions
+        self.content_service = content_service
+        self.max_content_service_requests = max_content_service_requests
+        self.content = ContentRequester(
+            timeout_ms=content_timeout_ms,
+            max_outstanding=max_content_requests,
+        )
         self._sync_sources: dict[tuple[str, str], SyncSource] = {}
         for source in sync_sources:
             if not isinstance(source, SyncSource):
@@ -211,6 +239,11 @@ class DisseminationClient:
         ] = {}
         self._sync_senders: dict[bytes, SyncSender] = {}
         self._sync_sender_timeouts: dict[bytes, asyncio.Task[None]] = {}
+        self._content_waiters: dict[
+            bytes, asyncio.Future[ContentResult]
+        ] = {}
+        self._content_service_tasks: set[asyncio.Task[None]] = set()
+        self._content_failure: asyncio.Future[None] | None = None
 
     async def _restore(self) -> None:
         async with self._commit_lock:
@@ -288,10 +321,17 @@ class DisseminationClient:
                           topic: str | None = None,
                           profile: str | None = None) -> None:
         frame_type = cast(str, frame["type"])
+        if frame_type in {"gossip", "interests", "have", "want"}:
+            operation = _operation(frame)
+        elif frame_type in {"content/find", "content/found"}:
+            operation = "content/find"
+        elif frame_type in {
+                "content/want", "content/block", "content/dont-have"}:
+            operation = "content/read"
+        else:
+            operation = "synchronize"
         context: dict[str, object] = {
-            "op": (_operation(frame) if frame_type in {
-                "gossip", "interests", "have", "want"
-            } else "synchronize"),
+            "op": operation,
             "direction": direction,
             "peer_authority": self.expected_authority,
             "frame_type": frame_type,
@@ -303,6 +343,8 @@ class DisseminationClient:
                 "topic": frame["topic"],
                 "payload": frame["payload"],
             })
+        if frame_type.startswith("content/"):
+            context["cid"] = frame["cid"]
         if topic is not None:
             context["topic"] = topic
         if profile is not None:
@@ -346,6 +388,66 @@ class DisseminationClient:
             dict(frame),
             selected_capabilities=socket.peer.capabilities,
         ))
+
+    async def _send_content(self, socket: SecureWebSocket,
+                            frame: Mapping[str, object]) -> None:
+        checked = validate_content_frame(frame)
+        await self._authorized("outbound", checked)
+        await socket.send_frame(encode_extension_frame(
+            CONTENT_CAPABILITY,
+            checked,
+            selected_capabilities=socket.peer.capabilities,
+        ))
+
+    @staticmethod
+    def _content_now_ms() -> int:
+        return int(time.monotonic() * 1000)
+
+    async def _receive_content(self, socket: SecureWebSocket,
+                               frame: object) -> None:
+        checked = validate_content_frame(frame)
+        frame_type = cast(str, checked["type"])
+        await self._authorized("inbound", checked)
+        if frame_type in {"content/find", "content/want"}:
+            if self.content_service is None:
+                raise DisseminationClientError(
+                    "peer requested content from a client without a service")
+            if (len(self._content_service_tasks)
+                    >= self.max_content_service_requests):
+                raise DisseminationClientError(
+                    "too many active content service requests")
+            task = asyncio.create_task(self._serve_content(socket, checked))
+            self._content_service_tasks.add(task)
+            task.add_done_callback(self._content_service_tasks.discard)
+            return
+        result = self.content.receive(
+            self.expected_authority, checked, now_ms=self._content_now_ms())
+        if result is None:
+            return
+        completed = self._content_waiters.pop(result.request, None)
+        if completed is not None and not completed.done():
+            completed.set_result(result)
+
+    async def _serve_content(self, socket: SecureWebSocket,
+                             frame: Mapping[str, object]) -> None:
+        try:
+            if self.content_service is None:
+                raise DisseminationClientError("content service disappeared")
+            # Client policy already gated the carrier. The service applies its
+            # separate authorization-before-storage policy to the same peer.
+            response = await self.content_service.receive(
+                self.expected_authority, frame)
+            await self._send_content(socket, response)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:
+            failure = self._content_failure
+            if failure is not None and not failure.done():
+                wrapped = DisseminationClientError(
+                    "content service request failed")
+                wrapped.__cause__ = error
+                failure.set_exception(wrapped)
+            await socket.websocket.close()
 
     def _remove_sync_sender(self, session: bytes) -> None:
         self._sync_senders.pop(session, None)
@@ -520,6 +622,9 @@ class DisseminationClient:
                 if capability == SYNC_CAPABILITY:
                     await self._receive_sync(socket, value)
                     continue
+                if capability == CONTENT_CAPABILITY:
+                    await self._receive_content(socket, value)
+                    continue
                 if capability != DISSEMINATION_CAPABILITY:
                     raise DisseminationClientError("unexpected client extension")
                 frame = validate_frame(value)
@@ -550,6 +655,7 @@ class DisseminationClient:
             **dict(connect_options),
         )
         self._socket = socket
+        self._content_failure = asyncio.get_running_loop().create_future()
         receive: asyncio.Task[None] | None = None
         try:
             selected = set(socket.peer.capabilities)
@@ -558,9 +664,11 @@ class DisseminationClient:
             if self.require_dissemination and not portable_dissemination:
                 raise DisseminationClientError(
                     "peer did not negotiate portable dissemination")
-            if not portable_dissemination and SYNC_CAPABILITY not in selected:
+            if (not portable_dissemination
+                    and SYNC_CAPABILITY not in selected
+                    and CONTENT_CAPABILITY not in selected):
                 raise DisseminationClientError(
-                    "peer negotiated neither dissemination nor synchronization")
+                    "peer negotiated no supported application capability")
             if portable_dissemination:
                 for frame in self.session.connected():
                     await self._send(socket, frame)
@@ -568,22 +676,36 @@ class DisseminationClient:
             self.last_error = None
             receive = asyncio.create_task(self._receive(socket))
             while not self._stop.is_set():
-                try:
-                    await asyncio.wait_for(asyncio.shield(receive),
-                                           timeout=self.have_interval)
+                done, _pending = await asyncio.wait(
+                    (receive, self._content_failure),
+                    timeout=self.have_interval,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if self._content_failure in done:
+                    await self._content_failure
+                if receive in done:
+                    await receive
                     break
-                except asyncio.TimeoutError:
-                    if portable_dissemination:
-                        await self._send(socket, self.session.have())
-            if receive.done():
-                await receive
+                if portable_dissemination:
+                    await self._send(socket, self.session.have())
         finally:
-            if receive is not None and not receive.done():
-                receive.cancel()
+            if receive is not None:
+                if not receive.done():
+                    receive.cancel()
                 try:
                     await receive
                 except BaseException:
                     pass
+            content_tasks = tuple(self._content_service_tasks)
+            for task in content_tasks:
+                task.cancel()
+            if content_tasks:
+                await asyncio.gather(*content_tasks, return_exceptions=True)
+            self._content_service_tasks.clear()
+            if (self._content_failure is not None
+                    and not self._content_failure.done()):
+                self._content_failure.cancel()
+            self._content_failure = None
             self.connected.clear()
             self.session.disconnected()
             self._socket = None
@@ -594,6 +716,10 @@ class DisseminationClient:
             self._sync_receivers.clear()
             for session in tuple(self._sync_senders):
                 self._remove_sync_sender(session)
+            for result in self.content.disconnected(self.expected_authority):
+                completed = self._content_waiters.pop(result.request, None)
+                if completed is not None and not completed.done():
+                    completed.set_result(result)
             await socket.websocket.close()
 
     async def run(self, uri: str, *, reconnect: bool = True,
@@ -709,6 +835,55 @@ class DisseminationClient:
             self._sync_receivers.pop(receiver.session, None)
             if not completed.done():
                 completed.cancel()
+
+    async def _content_request(self, operation: str, cid: bytes, *,
+                               timeout: float | None) -> ContentResult:
+        socket = self._socket
+        if socket is None or not self.connected.is_set():
+            raise DisseminationClientError("content request requires a connection")
+        if CONTENT_CAPABILITY not in set(socket.peer.capabilities):
+            raise DisseminationClientError("peer did not negotiate content")
+        max_deadline = self.content.timeout_ms / 1000
+        deadline = max_deadline if timeout is None else timeout
+        if not 0 < deadline <= max_deadline:
+            raise ValueError("invalid content request timeout")
+        now_ms = self._content_now_ms()
+        try:
+            frame = (self.content.want if operation == "content/want"
+                     else self.content.find)(
+                         self.expected_authority, cid, now_ms=now_ms)
+        except Exception as error:
+            raise DisseminationClientError(
+                "content request could not be opened") from error
+        request = cast(bytes, frame["request"])
+        completed: asyncio.Future[ContentResult] = \
+            asyncio.get_running_loop().create_future()
+        self._content_waiters[request] = completed
+        try:
+            await self._send_content(socket, frame)
+            return await asyncio.wait_for(asyncio.shield(completed), deadline)
+        except asyncio.TimeoutError as error:
+            self.content.pending.pop(request, None)
+            raise DisseminationClientError("content request timed out") from error
+        except BaseException:
+            self.content.pending.pop(request, None)
+            raise
+        finally:
+            self._content_waiters.pop(request, None)
+            if not completed.done():
+                completed.cancel()
+
+    async def fetch_content(self, cid: bytes, *,
+                            timeout: float | None = None) -> ContentResult:
+        """Fetch one CID-verified block from the live authenticated peer."""
+        return await self._content_request(
+            "content/want", cid, timeout=timeout)
+
+    async def find_content(self, cid: bytes, *,
+                           timeout: float | None = None) -> ContentResult:
+        """Ask the live authenticated peer for bounded provider hints."""
+        return await self._content_request(
+            "content/find", cid, timeout=timeout)
 
     async def close(self) -> None:
         self._stop.set()

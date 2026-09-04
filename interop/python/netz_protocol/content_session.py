@@ -167,12 +167,14 @@ class ContentService:
     def __init__(self, *, authorize: Authorize, get_block: GetBlock,
                  find_providers: FindProviders = lambda _cid: (),
                  authorization_timeout: float = 5.0,
+                 backend_timeout: float = 30.0,
                  provider_ttl_ms: int = MAX_PROVIDER_TTL_MS) -> None:
         if not all(callable(value) for value in
                    (authorize, get_block, find_providers)):
             raise TypeError("content service hooks must be callable")
-        if not 0 < authorization_timeout <= 60:
-            raise ValueError("invalid authorization timeout")
+        if (not 0 < authorization_timeout <= 60
+                or not 0 < backend_timeout <= 300):
+            raise ValueError("invalid content service timeout")
         if (type(provider_ttl_ms) is not int
                 or not 0 <= provider_ttl_ms <= MAX_PROVIDER_TTL_MS):
             raise ValueError("invalid provider TTL")
@@ -180,6 +182,7 @@ class ContentService:
         self.get_block = get_block
         self.find_providers = find_providers
         self.authorization_timeout = authorization_timeout
+        self.backend_timeout = backend_timeout
         self.provider_ttl_ms = provider_ttl_ms
 
     async def _call(self, function, *args):
@@ -208,10 +211,12 @@ class ContentService:
         request, cid = cast(bytes, checked["request"]), cast(bytes, checked["cid"])
         try:
             if frame_type == "content/find":
-                providers = await self._call(self.find_providers, cid)
+                providers = await asyncio.wait_for(
+                    self._call(self.find_providers, cid), self.backend_timeout)
                 return found_frame(request, cid, providers,
                                    ttl_ms=self.provider_ttl_ms)
-            data = await self._call(self.get_block, cid)
+            data = await asyncio.wait_for(
+                self._call(self.get_block, cid), self.backend_timeout)
             return (dont_have_frame(request, cid) if data is None
                     else block_frame(request, cid, data))
         except (ContentError, ContentSessionError):
