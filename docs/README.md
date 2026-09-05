@@ -26,3 +26,5 @@
 - [Release readiness](../RELEASE.md) is the operational and standards gate.
 - [Signed Datahike replica demo](datahike-replica-demo.md) fetches through Netz
   and installs through konserve-sync, including reconnect and offline queries.
+- [Snapshot replication policy](snapshot-replication-policy.md) connects two
+  Yggdrasil adapters to blob durability, receipt audits and writer admission.

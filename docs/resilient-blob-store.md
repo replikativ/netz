@@ -403,6 +403,11 @@ optional policy after constructing the controller:
 An operator may request an immediate best-effort pass with `request-scan!`;
 timer generations are deduplicated, so this does not multiply periodic loops.
 
+For periodic revalidation of already acknowledged copies, use the optional
+`netz.replication.audit-runtime`. It obtains new durably fenced receipts and
+lets this scheduler retry missing ones. See [snapshot replication policy](snapshot-replication-policy.md)
+for current-status queries, bounded admission and permanent-failure replacement.
+
 This keeps Konserve as the common storage abstraction without making ordinary
 Konserve reads remote. An `ensure-local` or later tiered adapter can try local
 Konserve first and explicitly invoke `fetch!`; it must surface unavailable,
