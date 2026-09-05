@@ -26,6 +26,23 @@
           [state []]
           statements))
 
+(defn- permutations [xs]
+  (if (empty? xs)
+    [[]]
+    (mapcat (fn [x] (map #(cons x %) (permutations (remove #{x} xs)))) xs)))
+
+(deftest late-ancestry-bridges-prune-already-known-ancestor-heads
+  ;; A and C can both be heads until B arrives and reveals A <- B <- C.
+  ;; B is itself covered by C, but its arrival must still retire A.
+  (doseq [parents [[[] ["a"] ["b"] ["c"]]
+                   [[] ["a"] ["a"] ["b" "c"]]]
+          order (permutations (range 4))]
+    (let [items (mapv statement ["a" "b" "c" "d"] parents)
+          [state outcomes] (accept-all (ref/make-state) (mapv items order))]
+      (is (every? #{:accepted} outcomes))
+      (is (= #{"64"} (ref/heads state "datahike/commit-v1" (utf8 "store-a") (utf8 "main")))
+          (str "delivery order " order " parents " parents)))))
+
 (deftest parents-are-canonical-set-semantics
   (let [item (statement "c" ["b" "a" "b"])]
     (is (= ["61" "62"]

@@ -1,5 +1,5 @@
 (ns netz.snapshot-ref-pubsub-test
-  (:require [clojure.core.async :refer [<!!]]
+  (:require [clojure.core.async :as async :refer [<!!]]
             [clojure.test :refer [deftest is testing]]
             [kabel.pubsub.protocol :as pubsub]
             [netz.identity :as identity]
@@ -39,7 +39,9 @@
           receiver (ref-pubsub/strategy
                     (assoc stream :state receiver-state :publisher publisher))
           summary (<!! (pubsub/-init-client-state receiver))
-          items (<!! (pubsub/-handshake-items sender summary))]
+          source (pubsub/-handshake-items sender summary)
+          items (<!! (async/into [] (:items source)))]
+      (is (= {:ok true} (<!! (:completion source))))
       (is (= [] summary))
       (is (= 2 (count items)))
       (doseq [item items]
@@ -57,8 +59,9 @@
       (let [limited (ref-pubsub/strategy
                      (assoc stream :state sender-state :publisher publisher
                             :max-handshake-items 1))]
-        (is (instance? Exception
-                       (<!! (pubsub/-handshake-items limited []))))))))
+        (let [source (pubsub/-handshake-items limited [])]
+          (is (nil? (<!! (:items source))))
+          (is (instance? Exception (:error (<!! (:completion source))))))))))
 
 (deftest kabel-strategy-rejects-a-valid-statement-for-another-stream
   (let [authority (<!! (identity/generate-identity))

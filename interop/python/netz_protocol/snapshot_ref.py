@@ -218,12 +218,15 @@ class SnapshotRefState:
             "parents": parents, "semantic": semantic, "statement": statement,
         }
         stream_heads = self.heads.setdefault(stream, set())
-        if not any(self._ancestor(stream_nodes, snapshot, head)
-                   for head in stream_heads):
-            stream_heads.difference_update(
-                head for head in tuple(stream_heads)
-                if self._ancestor(stream_nodes, head, snapshot)
-            )
+        covered = any(self._ancestor(stream_nodes, snapshot, head)
+                      for head in stream_heads)
+        # A late ancestor can join previously disconnected head components,
+        # even when this node is itself covered by an existing descendant.
+        stream_heads.difference_update(
+            head for head in tuple(stream_heads)
+            if self._ancestor(stream_nodes, head, snapshot)
+        )
+        if not covered:
             stream_heads.add(snapshot)
         return "accepted"
 

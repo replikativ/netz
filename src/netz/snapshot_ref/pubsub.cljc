@@ -80,9 +80,23 @@
           (throw (ex-info "snapshot-reference catch-up exceeds item limit"
                           {:type :netz.snapshot-ref/handshake-limit
                            :items (count statements)})))
-        (value-channel (mapv ref/encode statements)))
+        (let [items (chan 1)
+              completion (chan 1)]
+          (async/go
+            (try
+              (doseq [statement statements]
+                (async/>! items (ref/encode statement)))
+              (async/>! completion {:ok true})
+              (catch #?(:clj Throwable :cljs :default) error
+                (async/>! completion {:error error}))
+              (finally
+                (close! items)
+                (close! completion))))
+          (pubsub/checked-handshake-source items completion)))
       (catch #?(:clj Throwable :cljs :default) error
-        (value-channel error))))
+        (let [items (chan)]
+          (close! items)
+          (pubsub/checked-handshake-source items (value-channel {:error error}))))))
   (-apply-handshake-item [_ payload]
     (accept-bytes! state expected payload))
   (-apply-publish [_ payload]
