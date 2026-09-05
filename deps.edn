@@ -56,18 +56,19 @@
   :konserve {:extra-paths ["test-konserve"]
              :extra-deps {org.replikativ/konserve {:mvn/version "0.9.375"}}}
 
-  ;; Optional workspace-level compatibility gate. These local roots are kept
+  ;; Optional compatibility gate. Datahike/Yggdrasil use released artifacts;
+  ;; Urd/Spindel use sibling workspaces. These test dependencies are kept
   ;; out of the library's runtime/POM and are only resolved when maintainers
   ;; explicitly run:
   ;;   clojure -X:stack :dirs '["test-stack"]'
-  ;; It proves the real integration seams against sibling checkouts while the
+  ;; It proves the real integration seams while the
   ;; ordinary release remains installable without the whole stack present.
   :stack {:extra-paths ["test" "test-stack"]
           :extra-deps {io.github.cognitect-labs/test-runner
                        {:git/tag "v0.5.1" :git/sha "dfb30dd"}
                        org.replikativ/urd {:local/root "../urd"}
-                       org.replikativ/datahike {:local/root "../datahike"}
-                       org.replikativ/yggdrasil {:local/root "../yggdrasil"}
+                       org.replikativ/datahike {:mvn/version "0.8.1877"}
+                       org.replikativ/yggdrasil {:mvn/version "0.3.43"}
                        org.replikativ/spindel {:local/root "../spindel"}}
           :exec-fn cognitect.test-runner.api/test}
 
