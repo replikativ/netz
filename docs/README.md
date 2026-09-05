@@ -24,3 +24,5 @@
 - [Signed snapshot-reference draft](../spec/snapshot-ref-draft-00.md) defines
   out-of-order, multi-head dissemination for Datahike and other versioned DAGs.
 - [Release readiness](../RELEASE.md) is the operational and standards gate.
+- [Signed Datahike replica demo](datahike-replica-demo.md) fetches through Netz
+  and installs through konserve-sync, including reconnect and offline queries.

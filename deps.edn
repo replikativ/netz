@@ -83,6 +83,13 @@
   :blob-demo {:extra-paths ["examples"]
               :main-opts ["-m" "netz.examples.private-blob"]}
 
+  :replica-demo
+  {:extra-paths ["examples" "test-replica"]
+   :extra-deps {org.replikativ/datahike {:mvn/version "0.8.1877"}
+                org.replikativ/yggdrasil {:mvn/version "0.3.43"}
+                org.replikativ/konserve-sync {:mvn/version "0.1.40"}}
+   :main-opts ["-m" "netz.examples.datahike-replica"]}
+
   :build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.6"}
                  slipset/deps-deploy {:mvn/version "0.2.2"}}
           :ns-default build}}}

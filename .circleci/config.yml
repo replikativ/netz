@@ -28,7 +28,9 @@ jobs:
             - deps-
       - run:
           name: Resolve Clojure dependencies
-          command: clojure -A:test:secure-test:konserve:cljs:build -P
+          command: |
+            clojure -A:test:secure-test:konserve:cljs:build -P
+            clojure -A:replica-demo:test -P
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
           paths:
@@ -109,6 +111,16 @@ jobs:
             NETZ_PYTHON=/tmp/netz-mixed-venv/bin/python clojure -X:secure-test:mixed-test :dirs '["test-mixed"]'
           no_output_timeout: 10m
 
+  test-replica:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Verify Datahike replica recovery against released dependencies
+          command: clojure -X:replica-demo:test :dirs '["test-replica"]'
+          no_output_timeout: 10m
+
   test-cljs:
     executor: tools/clojurecli
     steps:
@@ -158,6 +170,9 @@ workflows:
           context: dockerhub-deploy
           requires: [setup]
       - test-konserve:
+          context: dockerhub-deploy
+          requires: [setup]
+      - test-replica:
           context: dockerhub-deploy
           requires: [setup]
       - test-secure:
