@@ -359,10 +359,14 @@
    :statement statement})
 
 (defn- add-head [head-set nodes snapshot]
-  (let [covered? (some #(ancestor? nodes snapshot %) head-set)]
+  (let [covered? (some #(ancestor? nodes snapshot %) head-set)
+        ;; A late intermediate node can connect two previously disconnected
+        ;; heads. Even if a known descendant covers this node, its newly known
+        ;; ancestors must be removed from the frontier.
+        remaining (set (remove #(ancestor? nodes % snapshot) head-set))]
     (if covered?
-      head-set
-      (conj (set (remove #(ancestor? nodes % snapshot) head-set)) snapshot))))
+      remaining
+      (conj remaining snapshot))))
 
 (defn accept
   "Apply an already authenticated statement. Returns `[state outcome]`.

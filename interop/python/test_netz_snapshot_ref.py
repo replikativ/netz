@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from itertools import permutations
 
 from netz_protocol.identity import genesis
 from netz_protocol.snapshot_ref import (
@@ -34,6 +35,19 @@ def signed(snapshot: bytes, parents: list[bytes], *, ref: bytes = b"main"):
 
 
 class SnapshotRefTests(unittest.TestCase):
+    def test_late_ancestry_bridges_converge_in_every_delivery_order(self):
+        stream = ("datahike/commit-v1", b"store-a", b"main")
+        for parents in ([[], [b"a"], [b"b"], [b"c"]],
+                        [[], [b"a"], [b"a"], [b"b", b"c"]]):
+            items = [signed(name, ps) for name, ps in
+                     zip([b"a", b"b", b"c", b"d"], parents)]
+            for order in permutations(range(4)):
+                with self.subTest(parents=parents, order=order):
+                    state = SnapshotRefState()
+                    for index in order:
+                        self.assertEqual("accepted", state.accept(items[index]))
+                    self.assertEqual({b"d"}, state.heads[stream])
+
     def test_known_signing_bytes(self):
         actual = signing_bytes(
             profile="datahike/commit-v1", system=b"store-a", ref=b"main",
