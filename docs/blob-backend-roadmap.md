@@ -94,6 +94,26 @@ not add them.
 
 ## Increment 2: persisted migration before activation
 
+An isolated CLJC model now lives in `netz.replication.migration`. It records the
+trusted transition binding, policy, old holders, targets, transfer attempts,
+receipt expiry, and a checkpoint revision. `step` serializes mutations behind an
+exact checkpoint-completion barrier (`:busy` means retry, not successful event
+delivery). `checkpoint`/`restore` let the test harness model crash boundaries.
+The tests explore all six three-replica receipt orders, duplicates, each target's
+loss and re-acknowledgement, and crashes around each receipt's checkpoint write.
+
+This is **not yet a disk-backed runtime or authenticated checkpoint schema**.
+It assumes trusted, verified inputs and intact local checkpoint reads. Receipt
+authentication, binding layout addresses to actual signed layouts, controller
+authority refresh after restart, durable adapter IO, bounded counters, wire
+encoding, retention renewal, and serialized deletion are still activation gates.
+The only output concerning removal is an advisory set of retirement candidates;
+it cannot authorize a physical delete. Grace, protected holders, fresh binding,
+unexpired N-target coverage and completed persistence are checked when querying
+that set. Authority changes must invalidate outstanding advisory results; never
+cache them as delete capabilities. The caller must provide pins and active lease
+protections, and refresh current authority even when restoring an old checkpoint.
+
 Use a pure state machine first, with a durable runtime interpreting its effects.
 Persist the authorized transition identity (exact old/new layout addresses and
 policy), old holders, desired holders, current-attempt receipts, and phase. Bind
