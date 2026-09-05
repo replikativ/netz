@@ -131,6 +131,8 @@ clojure -M:blob-demo
   [extension draft](spec/blob-replication-draft-00.md) — optional private replicas
 - [Blob backend roadmap](docs/blob-backend-roadmap.md) — storage guarantees,
   stable-placement prototype, migration safety, and remaining release gates
+- [Storage GC](docs/storage-gc.md) — Datahike/Yggdrasil reachability versus
+  pool retention and surplus-replica retirement
 - [Konserve-backed object exchange](docs/konserve-object-exchange.md) — stack
   integration, object/ref publication boundary, and Git-like materialization
 - [Python interoperability core](interop/python/README.md) — CBOR, sync,
