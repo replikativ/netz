@@ -102,7 +102,7 @@ delivery). `checkpoint`/`restore` let the test harness model crash boundaries.
 The tests explore all six three-replica receipt orders, duplicates, each target's
 loss and re-acknowledgement, and crashes around each receipt's checkpoint write.
 
-This is **not yet a disk-backed runtime or authenticated checkpoint schema**.
+The model itself is **not a disk-backed runtime or authenticated wire schema**.
 It assumes trusted, verified inputs and intact local checkpoint reads. Receipt
 authentication, binding layout addresses to actual signed layouts, controller
 authority refresh after restart, durable adapter IO, bounded counters, wire
@@ -139,6 +139,31 @@ refresh authority before control operations; retained immutable bytes can still
 be recovery sources under access policy. Bound historical hints without dropping
 the only known recovery source silently. Persisted cutover/write fencing and
 stale-client behavior need explicit specification before runtime activation.
+
+### Local checkpoint IO increment
+
+`netz.replication.migration-file` adds an experimental JVM-only file boundary.
+It authenticates exact EDN payload bytes with domain-separated HMAC-SHA256 before
+parsing, bounds file reads to 1 MiB, checks a closed record against an independently
+trusted model template, and bounds stored counters to safe integers. It writes a
+unique temporary file, fsyncs it, atomically replaces the target, fsyncs the parent
+directory, then authenticates read-back before completing model persistence.
+There is no fallback to a non-atomic move or weaker durability on unsupported
+filesystems. The parent directory must be private and already exist.
+
+The caller supplies a secret random key of at least 32 bytes, an authoritative
+template, and an independently retained revision floor on load. HMAC is local
+checkpoint authentication, not verification of remote receipts or encryption.
+An old authentic checkpoint cannot be detected without an independent floor.
+One externally fenced writer owns the path: this module provides no cross-process
+writer lock, consensus, key management, automatic controller wiring, or deletion.
+Fresh authority/retention checks remain mandatory after restart.
+
+Tests cover fsync/reopen, wrong keys/templates, tampering, truncation, revision
+rollback with a retained floor, and injected failures after file fsync, rename and
+directory fsync. Exception injection is not process-kill or power-loss testing;
+those gates remain open. See [application GC and retention](storage-gc.md) for the
+independent protection required by snapshots, transfers and shared pool objects.
 
 ## Increment 3: bounded repair and authorized replacement
 
