@@ -4,6 +4,8 @@
             [clojure.test :refer [deftest is testing]]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.audit :as audit]
+            [netz.replication.audit-runtime :as audit-runtime]
             [netz.replication.controller-runtime :as controller-runtime]
             [netz.replication.controller-storage :as controller-storage]
             [netz.replication.intent :as intent]
@@ -123,6 +125,123 @@
       :attempt attempt
       :persistence "netz/store/best-effort/1" :receipt receipt
       :manifest-id (identity/bytes->hex (:manifest-id split))})))
+
+(deftest active-revalidation-is-durable-fenced-and-awaitable
+  (let [store (memory-store)
+        state (atom (layout-state layout0))
+        offers (atom [])
+        controller (runtime store state offers {})
+        object-id (identity/bytes->hex (:object-id split))]
+    (try
+      (await (controller-runtime/ready controller))
+      (await (controller-runtime/begin! controller (sign layout0) (sign retention) (:manifest split)))
+      (controller-runtime/notify-stored! controller (stored-event 0))
+      (is (= :confirmed (:status (await (controller-runtime/await-durable! controller object-id)))))
+      (let [observation (first (audit/observations (controller-runtime/state controller)))
+            gate (async/chan)]
+        (reset! (:gate store) gate)
+        (let [result (controller-runtime/revalidate! controller observation)]
+          (is (wait-for 1000 #(= :pending (:status (controller-runtime/durability-status controller object-id)))))
+          (is (= 1 (count @offers)) "no repair dispatch before persistence")
+          (async/put! gate true)
+          (is (= :ok (await result))))
+        (is (= 1 (get-in (last @offers) [:offer "attempt"])))
+        (is (= :stale-observation (await (controller-runtime/revalidate! controller observation))))
+        (controller-runtime/notify-stored! controller (stored-event 0))
+        (let [result (await (controller-runtime/await-durable! controller object-id {:timeout-ms 30 :poll-ms 5}))]
+          (is (= :timeout (:status result)))
+          (is (= :under-replicated (:last-status result))))
+        (controller-runtime/notify-stored! controller (stored-event 1))
+        (is (= :confirmed (:status (await (controller-runtime/await-durable! controller object-id))))))
+      (finally (controller-runtime/stop! controller)))))
+
+(deftest audit-runtime-actively-reoffers-previously-complete-object
+  (let [store (memory-store)
+        state (atom (layout-state layout0))
+        offers (atom [])
+        controller (runtime store state offers {})
+        object-id (identity/bytes->hex (:object-id split))]
+    (try
+      (await (controller-runtime/ready controller))
+      (await (controller-runtime/begin! controller (sign layout0) (sign retention) (:manifest split)))
+      (controller-runtime/notify-stored! controller (stored-event 0))
+      (await (controller-runtime/await-durable! controller object-id))
+      (let [auditor (audit-runtime/start! {:controller controller :scan-ms 5
+                                           :audit-opts {:interval-ms 10}})]
+        (try
+          (is (true? (await (audit-runtime/ready auditor))))
+          (is (wait-for 2000 #(= 2 (count @offers))))
+          (is (= :under-replicated (:status (controller-runtime/durability-status controller object-id))))
+          (finally (await (audit-runtime/stop! auditor)))))
+      (finally (controller-runtime/stop! controller)))))
+
+(deftest revalidation-restart-does-not-resurrect-old-receipts
+  (let [store (memory-store)
+        state (atom (layout-state layout0))
+        offers (atom [])
+        controller (runtime store state offers {})
+        object-id (identity/bytes->hex (:object-id split))]
+    (try
+      (await (controller-runtime/ready controller))
+      (await (controller-runtime/begin! controller (sign layout0) (sign retention) (:manifest split)))
+      (reset! (:receipts store) [(stored-event 0)])
+      (controller-runtime/notify-stored! controller (stored-event 0))
+      (await (controller-runtime/await-durable! controller object-id))
+      (is (= :ok (await (controller-runtime/revalidate! controller
+                                                        (first (audit/observations (controller-runtime/state controller)))))))
+      (finally (controller-runtime/stop! controller)))
+    (let [restarted (runtime store state (atom []) {})]
+      (try
+        (await (controller-runtime/ready restarted))
+        (is (= :under-replicated (:status (controller-runtime/durability-status restarted object-id))))
+        (is (= 1 (get-in (controller-runtime/state restarted) [:objects object-id :attempts authority-hex])))
+        (finally (controller-runtime/stop! restarted))))))
+
+(deftest expired-and-forked-layout-evidence-does-not-confirm
+  (let [store (memory-store)
+        state (atom (layout-state layout0))
+        now (atom 1100)
+        controller (runtime store state (atom []) {:now-fn #(deref now)})
+        object-id (identity/bytes->hex (:object-id split))]
+    (try
+      (await (controller-runtime/ready controller))
+      (await (controller-runtime/begin! controller (sign layout0) (sign retention) (:manifest split)))
+      (controller-runtime/notify-stored! controller (stored-event 0))
+      (is (= :confirmed (:status (await (controller-runtime/await-durable! controller object-id)))))
+      (reset! now 5000)
+      (is (= :inactive (:status (controller-runtime/durability-status controller object-id))))
+      (reset! now 1100)
+      (swap! state assoc :conflicts [{:epoch 0}])
+      (is (= :inactive (:status (await (controller-runtime/await-durable! controller object-id)))))
+      (finally (controller-runtime/stop! controller)))))
+
+(deftest failed-first-audit-outbox-is-discovered-and-retried
+  (let [store (memory-store)
+        layout (atom (layout-state layout0))
+        offers (atom [])
+        controller (runtime store layout offers {})
+        object-id (identity/bytes->hex (:object-id split))]
+    (try
+      (await (controller-runtime/ready controller))
+      (await (controller-runtime/begin! controller (sign layout0) (sign retention) (:manifest split)))
+      (controller-runtime/notify-stored! controller (stored-event 0))
+      (await (controller-runtime/await-durable! controller object-id))
+      (reset! (:fail? store) true)
+      (is (thrown-with-msg? Exception #"intent disk failed"
+                            (await (controller-runtime/revalidate! controller
+                                                                   (first (audit/observations (controller-runtime/state controller)))))))
+      (is (= 1 (count @offers)))
+      (let [repairs (repair-scheduler-runtime/start!
+                     {:controller controller
+                      :scheduler-opts {:scan-ms 5 :initial-grace-ms 5 :backoff-ms [5]}})]
+        (try
+          (await (repair-scheduler-runtime/ready repairs))
+          (is (wait-for 1000 #(>= (:persistence-errors (controller-runtime/stats controller)) 2)))
+          (reset! (:fail? store) false)
+          (is (wait-for 1000 #(>= (count @offers) 2)))
+          (is (= 1 (get-in @offers [1 :offer "attempt"])) "failed outbox retries preserve the exact fence")
+          (finally (repair-scheduler-runtime/stop! repairs))))
+      (finally (controller-runtime/stop! controller)))))
 
 (deftest begin-persists-before-dispatch
   (let [store (memory-store)

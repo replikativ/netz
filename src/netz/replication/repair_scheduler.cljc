@@ -70,7 +70,10 @@
                  :intent-revision (:intent-revision entry)
                  :targets (set (:targets entry))
                  :acks (set (:acks entry))}
-                {:object-id object-id :pending? true})))
+                {:object-id object-id :pending? true
+                 :layout-epoch (:layout-epoch entry)
+                 :intent-revision (:intent-revision entry)
+                 :targets (set (:targets entry)) :acks (set (:acks entry))})))
        (sort-by :object-id)
        vec))
 
@@ -135,6 +138,13 @@
         durable (filterv (complement :pending?) objects)
         objects-by-id (into {} (map (juxt :object-id identity)) durable)
         incomplete (filterv incomplete? durable)
+        ;; A first audit can withdraw an acknowledged copy and then fail its
+        ;; outbox write before this scheduler ever saw a missing target. Admit
+        ;; that pending generation as retry work too. repair! persists the same
+        ;; candidate; it cannot dispatch until that write succeeds.
+        new-pending (filterv #(and (:pending? %) (some? (:layout-epoch %))
+                                   (some? (:intent-revision %)) (incomplete? %)
+                                   (not (contains? (:entries state) (:object-id %)))) objects)
         live-ids (set (map :object-id incomplete))
         completed (count (filter (fn [object-id]
                                    (when-let [object (get objects-by-id object-id)]
@@ -146,7 +156,7 @@
                         (reconcile-entry current now object)]
                     [next-state (+ discoveries (if new? 1 0))]))
                 [(update state :entries select-keys (into live-ids pending-ids)) 0]
-                incomplete)
+                (into incomplete new-pending))
         in-flight (count (filter :in-flight? (vals (:entries state))))
         available (max 0 (- (get-in state [:opts :max-in-flight]) in-flight))
         issue-limit (min available
