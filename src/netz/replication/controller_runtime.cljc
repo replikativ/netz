@@ -11,6 +11,7 @@
             [netz.replication.controller-storage :as controller-storage]
             [netz.replication.intent :as intent]
             [netz.replication.layout :as layout]
+            [netz.replication.placement :as placement]
             [netz.replication.storage :as storage]
             [netz.replication.wire :as replication-wire]
             [netz.wire :as wire]
@@ -312,6 +313,26 @@
       (result! reply :conflict)
       :else (drive! ctx {:type :replication/revise :intent restored} reply))))
 
+(defn- process-revalidate! [ctx observation reply]
+  (let [{:keys [object-id replica-id layout-epoch intent-revision attempt]} observation
+        entry (get-in @(:state ctx) [:objects object-id])
+        record (get @(:records ctx) object-id)]
+    (cond
+      @(:startup-error ctx) (result! reply @(:startup-error ctx))
+      (nil? entry) (result! reply :missing)
+      (not (current-record? ctx record)) (result! reply :stale-layout)
+      ;; An audit captured before a renewal, repair or membership change must
+      ;; not revoke newer evidence. Pending persistence is owned by repair!.
+      (not (and (:intent-stored? entry)
+                (= layout-epoch (:layout-epoch entry))
+                (= intent-revision (:intent-revision entry))
+                (= attempt (get-in entry [:attempts replica-id]))
+                (contains? (:acks entry) replica-id)))
+      (result! reply :stale-observation)
+      :else
+      (drive! ctx {:type :replication/lost :object-id object-id
+                   :replica-id replica-id :layout-epoch layout-epoch} reply))))
+
 (defn- run-loop! [ctx]
   (go-loop []
     (when-let [{:keys [kind reply] :as item} (<! (:events ctx))]
@@ -320,6 +341,7 @@
           :begin (process-begin! ctx (:record item) reply)
           :revise (process-revise! ctx (:record item) reply)
           :repair (process-repair! ctx (:object-id item) reply)
+          :revalidate (process-revalidate! ctx (:observation item) reply)
           :stored (when (receipt-matches? ctx (:event item))
                     (drive! ctx (:event item) nil))
           :failed (callback! ctx :on-failed! (:event item))
@@ -386,6 +408,7 @@
              :events (chan event-capacity)
              :ready (async/promise-chan)
              :startup-error (atom nil) :stopped? (atom false)
+             :waiters (atom 0)
              :stats (atom {:dispatched 0 :dispatch-refused 0
                            :persistence-errors 0 :callback-errors 0
                            :event-errors 0})}]
@@ -431,6 +454,20 @@
              (submit! ctx {:kind :repair :object-id object-id :reply reply}))
       reply
       (do (result! reply :unavailable) reply))))
+
+(defn revalidate!
+  "Withdraw historical evidence and request a freshly fenced durable receipt.
+
+  This is a local maintenance decision, NOT a claim that a peer lost its data.
+  Supply the exact observed object-id, replica-id, layout-epoch, intent-revision
+  and attempt. The serialized controller rejects stale observations, persists
+  the new attempt before dispatch, and never substitutes another Authority.
+  Existing repair scheduling retries unsuccessful revalidation attempts."
+  [ctx observation]
+  (let [reply (chan 1)]
+    (when-not (submit! ctx {:kind :revalidate :observation observation :reply reply})
+      (result! reply :unavailable))
+    reply))
 
 (defn revise!
   "Durably renew or migrate one existing immutable-object intent.
@@ -498,6 +535,70 @@
 (defn failed-handler [ctx] #(notify-failed! ctx %))
 
 (defn state [ctx] @(:state ctx))
+
+(defn durability-status
+  "Current receipt evidence, not a promise of present reachability.
+
+  Historical one-shot :durable callbacks are deliberately not used here.
+  Pending intents, expired leases, stale/forked layouts and withdrawn receipts
+  cannot satisfy this query. Local storage counts only if it participates as
+  an explicitly selected replica and supplies an accepted durable receipt."
+  [ctx object-id]
+  (if-let [entry (get-in @(:state ctx) [:objects object-id])]
+    (let [retention (:statement (replication-wire/parse-envelope
+                                 (get-in entry [:manifest :retention-envelope])))
+          policy (:policy entry)
+          members (filterv #(contains? (:acks entry) (:id %))
+                           (placement/eligible-members (:layout entry)))
+          status (cond
+                   @(:stopped? ctx) :unavailable
+                   (not (:intent-stored? entry)) :pending
+                   (not (current-record? ctx {"layout" (get-in entry [:manifest :layout-envelope])
+                                              "retention" (get-in entry [:manifest :retention-envelope])})) :inactive
+                   (and (>= (count members) (:write-acks policy))
+                        (placement/satisfies-domains? members (:minimum-domains policy)))
+                   :confirmed
+                   :else :under-replicated)]
+      {:object-id object-id :status status
+       :layout-epoch (:layout-epoch entry) :intent-revision (:intent-revision entry)
+       :replicas (:replicas policy) :required (:write-acks policy)
+       :acknowledged (mapv :id members)
+       :retain-until (get retention "retain_until")
+       :complete? (and (= :confirmed status)
+                       (= (set (:targets entry)) (:acks entry)))})
+    {:object-id object-id :status :missing}))
+
+(defn await-durable!
+  "Await current receipt policy without blocking the application writer.
+
+  Timeout returns the latest evidence with :status :timeout and :last-status;
+  it NEVER rolls back local work or cancels replication. At most 1,024 waiters
+  are admitted per controller. Call begin! first. Status is not linearizable
+  root selection and a confirmation does not renew the retention lease."
+  ([ctx object-id] (await-durable! ctx object-id {}))
+  ([ctx object-id {:keys [timeout-ms poll-ms] :or {timeout-ms 30000 poll-ms 50}}]
+   (when-not (and (integer? timeout-ms) (<= 1 timeout-ms 2147483647)
+                  (integer? poll-ms) (<= 1 poll-ms timeout-ms))
+     (throw (ex-info "Invalid replication wait options" {})))
+   (if (> (swap! (:waiters ctx) inc) 1024)
+     (do (swap! (:waiters ctx) dec)
+         (go {:object-id object-id :status :busy}))
+     (go
+       (try
+         (let [deadline (async/timeout timeout-ms)]
+           (loop []
+             (let [result (durability-status ctx object-id)]
+               (if (contains? #{:confirmed :missing :inactive :unavailable} (:status result))
+                 result
+                 (let [[_ port] (async/alts! [deadline (async/timeout poll-ms)] :priority true)]
+                   (if (= port deadline)
+                     (let [latest (durability-status ctx object-id)]
+                       (if (= :confirmed (:status latest)) latest
+                           (assoc latest :last-status (:status latest) :status :timeout)))
+                     (recur)))))))
+         (catch #?(:clj Throwable :cljs :default) cause cause)
+         (finally (swap! (:waiters ctx) dec)))))))
+
 (defn records [ctx] @(:records ctx))
 (defn stats [ctx] @(:stats ctx))
 

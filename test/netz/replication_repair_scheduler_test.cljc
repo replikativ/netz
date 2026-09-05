@@ -37,7 +37,8 @@
                               :intent-stored? false}}})]
     (is (= [{:object-id "durable" :layout-epoch 1 :intent-revision 2
              :targets #{target-a target-b} :acks #{target-a}}
-            {:object-id "pending" :pending? true}]
+            {:object-id "pending" :pending? true :layout-epoch 1 :intent-revision 0
+             :targets #{target-a} :acks #{}}]
            objects))))
 
 (deftest initial-grace-protects-attempt-zero-transfers
