@@ -21,4 +21,6 @@
   freezes the portable placement subset and records the remaining wire gates.
 - [Protocol draft](../spec/netz-draft-00.md) is the prospective language-neutral
   contract. It is not yet an interoperability claim.
+- [Signed snapshot-reference draft](../spec/snapshot-ref-draft-00.md) defines
+  out-of-order, multi-head dissemination for Datahike and other versioned DAGs.
 - [Release readiness](../RELEASE.md) is the operational and standards gate.
