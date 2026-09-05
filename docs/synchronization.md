@@ -133,6 +133,28 @@ with `:netz/stopped` without waiting behind an in-flight operation.
 
 ## Reference profiles
 
+### `netz/snapshot-ref/v1`
+
+For durable Git-like commit DAGs. A self-verifying statement names the exact
+snapshot and its immediate parents using opaque application IDs. Delivery may
+be out of order: missing parents are requested explicitly, known descendants
+stay heads when an ancestor arrives late, and concurrent heads remain visible.
+The optional signed ordering bytes are interpreted only by a negotiated fenced
+profile; baseline Netz does not impose LWW or require Urd.
+
+`netz.snapshot-ref/dag-event-fields` maps the complete durable event shape used
+by Yggdrasil to the portable byte fields, and `sign-dag-event` signs it. The
+result is an opaque live-publication payload and a durable reconciliation item.
+`netz.snapshot-ref.pubsub/strategy` is the Kabel strategy for one pinned
+`(profile, system, ref)` stream. Its initial handshake exchanges signed DAG
+statements reachable beyond the receiver's known heads, while its live path
+applies the same decode, signature, stream-binding, and DAG transition. Both
+summary heads and catch-up items are bounded; exceeding the configured catch-up
+limit fails visibly and calls for an application snapshot/object bootstrap.
+Object availability is a separate condition: after accepting the reference, a
+receiver uses the application closure adapter and Netz object exchange to
+materialize the immutable objects before exposing the snapshot.
+
 ### `netz/root-log/1`
 
 For Datahike/Konserve with an Urd-selected writer. A summary contains writer

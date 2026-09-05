@@ -8,7 +8,9 @@
             [netz.content-runtime :as content-runtime]
             [netz.identity :as identity]
             [netz.overlay.runtime :as runtime]
-            [netz.pubsub :as overlay-pubsub]))
+            [netz.pubsub :as overlay-pubsub]
+            [netz.snapshot-ref :as snapshot-ref]
+            [netz.snapshot-ref.pubsub :as snapshot-ref-pubsub]))
 
 (def generate-identity identity/generate-identity)
 (def start! runtime/start!)
@@ -20,6 +22,9 @@
 (def start-sync! runtime/start-sync!)
 (def start-content-service! content-runtime/start-service!)
 (def start-content-requester! content-runtime/start-requester!)
+(def sign-snapshot-ref snapshot-ref/sign-dag-event)
+(def snapshot-ref-topic snapshot-ref/topic-for)
+(def snapshot-ref-strategy snapshot-ref-pubsub/strategy)
 
 (defn install-pubsub!
   "Install the ordered Netz transport on a running Kabel peer."

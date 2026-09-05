@@ -20,7 +20,12 @@ identifier.
 `netz_protocol.publication` constructs and verifies the complete signed
 profile-1 dissemination envelope. Its application payload is an opaque byte
 string: relays verify the exact bytes and never need to decode Boring, CBOR, or
-an application-specific format. `netz_protocol.dissemination` adds the strict
+an application-specific format. `netz_protocol.snapshot_ref` independently
+implements the signed snapshot-DAG envelope and bounded out-of-order/multi-head
+tracker. It shares exact signing bytes with the JVM/JavaScript implementation,
+so Python can publish or validate Datahike/Yggdrasil-style commit references
+without loading Clojure or understanding the referenced storage objects.
+`netz_protocol.dissemination` adds the strict
 `netz/dissemination/1` `interests`, flattened `have`, and bounded `want` frames,
 plus canonical constructors and a bounded per-stream ordered receiver. The
 control schemas use full Authority IDs and share an exact fixture with the JVM

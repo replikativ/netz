@@ -5,8 +5,11 @@
   dependencies leaks into Netz's artifact; the tests are the executable seam
   between independently releasable projects."
   (:require [clojure.set :as set]
+            [clojure.core.async :refer [<!!]]
             [clojure.test :refer [deftest is testing]]
             [datahike.api :as datahike]
+            [netz.identity :as identity]
+            [netz.snapshot-ref :as snapshot-ref]
             [netz.sim :as sim]
             [netz.sync :as sync]
             [netz.sync.profile :as profile]
@@ -14,7 +17,9 @@
             [org.replikativ.spindel.ygg-signal :as ygg-signal]
             [urd.consensus.algorithms.raft :as raft]
             [urd.consensus.sim :as urd-sim]
-            [yggdrasil.convergent.gset :as gset]))
+            [yggdrasil.adapters.datahike :as ygg-datahike]
+            [yggdrasil.convergent.gset :as gset]
+            [yggdrasil.hooks :as hooks]))
 
 (defn- sync-node [id profile-id impl topic value & [opts]]
   (sync/make-state id
@@ -28,6 +33,42 @@
                         {:type :sync/start :peer responder :topic topic
                          :profile profile-id :session session})
       (sim/run-until (+ (:now simulation) 20000))))
+
+(deftest datahike-durable-commit-becomes-a-signed-netz-dag-reference
+  (let [config {:store {:backend :memory :id (random-uuid)}
+                :schema-flexibility :read
+                :keep-history? true}]
+    (datahike/create-database config)
+    (let [connection (datahike/connect config)
+          system (ygg-datahike/create connection {:system-name "netz-datahike"})
+          events (atom [])
+          hook (hooks/install-commit-hook! nil system #(swap! events conj %))]
+      (try
+        (datahike/transact connection [{:note/text "publish this commit"}])
+        (let [event (first @events)
+              authority (<!! (identity/generate-identity))
+              signed (<!! (snapshot-ref/sign-dag-event
+                            authority "datahike/commit-v1" event))
+              received (snapshot-ref/decode (snapshot-ref/encode signed))
+              [state outcome] (<!! (snapshot-ref/accept-verified
+                                    (snapshot-ref/make-state) received))]
+          (is (= 1 (count @events))
+              "one durable Datahike writer batch produces one DAG event")
+          (is (true? (<!! (snapshot-ref/verify received))))
+          (is (= :accepted outcome))
+          (is (= #{(identity/bytes->hex (:netz/snapshot received))}
+                 (snapshot-ref/heads
+                  state "datahike/commit-v1"
+                  (:netz/system received) (:netz/ref received))))
+          (is (= (:snapshot-id event)
+                 (String. ^bytes (:netz/snapshot received) "UTF-8")))
+          (is (= (:parent-ids event)
+                 (set (map #(String. ^bytes % "UTF-8")
+                           (:netz/parents received))))))
+        (finally
+          (hooks/remove-commit-hook! nil system hook)
+          (datahike/release connection)
+          (datahike/delete-database config))))))
 
 (defn- raft-fence []
   (let [peers [:urd/a :urd/b :urd/c]
