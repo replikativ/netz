@@ -2,7 +2,6 @@
   "Two independently stored Datahike snapshots over authenticated Netz peers."
   (:require [boring.core :as boring]
             [clojure.core.async :as a]
-            [clojure.set :as set]
             [datahike.api :as d]
             [datahike.cbor :as dcbor]
             [datahike.store :as ds]
@@ -10,14 +9,13 @@
             [kabel.middleware.cbor :refer [cbor]]
             [kabel.peer :as peer]
             [kabel.pubsub :as ps]
-            [kabel.pubsub.protocol :as protocol]
             [konserve.core :as k]
             [konserve.filestore :as filestore]
-            [konserve-sync.pubsub :as ks]
             [konserve-sync.walkers.datahike :as walker]
             [netz.content-runtime :as content]
             [netz.content-wire :as content-wire]
             [netz.examples.snapshot-store :as snapshot]
+            [netz.examples.snapshot-transfer :as transfer]
             [netz.identity :as id]
             [netz.overlay.runtime :as rt]
             [netz.pubsub :as mesh]
@@ -37,10 +35,10 @@
 (defn encode [value] (boring/encode value {:registry registry :stringref false :profile :canonical}))
 (defn decode [bytes] (boring/decode bytes {:registry registry}))
 
-(defn capture!
+(defn select-snapshot!
   "Capture one exact commit, without following the mutable branch head.
    This prototype supports primary PSS indexes only, with no store-ref blobs."
-  [connection event authority previous]
+  [connection event]
   (let [store (:store @connection)
         commit (java.util.UUID/fromString (:snapshot-id event))
         raw (await! (k/get store commit))
@@ -60,62 +58,29 @@
                                                      (await! (k/keys store))))))
           keys (->> (await! (walker/datahike-walk-fn view {}))
                     (remove #{:db :branches}) (cons commit) distinct vec)
-          signed (await! (ref/sign-dag-event authority "datahike/commit-v1" event))]
-      (snapshot/export! store keys commit signed authority encode previous))))
+          profile "datahike/commit-v1"]
+      {:source store :keys keys :root-key commit :profile profile})))
 
-(defn install!
-  "Use konserve-sync to pull from the Netz-backed view. Commit record goes last.
-   No branch pointer is advanced; the caller explicitly chooses a verified DAG head."
-  [opened target]
-  (let [{:keys [source root-key root-statement]} opened]
-    (when-not (and (= "datahike/commit-v1" (:netz/profile root-statement))
-                   (= (str root-key) (String. ^bytes (:netz/snapshot root-statement) "UTF-8")))
-      (throw (ex-info "Datahike commit and signed reference disagree" {})))
-    (let [sender (ks/server-store-strategy source
-                                           {:key-sort-fn #(if (= % root-key) 1 0)})
-          receiver (ks/store-sync-strategy target {})
-          produced (protocol/-handshake-items sender {})
-          ;; Released konserve-sync 0.1.40 uses the legacy item channel. The
-          ;; signed finite catalogue independently proves completeness below.
-          stream (if (map? produced) produced {:items produced})
-          expected-keys (set (map :key (await! (k/keys source))))
-          seen (atom #{})]
-      (try
-        (loop []
-          (when-let [item (await! (:items stream))]
-            (when (or (not (contains? expected-keys (:key item)))
-                      (contains? @seen (:key item)))
-              (throw (ex-info "Unexpected or duplicate snapshot key" {:key (:key item)})))
-            (when (and (= root-key (:key item))
-                       (not= @seen (disj expected-keys root-key)))
-              (throw (ex-info "Snapshot root arrived before its complete closure" {})))
-            ;; An upstream channel-delivered error must not be treated as a value.
-            (when (instance? Throwable (:value item)) (throw (:value item)))
-            (if (await! (k/exists? target (:key item)))
-              (when-not (id/bufs= (encode (:value item))
-                                  (encode (await! (k/get target (:key item)))))
-                (throw (ex-info "Conflicting immutable snapshot key" {:key (:key item)})))
-              (let [result (await! (protocol/-apply-handshake-item receiver item))]
-                (when-not (= true (:ok result))
-                  (throw (ex-info "Konserve snapshot install failed" {:result result})))
-                (when-not (id/bufs= (encode (:value item))
-                                    (encode (await! (k/get target (:key item)))))
-                  (throw (ex-info "Snapshot write failed read-back verification" {:key (:key item)})))))
-            (swap! seen conj (:key item))
-            (recur)))
-        (when-let [completion (:completion stream)]
-          (let [result (await! completion)]
-            (when-not (= true (:ok result))
-              (throw (ex-info "Konserve snapshot source failed" {:result result})))))
-        (when-not (= expected-keys @seen)
-          (throw (ex-info "Incomplete snapshot source" {:missing (set/difference expected-keys @seen)})))
-        (finally (a/close! (:items stream)))))
-    (let [db (d/commit-as-db target root-key)]
-      (when-not (= root-key (get-in db [:meta :datahike/commit-id]))
-        (throw (ex-info "Installed database has the wrong commit" {})))
+(defn adapter [connection]
+  (reify transfer/SnapshotTransfer
+    (select-snapshot! [_ event] (select-snapshot! connection event))
+    (validate-root! [_ root-key root-statement]
+      (when-not (and (= "datahike/commit-v1" (:netz/profile root-statement))
+                     (= (str root-key) (String. ^bytes (:netz/snapshot root-statement) "UTF-8")))
+        (throw (ex-info "Datahike commit and signed reference disagree" {}))))
+    (open-snapshot! [_ target root-key]
+      (let [db (d/commit-as-db target root-key)]
+        (when-not (= root-key (get-in db [:meta :datahike/commit-id]))
+          (throw (ex-info "Installed database has the wrong commit" {})))
       ;; Force all primary datoms before declaring the snapshot usable.
-      (doall (d/datoms db :eavt))
-      db)))
+        (doall (d/datoms db :eavt))
+        db))))
+
+(defn capture! [connection event authority previous]
+  (transfer/capture! (adapter connection) event authority encode previous))
+
+(defn install! [opened target]
+  (transfer/install! (adapter nil) opened target encode))
 
 (defn start-node! [identity url seed]
   (let [peer-id (id/peer-id (:genesis identity))

@@ -9,6 +9,7 @@
             [netz.identity :as identity]
             [netz.overlay.runtime :as overlay-runtime]
             [netz.replication.blob :as blob]
+            [netz.replication.audit-runtime :as audit-runtime]
             [netz.replication.controller-runtime :as controller-runtime]
             [netz.replication.file-store :as file-store]
             [netz.replication.inventory :as inventory]
@@ -211,7 +212,7 @@
            (:node server)
            {:store target
             :now-fn (constantly 1100)
-            :authorize-offer! (constantly (storage/chan-of true))})
+            :authorize-offer! (fn [_] (storage/chan-of true))})
           source-runtime
           (replication-runtime/start!
            (:node client)
@@ -264,6 +265,31 @@
                        [:objects (identity/bytes->hex (:object-id split))
                         :acks])))
         (is (empty? @failures))
+        (testing "active revalidation repairs an actually missing replica piece"
+          (let [piece (identity/bytes->hex (:id (first (:pieces split))))
+                piece-path (.resolve target-root
+                                     (str "pieces/" (subs piece 0 2) "/" (subs piece 2) ".piece"))
+                _ (Files/move piece-path (.resolveSibling piece-path (str (.getFileName piece-path) ".offline"))
+                              (make-array java.nio.file.CopyOption 0))
+                clock (atom 0)
+                auditor (audit-runtime/start!
+                         {:controller controller :scan-ms 10 :now-fn #(deref clock)
+                          :audit-opts {:interval-ms 10}})]
+            (try
+              (await (audit-runtime/ready auditor))
+              (is (wait-for 1000 #(seq (:entries @(:state auditor)))))
+              (reset! clock 10)
+              (is (wait-for 10000 #(>= (count @stored) 2))
+                  (pr-str {:failures @failures :audit (audit-runtime/stats auditor)
+                           :source (replication-runtime/stats source-runtime)
+                           :target (replication-runtime/stats target-runtime)}))
+              (is (= :confirmed
+                     (:status (await (controller-runtime/await-durable!
+                                      controller (identity/bytes->hex (:object-id split))
+                                      {:timeout-ms 1000 :poll-ms 10})))))
+              (is (= :healthy (:status (await (inventory/scrub-object! target (:manifest-id split))))))
+              (is (= 1 (:attempt (last @stored))))
+              (finally (await (audit-runtime/stop! auditor))))))
         (finally
           (controller-runtime/stop! controller)
           (replication-runtime/stop! source-runtime)

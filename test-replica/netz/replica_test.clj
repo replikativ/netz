@@ -8,6 +8,7 @@
             [konserve.filestore :as filestore]
             [konserve.memory :as memory]
             [netz.examples.datahike-replica :as demo]
+            [netz.examples.snapshot-archive :as archive]
             [netz.examples.snapshot-store :as snapshot]
             [netz.content-wire :as content]
             [netz.identity :as id]
@@ -37,6 +38,27 @@
 (defn expected [statement]
   {:publisher (:netz/publisher statement)
    :system (:netz/system statement) :ref-name (:netz/ref statement)})
+
+(deftest datahike-closure-roundtrips-through-the-durable-blob-archive-format
+  (fixture!
+   (fn [{:keys [connection export]}]
+     (let [packed (archive/prepare export)
+           restored (archive/restore (:bytes packed) (:statement export))
+           cache (await! (memory/new-mem-store))
+           target (ds/add-cache-and-handlers (await! (memory/new-mem-store)) (:config @connection))
+           opened (snapshot/open! (:statement restored) (expected (:statement restored))
+                                  cache #(get (:blocks restored) (id/bytes->hex %)) demo/decode)]
+       (is (= 1200 (d/q '[:find (count ?e) . :where [?e :note/text]] (demo/install! opened target))))
+       (is (thrown? Exception
+                    (archive/restore (:bytes packed)
+                                     (assoc (:statement export) :netz/ref (id/utf8-bytes "different")))))
+       (is (thrown? Exception
+                    (archive/prepare (assoc-in export [:blocks (first (keys (:blocks export)))]
+                                               (id/utf8-bytes "corrupt")))))
+       (is (thrown? Exception
+                    (archive/prepare
+                     (assoc-in export [:blocks (id/bytes->hex (content/raw-cid (id/utf8-bytes "extra")))]
+                               (id/utf8-bytes "extra")))))))))
 
 (deftest authenticated-network-replica-remains-queryable-offline
   (let [result (demo/run-demo!)]
