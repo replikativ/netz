@@ -34,33 +34,11 @@
                  (if (zero? c) (compare (:id a) (:id b)) c))))
        (mapv #(dissoc % ::score))))
 
-(defn- combinations [xs k]
-  (lazy-seq
-   (cond
-     (zero? k) (list [])
-     (< (count xs) k) nil
-     :else (concat (map #(into [(first xs)] %)
-                        (combinations (subvec xs 1) (dec k)))
-                   (combinations (subvec xs 1) k)))))
-
 (defn place
   "Experimental deterministic N-target placement with profile-1 domain rules.
 
   Unconstrained membership additions/removals preserve unaffected target sets.
   Domain constraints can require additional movement; no stronger claim is made."
   [layout seed policy object-id]
-  (let [{:keys [replicas minimum-domains]}
-        (placement/validate-policy layout policy)
-        ranked (rank layout seed object-id)]
-    (loop [candidates (combinations ranked replicas)
-           examined 0]
-      (cond
-        (empty? candidates)
-        (throw (ex-info "No replica set satisfies all failure domains"
-                        {:type :netz.replication/unsatisfiable-domains}))
-        (>= examined placement/max-constrained-combinations)
-        (throw (ex-info "Constrained placement search exhausted"
-                        {:type :netz.replication/placement-search-exhausted}))
-        (placement/satisfies-domains? (first candidates) minimum-domains)
-        (first candidates)
-        :else (recur (rest candidates) (inc examined))))))
+  (let [policy (placement/validate-policy layout policy)]
+    (placement/select-ranked (rank layout seed object-id) policy)))

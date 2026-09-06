@@ -56,6 +56,17 @@
   :konserve {:extra-paths ["test-konserve"]
              :extra-deps {org.replikativ/konserve {:mvn/version "0.9.375"}}}
 
+  ;; Experimental checkpoint integration requires strict authenticated reads.
+  ;; Test-only PR pin; do not change the library's released Konserve profile.
+  :checkpoint-test
+  {:extra-paths ["test" "test-checkpoint"]
+   :extra-deps {org.replikativ/konserve
+                {:git/url "https://github.com/replikativ/konserve"
+                 :git/sha "c66b0dc0a523bb04730c566d39b876b3aaea2ee1"}
+                io.github.cognitect-labs/test-runner
+                {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+   :exec-fn cognitect.test-runner.api/test}
+
   ;; Optional compatibility gate. Datahike/Yggdrasil use released artifacts;
   ;; Urd/Spindel use sibling workspaces. These test dependencies are kept
   ;; out of the library's runtime/POM and are only resolved when maintainers

@@ -189,16 +189,11 @@
       :else
       (recur (rest candidates) (inc examined)))))
 
-(defn place
-  "Select the deterministic target members for `object-id`.
-
-  The first result is the highest rendezvous-ranked combination satisfying all
-  domain constraints. Throws rather than silently weakening placement."
-  [layout policy object-id]
-  (let [{:keys [replicas minimum-domains] :as _policy}
-        (validate-policy layout policy)
-        ranked (rank layout object-id)
-        preferred (subvec ranked 0 replicas)]
+(defn select-ranked
+  "Internal shared selection engine. Callers must validate the layout/policy
+  and supply its eligible members in profile-specific rank order."
+  [ranked {:keys [replicas minimum-domains]}]
+  (let [preferred (subvec ranked 0 replicas)]
     (if (satisfies-domains? preferred minimum-domains)
       preferred
       (if-let [result (constrained-placement ranked replicas minimum-domains)]
@@ -210,3 +205,9 @@
                         {:type :netz.replication/unsatisfiable-domains
                          :replicas replicas
                          :minimum-domains minimum-domains}))))))
+
+(defn place
+  "Select deterministic targets using profile-1 scores and validated policy."
+  [layout policy object-id]
+  (let [policy (validate-policy layout policy)]
+    (select-ranked (rank layout object-id) policy)))

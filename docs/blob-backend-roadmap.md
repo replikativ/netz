@@ -102,7 +102,7 @@ delivery). `checkpoint`/`restore` let the test harness model crash boundaries.
 The tests explore all six three-replica receipt orders, duplicates, each target's
 loss and re-acknowledgement, and crashes around each receipt's checkpoint write.
 
-This is **not yet a disk-backed runtime or authenticated checkpoint schema**.
+The model itself is **not a disk-backed runtime or authenticated wire schema**.
 It assumes trusted, verified inputs and intact local checkpoint reads. Receipt
 authentication, binding layout addresses to actual signed layouts, controller
 authority refresh after restart, durable adapter IO, bounded counters, wire
@@ -139,6 +139,20 @@ refresh authority before control operations; retained immutable bytes can still
 be recovery sources under access policy. Bound historical hints without dropping
 the only known recovery source silently. Persisted cutover/write fencing and
 stale-client behavior need explicit specification before runtime activation.
+
+### Local checkpoint IO increment
+
+`netz.replication.migration-konserve` now replaces the custom EDN/HMAC file
+prototype. It uses Konserve's synced file backend, sealed CBOR, strict
+authenticated reads and bounded streaming input. Shared record validation binds
+the independently trusted template and revision floor. Konserve owns atomic
+replacement and cryptography; its crash simulator exercises the adapter's
+persistence barrier. This is not network receipt verification, rollback protection
+without an independent floor, controller consensus, or physical deletion.
+
+See [storage consolidation](storage-consolidation.md) for the test-only dependency
+pin, input bounds, format change and remaining qualification gates, and
+[application GC](storage-gc.md) for snapshot and transfer protections.
 
 ## Increment 3: bounded repair and authorized replacement
 
