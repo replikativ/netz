@@ -4,7 +4,7 @@
   Inputs must already be authenticated and authorized. No deletion effects are
   emitted. Every mutation requires a matching local persistence completion before
   further events or retirement eligibility. Callers retry events returning :busy.
-  migration-file provides optional local JVM checkpoint IO; the distributed
+  migration-konserve provides optional local JVM checkpoint IO; the distributed
   runtime adapter and authenticated wire format are not implemented."
   (:require [clojure.set :as set]
             [netz.replication.placement :as placement]

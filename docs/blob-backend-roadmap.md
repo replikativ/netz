@@ -142,28 +142,17 @@ stale-client behavior need explicit specification before runtime activation.
 
 ### Local checkpoint IO increment
 
-`netz.replication.migration-file` adds an experimental JVM-only file boundary.
-It authenticates exact EDN payload bytes with domain-separated HMAC-SHA256 before
-parsing, bounds file reads to 1 MiB, checks a closed record against an independently
-trusted model template, and bounds stored counters to safe integers. It writes a
-unique temporary file, fsyncs it, atomically replaces the target, fsyncs the parent
-directory, then authenticates read-back before completing model persistence.
-There is no fallback to a non-atomic move or weaker durability on unsupported
-filesystems. The parent directory must be private and already exist.
+`netz.replication.migration-konserve` now replaces the custom EDN/HMAC file
+prototype. It uses Konserve's synced file backend, sealed CBOR, strict
+authenticated reads and bounded streaming input. Shared record validation binds
+the independently trusted template and revision floor. Konserve owns atomic
+replacement and cryptography; its crash simulator exercises the adapter's
+persistence barrier. This is not network receipt verification, rollback protection
+without an independent floor, controller consensus, or physical deletion.
 
-The caller supplies a secret random key of at least 32 bytes, an authoritative
-template, and an independently retained revision floor on load. HMAC is local
-checkpoint authentication, not verification of remote receipts or encryption.
-An old authentic checkpoint cannot be detected without an independent floor.
-One externally fenced writer owns the path: this module provides no cross-process
-writer lock, consensus, key management, automatic controller wiring, or deletion.
-Fresh authority/retention checks remain mandatory after restart.
-
-Tests cover fsync/reopen, wrong keys/templates, tampering, truncation, revision
-rollback with a retained floor, and injected failures after file fsync, rename and
-directory fsync. Exception injection is not process-kill or power-loss testing;
-those gates remain open. See [application GC and retention](storage-gc.md) for the
-independent protection required by snapshots, transfers and shared pool objects.
+See [storage consolidation](storage-consolidation.md) for the test-only dependency
+pin, input bounds, format change and remaining qualification gates, and
+[application GC](storage-gc.md) for snapshot and transfer protections.
 
 ## Increment 3: bounded repair and authorized replacement
 

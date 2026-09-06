@@ -133,6 +133,8 @@ clojure -M:blob-demo
   stable-placement prototype, migration safety, and remaining release gates
 - [Storage GC](docs/storage-gc.md) — Datahike/Yggdrasil reachability versus
   pool retention and surplus-replica retirement
+- [Storage consolidation](docs/storage-consolidation.md) — Konserve checkpoint
+  integration, shared validation and remaining backend qualification
 - [Konserve-backed object exchange](docs/konserve-object-exchange.md) — stack
   integration, object/ref publication boundary, and Git-like materialization
 - [Python interoperability core](interop/python/README.md) — CBOR, sync,
