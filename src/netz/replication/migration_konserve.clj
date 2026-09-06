@@ -1,6 +1,6 @@
 (ns netz.replication.migration-konserve
   "Optional JVM checkpoint adapter using a dedicated Konserve file store.
-  Requires authenticated-only AES-GCM support (Konserve PR #150 follow-up).
+  Requires authenticated-only AES-GCM support (Konserve 0.9.392 or later).
   Single externally fenced writer; no network IO, GC or deletion integration."
   (:require [boring.core :as boring]
             [konserve.core :as k]
