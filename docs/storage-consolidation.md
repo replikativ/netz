@@ -27,8 +27,8 @@ Run the opt-in integration gate with:
 clojure -X:checkpoint-test :dirs '["test-checkpoint"]'
 ```
 
-The alias pins the reviewed Konserve PR commit; it does not alter Netz's released
-Konserve dependency. Older Konserve versions are refused by the new adapter before
+Both optional Konserve aliases use released Konserve 0.9.392; no Git pin is needed.
+Older Konserve versions without the required policy are refused by the adapter before
 opening a store. No files are automatically migrated between checkpoint formats.
 
 ## Equivalence gates still open
@@ -54,8 +54,8 @@ and power-loss tests remain distinct from simulated crashes.
 
 ## Remaining order
 
-1. Review refreshed Konserve #150 CI and resolve its release dependency pin.
-2. Replace the test-only dependency pin with a release after Konserve validation.
+1. Keep the released Konserve checkpoint integration gate passing.
+2. Retain explicit strict-read and bounded-input requirements on future upgrades.
 3. Qualify Konserve durability and share blob-store validation/conformance tests.
 4. Review Konserve #188 as the publication/GC fence before inventing a Netz one.
 5. Complete migration runtime, retention protections and end-to-end crash tests.

@@ -150,8 +150,8 @@ replacement and cryptography; its crash simulator exercises the adapter's
 persistence barrier. This is not network receipt verification, rollback protection
 without an independent floor, controller consensus, or physical deletion.
 
-See [storage consolidation](storage-consolidation.md) for the test-only dependency
-pin, input bounds, format change and remaining qualification gates, and
+See [storage consolidation](storage-consolidation.md) for the released dependency,
+input bounds, format change and remaining qualification gates, and
 [application GC](storage-gc.md) for snapshot and transfer protections.
 
 ## Increment 3: bounded repair and authorized replacement
