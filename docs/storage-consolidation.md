@@ -176,6 +176,16 @@ failure-injection tests are not proof of arbitrary power-loss survival.
 4. Review Konserve #188 as the publication/GC fence before inventing a Netz one.
 5. Complete migration runtime, retention protections and end-to-end crash tests.
 
+The migration model now exposes `copy-candidates` for runtime planning. It emits
+placement-ordered replica/attempt/binding records only for the exact current,
+persisted transition; missing or expired receipts remain work, and a pending
+checkpoint or halted transition releases none. Restored checkpoints reproduce
+the same attempts. This API does not send data or grant authority. The runtime
+still needs signed-layout and controller-fence validation, bounded transfer
+scheduling, receipt verification followed by checkpoint persistence, and an
+atomic protection recheck before any retirement. Advisory retirement candidates
+must never be wired directly to deletion.
+
 Keep wire validators' type-specific schemas and signature domains separate.
 Likewise keep transfer, controller and lifecycle persistence barriers explicit;
 deduplication must not hide their different authorization and failure semantics.

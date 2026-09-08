@@ -45,6 +45,27 @@
 
 (defn ready? [state] (= (:revision state) (:persisted state)))
 
+(defn copy-candidates
+  "Plan bounded copy work for the current durable transition, in placement order.
+  Results bind replica, attempt and the exact transition. They are not network
+  authorization: a runtime must validate current authority and signed layouts
+  before issuing transfers. No work is released while a checkpoint is pending.
+  Missing, obsolete-attempt and expired receipts require fresh evidence."
+  [state {:keys [binding now]}]
+  (if (and (ready? state) (not (:halted? state))
+           (= binding (:binding state))
+           (integer? now) (<= 0 now))
+    (into []
+          (keep (fn [{:keys [id]}]
+                  (let [attempt (get-in state [:attempts id])
+                        receipt (get-in state [:receipts id])]
+                    (when-not (and (= attempt (:attempt receipt))
+                                   (integer? (:expires receipt))
+                                   (< now (:expires receipt)))
+                      {:binding binding :replica id :attempt attempt}))))
+          (:targets state))
+    []))
+
 (defn- covered? [state now]
   (and (every? (fn [[id attempt]]
                  (let [receipt (get-in state [:receipts id])]
