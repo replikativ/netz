@@ -27,7 +27,7 @@
  ;; should not carry it. `netz.sim.rng` stays in src/ -- the machines take an
  ;; `:rng` and must be reproducible, so that one is production code.
  ;; Temporary Konserve #192 test pins provide directory provisioning. Replace
- ;; all three coordinates together after release; runtime dependencies stay optional.
+ ;; all four coordinates together after release; runtime dependencies stay optional.
  {:test {:extra-paths ["test"]
          :extra-deps {org.replikativ/konserve
                       {:git/url "https://github.com/replikativ/konserve"
@@ -70,7 +70,10 @@
   ;; Uses the released AES-GCM and strict read-policy implementation.
   :checkpoint-test
   {:extra-paths ["test" "test-checkpoint"]
-   :extra-deps {org.replikativ/konserve {:mvn/version "0.9.394"}
+   ;; Temporary exact dependency on Konserve #192; replace with its release.
+   :extra-deps {org.replikativ/konserve
+                {:git/url "https://github.com/replikativ/konserve.git"
+                 :git/sha "f2bd3f4cf43b61442f0ca6c5c6a8995dd44a31f8"}
                 io.github.cognitect-labs/test-runner
                 {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
    :exec-fn cognitect.test-runner.api/test}

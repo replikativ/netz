@@ -1,9 +1,11 @@
 (ns netz.replication.migration-konserve
   "Optional JVM checkpoint adapter using a dedicated Konserve file store.
-  Requires authenticated-only AES-GCM support (Konserve 0.9.392 or later).
+  Requires authenticated-only AES-GCM and explicit directory provisioning
+  (the latter introduced in Konserve #192).
   Single externally fenced writer; no network IO, GC or deletion integration."
   (:require [boring.core :as boring]
             [konserve.core :as k]
+            [konserve.directory-sync :as directory-sync]
             [konserve.encryptor]
             [konserve.filestore :as fs]
             [netz.replication.migration :as migration]
@@ -20,11 +22,17 @@
 (defn open!
   "Open a dedicated local checkpoint store. Serialization/authentication and
   crash-safe replacement belong to Konserve. Unsupported Konserve versions fail
-  before opening a store; no plaintext or legacy-CBC compatibility reads."
-  [path key]
+  before opening a store; no plaintext or legacy-CBC compatibility reads.
+  Requires an explicit, independently durable ancestor and exclusive ownership
+  of the managed directory path during provisioning. Reopen repeats barriers."
+  [path key {:keys [durable-ancestor]}]
+  (when-not durable-ancestor
+    (throw (ex-info "Checkpoint stores require an explicit durable ancestor"
+                    {:type ::missing-durable-ancestor})))
   (when-not (ns-resolve 'konserve.encryptor 'validate-policy!)
     (throw (ex-info "Konserve authenticated-only read policy is required"
                     {:type ::unsupported-konserve})))
+  (directory-sync/provision-directory! durable-ancestor path)
   {:store (fs/connect-fs-store
            (str path)
            :config {:sync-blob? true :in-place? false :lock-blob? true

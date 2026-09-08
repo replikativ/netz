@@ -31,11 +31,9 @@ Run the opt-in integration gate with:
 clojure -X:checkpoint-test :dirs '["test-checkpoint"]'
 ```
 
-The JVM file-store test aliases temporarily pin Konserve #192 for directory
+The JVM file-store and checkpoint test aliases temporarily pin Konserve #192 for directory
 provisioning. Run `clojure -X:deps prep :aliases '[:test]'` before using them.
-The checkpoint alias on this branch still uses released Konserve 0.9.394.
-The separate checkpoint-provisioning PR temporarily pins Konserve #192 for its
-new provisioning API; replace that pin after the API is released.
+All four coordinates use the same revision; replace them together after release.
 Older Konserve versions without the required policy are refused by the adapter before
 opening a store. No files are automatically migrated between checkpoint formats.
 
@@ -98,9 +96,9 @@ Do not treat a successful sync of the leaf directory as proof that a newly
 created chain of ancestor names survives a crash. This applies to Netz's direct
 file adapter as well as the owned Konserve checkpoint store.
 
-Konserve #192 implements the shared JVM helper; Netz's separate checkpoint
-increment adopts it. The blob adapters have not adopted it yet. They need an
-explicit, pre-provisioned durable
+Konserve #192 implements the shared JVM helper, adopted here by both the
+checkpoint store and JVM blob adapter. Python's blob and frontier stores use
+the equivalent POSIX contract. Each requires an explicit, pre-provisioned durable
 ancestor as a trust boundary. Provision descendants one component at a time and
 persist each parent entry before descending. On retry, repeat the barriers for
 the entire managed path, including components that now exist: an existence test
@@ -135,10 +133,11 @@ helper support must fail before filesystem mutation, never fall back to the
 legacy leaf-only path. `:durable-ancestor` is a caller trust assertion, not a
 path discovered by walking upward until an existing directory is found.
 
-The equivalent Python work includes `blob_store.py` **and** `frontier_store.py`:
-both currently create parent chains and sync only their leaf. Python cannot call
-the JVM helper, so implement the same barrier contract using its supported OS
-primitives and run matching failure/retry cases. Do not advertise cross-platform
+The equivalent Python implementation covers `blob_store.py` and `frontier_store.py`:
+both use `directory_sync.py` for parent-chain barriers and explicit ancestors.
+Its tests cover failed barriers, existing-entry retries and rejected symlinks.
+Python cannot call the JVM helper and currently uses POSIX primitives only.
+Do not advertise cross-platform
 fsync merely because POSIX tests pass. Best-effort mode remains explicitly
 distinct; do not silently downgrade a requested fsync profile.
 
@@ -156,6 +155,20 @@ pre-existing store, read-only reconnects, and Windows permission failures.
 Process-kill coverage must remain distinct from OS/power-loss qualification.
 
 ### Execution order
+
+The experimental `migration-konserve/open!` integration now requires a third
+argument, `{:durable-ancestor path}`. It provisions and rechecks the managed
+path before opening Konserve, including on reconnect; a failed barrier prevents
+store opening and checkpoint acknowledgement. This deliberately changes the
+experimental two-argument API rather than silently asserting an ancestor was
+durable. The administrator owns the durable ancestor and excludes concurrent
+filesystem mutation. The ordinary Konserve connect API is unchanged.
+
+The checkpoint and blob test aliases temporarily share Konserve #192's exact
+revision; replace all four coordinates with the corresponding release after
+publication. Direct blob-directory provisioning is implemented, but generic
+Konserve blob receipts remain unqualified. Successful barrier calls and these
+failure-injection tests are not proof of arbitrary power-loss survival.
 
 1. Keep the released Konserve checkpoint integration gate passing.
 2. Retain explicit strict-read and bounded-input requirements on future upgrades.
