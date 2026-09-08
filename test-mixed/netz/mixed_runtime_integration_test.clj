@@ -223,12 +223,12 @@
         (.close stream)
         (future-cancel output)))))
 
-(defn- run-python-dissemination [url server-authority timeout-seconds]
+(defn- run-python-dissemination [url server-authority timeout-seconds & extra-args]
   (let [python (or (System/getenv "NETZ_PYTHON") "python3")
         arguments
-        [python "test-mixed/python/mixed_dissemination_receiver.py"
-         "--uri" url
-         "--remote-authority" (identity/bytes->hex server-authority)]
+        (into [python "test-mixed/python/mixed_dissemination_receiver.py"
+               "--uri" url
+               "--remote-authority" (identity/bytes->hex server-authority)] extra-args)
         builder (doto (ProcessBuilder. ^java.util.List arguments)
                   (.redirectErrorStream true))
         process (.start builder)
@@ -659,7 +659,7 @@
           (finally (stop-process! process))))
       (finally (stop-node! server)))))
 
-(deftest jvm-commits-a-node-publication
+(deftest python-repairs-a-node-publication-through-jvm
   (let [url (str "ws://localhost:" (swap! port-counter inc))
         topic "datahike/roots/node-demo"
         node-authority "a8386e4e777c12bb11c3344e3ac87b490b1cc13f0128301d28d658d4651791f4"
@@ -667,7 +667,8 @@
                            overlay-runtime/extension-carrier-capability dissemination-wire/capability)
         server-identity (<?? S (identity/generate-identity))
         server (start-server url server-identity capabilities nil nil
-                             (fn [{:keys [authority-id]}] (= node-authority authority-id)))
+                             (fn [{:keys [authority-id]}]
+                               (contains? #{node-authority python-sync-authority} authority-id)))
         delivered (promise)]
     (try
       (overlay-runtime/set-deliver!
@@ -695,6 +696,18 @@
                                      (get-in (overlay-runtime/overlay-state (:node server))
                                              [:sync :frontiers topic
                                               [(:origin publication) (:epoch publication) topic]]))))
+              ;; Node remains alive until Python commits the relayed publication.
+              ;; Python pins the JVM connection and the distinct Node origin.
+              (is (.isAlive process) "Node must remain live during relay repair")
+              (let [{:keys [exit output timed-out?]}
+                    (run-python-dissemination
+                     url (identity/authority-id-bytes (:genesis server-identity)) 30
+                     "--topic" topic "--origin-authority" node-authority)]
+                (is (false? timed-out?) output)
+                (is (= 0 exit) output)
+                (is (= "NETZ_MIXED_DISSEMINATION_OK root-42"
+                       (last (remove str/blank? (str/split-lines output)))) output))
+              (is (.isAlive process) "Node must await the final commit acknowledgement")
               (let [out (.getOutputStream process)]
                 (.write out (.getBytes "done\n" java.nio.charset.StandardCharsets/UTF_8))
                 (.flush out))))

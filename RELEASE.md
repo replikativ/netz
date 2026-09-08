@@ -349,8 +349,11 @@ This extension is not part of the alpha interoperability claim yet.
       its application-committed frontier. Both offline subscriber tests wait
       for retained history before connecting. The reverse Node publication also
       reaches the JVM with verified origin/payload and an application-committed
-      frontier before the publisher exits. Simultaneous three-runtime topology
-      and full base-protocol coverage remain.
+      frontier before the publisher exits. Python then repairs that Node-origin
+      publication through the JVM while Node remains live, pinning the distinct
+      transport peer and publication origin. This verifies a three-runtime
+      dissemination relay, not full three-runtime base/content/sync conformance;
+      those broader gates remain.
 - [x] Pass a real three-peer offline/rejoin test over http-kit, Kabel CBOR and
       authenticated Noise for both a fenced single-writer root and a
       multiwriter join-semilattice.
