@@ -31,7 +31,9 @@ Run the opt-in integration gate with:
 clojure -X:checkpoint-test :dirs '["test-checkpoint"]'
 ```
 
-Both optional Konserve aliases use released Konserve 0.9.392; no Git pin is needed.
+The generic Konserve alias uses released 0.9.394. The checkpoint test alias
+temporarily pins the provisioning increment from Konserve #192; it will return
+to a released version when that API is published.
 Older Konserve versions without the required policy are refused by the adapter before
 opening a store. No files are automatically migrated between checkpoint formats.
 
@@ -110,6 +112,20 @@ pre-existing store, read-only reconnects, and Windows permission failures.
 Process-kill coverage must remain distinct from OS/power-loss qualification.
 
 ### Execution order
+
+The experimental `migration-konserve/open!` integration now requires a third
+argument, `{:durable-ancestor path}`. It provisions and rechecks the managed
+path before opening Konserve, including on reconnect; a failed barrier prevents
+store opening and checkpoint acknowledgement. This deliberately changes the
+experimental two-argument API rather than silently asserting an ancestor was
+durable. The administrator owns the durable ancestor and excludes concurrent
+filesystem mutation. The ordinary Konserve connect API is unchanged.
+
+The checkpoint-only test alias temporarily pins Konserve #192's exact revision;
+replace it with the corresponding release after publication. Other optional
+store integrations remain on released Konserve. This does not yet provision
+the direct blob repository's nested directories or qualify generic Konserve
+blob receipts, and is not proof of power-loss survival.
 
 1. Keep the released Konserve checkpoint integration gate passing.
 2. Retain explicit strict-read and bounded-input requirements on future upgrades.

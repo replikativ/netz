@@ -60,7 +60,10 @@
   ;; Uses the released AES-GCM and strict read-policy implementation.
   :checkpoint-test
   {:extra-paths ["test" "test-checkpoint"]
-   :extra-deps {org.replikativ/konserve {:mvn/version "0.9.394"}
+   ;; Temporary exact dependency on Konserve #192; replace with its release.
+   :extra-deps {org.replikativ/konserve
+                {:git/url "https://github.com/replikativ/konserve.git"
+                 :git/sha "aae6a0fc3e7ed885e4f0c7d67d3578246fad5700"}
                 io.github.cognitect-labs/test-runner
                 {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
    :exec-fn cognitect.test-runner.api/test}
