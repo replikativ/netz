@@ -186,6 +186,43 @@ scheduling, receipt verification followed by checkpoint persistence, and an
 atomic protection recheck before any retirement. Advisory retirement candidates
 must never be wired directly to deletion.
 
+### Reuse the existing controller for migration execution
+
+Do not confuse the experimental profile-2 planner with the existing profile-1
+runtime. `controller-runtime/revise!` already accepts a verified successor
+layout/retention intent, persists it before dispatching offers, and requires
+fresh receipts for the new retention revision. `current-record?` compares the
+exact layout address and rejects a forked layout state. `receipt-matches?`
+checks cluster, privacy domain, retention revision, manifest, object, epoch,
+replica, attempt, expiry and persistence against the durable intent. Reuse these
+boundaries rather than introducing a second receipt or transfer engine.
+
+The actual profile-2 activation gap is authenticated placement configuration:
+`stable-placement` takes a stable seed, while the current signed `blob/layout`
+statement has neither seed nor placement-profile fields and `intent` selects
+profile-1 placement. A safe next increment therefore needs:
+
+1. A separately versioned signed layout representation that binds the exact
+   placement profile and 32-byte stable pool seed. Keep existing profile-1
+   bytes, addresses and signatures unchanged; reject unknown profiles.
+2. Explicit transition rules: ordinary epoch advances preserve the seed;
+   changing it is deliberate redistribution, not an incidental fence update.
+   Define how the first new-format layout links to the prior signed address.
+3. One profile-dispatch point in intent placement, used by live admission and
+   replay. Reuse the current revision/persistence/receipt machinery after that
+   dispatch, with cross-runtime fixtures for exact bytes and selected targets.
+4. Tests for profile/seed tampering, unsupported-profile rejection, epoch-only
+   stability, membership/domain changes, crash/replay of successor intents,
+   stale receipts, forks and authority loss while a copy is pending.
+
+Existing `blob/stored` receipts do not contain a layout address or stable seed.
+They can be interpreted only through the exact persisted intent and accepted
+layout chain; an epoch alone must never select between conflicting layouts.
+Whether a future receipt version additionally binds the layout address is a
+wire-design decision, not something to infer from the current envelope.
+Retirement still requires a separate atomic retention/pin check; successful
+copy execution does not itself authorize removal of old replicas.
+
 Keep wire validators' type-specific schemas and signature domains separate.
 Likewise keep transfer, controller and lifecycle persistence barriers explicit;
 deduplication must not hide their different authorization and failure semantics.
