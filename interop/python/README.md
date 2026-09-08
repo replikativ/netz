@@ -112,7 +112,8 @@ from netz_protocol import BLOB_STORE_FSYNC, FileBlobStore, split_blob
 
 split = split_blob(b"encrypted application bytes", piece_size=64 * 1024)
 session = bytes.fromhex("00" * 16)
-async with FileBlobStore("./netz-blobs") as store:
+# The existing ancestor's name must already be durable and exclusively owned.
+async with FileBlobStore("./netz-blobs", durable_ancestor=".") as store:
     for piece in split["pieces"]:
         await store.stage_piece(
             session, split["manifest_id"], split["manifest"],

@@ -116,7 +116,9 @@ class FileFrontierStore:
                  durable_ancestor: str | os.PathLike[str] | None = None) -> None:
         expanded = Path(path).expanduser()
         self.path = expanded if expanded.is_absolute() else Path.cwd() / expanded
-        self._durable_ancestor = durable_ancestor
+        self._durable_ancestor = (Path(os.path.abspath(durable_ancestor))
+                                  if durable_ancestor is not None and os.fspath(durable_ancestor)
+                                  else durable_ancestor)
         self._lock = asyncio.Lock()
 
     def _load(self) -> dict[Stream, int]:

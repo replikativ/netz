@@ -124,7 +124,9 @@ async def transfer(uri: str, remote_authority: bytes, store_path: Path,
     completed: dict[str, Any] | None = None
     staged_pieces = 0
 
-    async with FileBlobStore(store_path, clock=lambda: 1_200) as store:
+    # The JVM harness supplies an existing, exclusively owned test root.
+    async with FileBlobStore(store_path, durable_ancestor=store_path,
+                             clock=lambda: 1_200) as store:
         async def apply(actions: list[TransferAction]) -> None:
             nonlocal completed, staged_pieces
             if receiver is None:

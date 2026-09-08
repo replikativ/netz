@@ -73,7 +73,8 @@ class PythonBlobTransferTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory(
             prefix="netz-python-transfer-")
-        self.store = FileBlobStore(self.temporary.name, clock=lambda: 1200)
+        self.store = FileBlobStore(self.temporary.name, durable_ancestor=self.temporary.name,
+                                   clock=lambda: 1200)
 
     async def asyncTearDown(self):
         await self.store.close()
