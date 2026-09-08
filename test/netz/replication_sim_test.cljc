@@ -8,7 +8,7 @@
 (def carol-id (apply str (repeat 32 "cc")))
 
 (def layout
-  {:epoch 1
+  {:placement "netz/blob-placement/2" :seed (apply str (repeat 64 "a")) :epoch 1
    :members [{:id alice-id
               :domains {"owner" "alice" "site" "alice-home"}}
              {:id bob-id

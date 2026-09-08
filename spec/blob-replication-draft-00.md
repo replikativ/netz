@@ -57,6 +57,8 @@ signed Netz envelope defined in section 6. Its body is:
   "v": 1, "type": "blob/layout",
   "cluster": bytes,
   "epoch": uint,
+  "placement": "netz/blob-placement/2",
+  "seed": bytes32,
   "previous": bytes32,
   "members": [
     {
@@ -185,12 +187,18 @@ For every enabled member, compute:
 
 ~~~text
 SHA-256(deterministic-CBOR({
-  "epoch": layout.epoch,
+  "seed": lowercase_hex(layout.seed),
   "member": member.id,
   "object": object_id,
-  "profile": "netz/blob-placement/1"
+  "profile": "netz/blob-placement/2"
 }))
 ~~~
+
+The signed seed MUST be exactly 32 bytes; its lowercase hex
+representation is used only in the score input. Missing seeds and unknown
+placement profiles MUST be rejected. Ordinary successor layouts MUST preserve
+the seed. Epoch fences authority and receipts but does not change placement.
+Explicit seed rotation is not supported by this initial format.
 
 `object_id` is an opaque byte string or text identifier fixed by the negotiated
 address profile. Scores sort by unsigned byte value, descending; equal scores

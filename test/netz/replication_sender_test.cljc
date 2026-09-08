@@ -219,7 +219,7 @@
     (is (= 1 (get-in sender-7 [:stats :receipts])))))
 
 (deftest signed-receipt-crosses-persistence-before-quorum
-  (let [layout {:epoch 7
+  (let [layout {:placement "netz/blob-placement/2" :seed (apply str (repeat 64 "a")) :epoch 7
                 :members [{:id authority-hex :domains {"party" "remote"}}]}
         policy {:replicas 1 :write-acks 1 :minimum-domains {}}
         manifest {:object-id (identity/bytes->hex (:object-id split))

@@ -45,6 +45,8 @@ not complete until the checklist is implemented and verified.
 Current draft: JVM/CLJS and Python validators require both fields, chain
 reconciliation rejects ordinary successor seed changes, and the shared signed
 layout fixture has been regenerated. Local placement layouts carry the fields.
-The main placement engine still uses epoch scoring; switching that engine and
-its pure-model fixtures is the next required step. Do not deploy this draft as
-an activated stable-placement protocol.
+The main placement engines now require the profile and seed and use stable
+scoring for intent admission, controller revisions and replica authorization.
+The placement fixture has also been regenerated and the pure-model tests use
+explicit seeds. Full release and interoperability gates remain required before
+this draft is ready for deployment.

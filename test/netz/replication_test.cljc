@@ -11,8 +11,19 @@
    {:id (authority "bb") :domains {"party" "two" "region" "south"}}
    {:id (authority "cc") :domains {"party" "three" "region" "west"}}])
 
-(def layout {:epoch 7 :members members})
+(def layout {:placement "netz/blob-placement/2" :seed (apply str (repeat 64 "a")) :epoch 7 :members members})
 (def policy {:replicas 3 :write-acks 2 :minimum-domains {"party" 2}})
+
+(deftest main-placement-is-stable-and-requires-explicit-configuration
+  (doseq [object (map #(str "object-" %) (range 200))]
+    (is (= (placement/place layout policy object)
+           (placement/place (assoc layout :epoch 999) policy object))))
+  (doseq [invalid [(dissoc layout :seed)
+                   (dissoc layout :placement)
+                   (assoc layout :placement "netz/blob-placement/1")
+                   (assoc layout :seed "bad")]]
+    (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+                 (placement/rank invalid "object")))))
 
 (defn step [state event]
   (replication/handler state event {:now 0}))
@@ -35,26 +46,26 @@
     (is (= a b) "layout vector order must carry no placement meaning")
     (is (= (set (map :id members)) (set (map :id a))))
     (is (= 32 (identity/buf-length
-               (placement/score 7 "object-1" (authority "aa")))))))
+               (placement/score (:seed layout) "object-1" (authority "aa")))))))
 
 (deftest placement-known-answer-matches-the-python-fixture
   (let [ids (mapv #(apply str (repeat 32 %)) ["00" "11" "22" "33"])
         owners ["alice" "alice" "bob" "carol"]
         sites ["alice-home" "alice-cloud" "bob-home" "carol-home"]
         fixture-layout
-        {:epoch 7
+        {:placement "netz/blob-placement/2" :seed (apply str (repeat 64 "a")) :epoch 7
          :members (mapv (fn [id owner site]
                           {:id id :domains {"owner" owner "site" site}})
                         ids owners sites)}
         object-id (identity/hex->bytes (apply str (repeat 32 "a0")))
         expected-scores
-        ["a13b7f83df6af53933e0d3d11f08b1610dd4dbaedeff819ea8f2af0282cf32d0"
-         "69a677f5ae75c0e3934a2303d34733116f1144334cc39af6df2a056867ee4d00"
-         "d360ebeabef0dedd1ea60a7b9a08f9a9aaa268d0f77d9245e01064f982abc88a"
-         "e5585181c3d32716ade7812b374e0576de4774972f3dcd98ccadc17e0c3bc606"]
-        expected-ranked [(nth ids 3) (nth ids 2) (nth ids 0) (nth ids 1)]]
+        ["dc3ca415c7be188e5a753c28918f40029bc93259eca7153639f83d87e9441992"
+         "8cc53c03b29ed39d3476200d9d7bf1d94f180ed2ff4df892d0fe78844adec7bf"
+         "9bf58a033d94e93b8adbbcbb771a038dd72494f4479486d5d878339f554dc729"
+         "cfb18bba704df8c9388aafd7617da49d453bffb7da37d61a53b243623de79889"]
+        expected-ranked [(nth ids 0) (nth ids 3) (nth ids 2) (nth ids 1)]]
     (is (= expected-scores
-           (mapv #(identity/bytes->hex (placement/score 7 object-id %)) ids)))
+           (mapv #(identity/bytes->hex (placement/score (:seed fixture-layout) object-id %)) ids)))
     (is (= expected-ranked
            (mapv :id (placement/rank fixture-layout object-id))))
     (is (= (subvec expected-ranked 0 3)
@@ -66,7 +77,7 @@
                   object-id))))))
 
 (deftest disabled-members-are-not-placed
-  (let [four {:epoch 0
+  (let [four {:placement "netz/blob-placement/2" :seed (apply str (repeat 64 "a")) :epoch 0
               :members (conj members
                              {:id (authority "dd") :enabled? false
                               :domains {"party" "four"}})}]
@@ -76,7 +87,7 @@
 (deftest constrained-placement-reaches-beyond-the-preferred-set
   ;; Discover the unconstrained ranking, then deliberately put its first two
   ;; members in one party. A two-replica placement must skip one of them.
-  (let [base {:epoch 3
+  (let [base {:placement "netz/blob-placement/2" :seed (apply str (repeat 64 "a")) :epoch 3
               :members (mapv (fn [id] {:id id :domains {}})
                              (map authority ["aa" "bb" "cc" "dd"]))}
         ranked (placement/rank base "constrained")
@@ -110,7 +121,7 @@
   (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
                         #"cannot satisfy"
                         (placement/place
-                         {:epoch 0
+                         {:placement "netz/blob-placement/2" :seed (apply str (repeat 64 "a")) :epoch 0
                           :members [{:id (authority "aa")
                                      :domains {"party" "one"}}
                                     {:id (authority "bb")

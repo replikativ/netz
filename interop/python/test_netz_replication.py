@@ -51,6 +51,8 @@ class ReplicationPlacementTest(unittest.TestCase):
             (ROOT / "spec/fixtures/blob-placement-1.json").read_text())
         diagnostic = fixture["diagnostic"]
         layout = {
+            "seed": diagnostic["seed"],
+            "placement": "netz/blob-placement/2",
             "epoch": diagnostic["epoch"],
             "members": [
                 {"id": member["id"],
@@ -65,13 +67,13 @@ class ReplicationPlacementTest(unittest.TestCase):
         fixture, layout, policy, object_id = self.fixture()
         first = layout["members"][0]["id"]
         score_input = dumps({
-            "epoch": layout["epoch"], "member": first, "object": object_id,
-            "profile": "netz/blob-placement/1",
+            "seed": layout["seed"], "member": first, "object": object_id,
+            "profile": "netz/blob-placement/2",
         })
         self.assertEqual(fixture["first_score_input_cbor_hex"], score_input.hex())
         for member in layout["members"]:
             self.assertEqual(fixture["scores"][member["id"]],
-                             score(layout["epoch"], object_id,
+                             score(layout["seed"], object_id,
                                    member["id"]).hex())
         self.assertEqual(fixture["ranked_ids"],
                          [member["id"] for member in rank(layout, object_id)])
@@ -82,6 +84,14 @@ class ReplicationPlacementTest(unittest.TestCase):
     def test_layout_order_and_disabled_members_do_not_change_authority(self):
         _, layout, policy, object_id = self.fixture()
         expected = [member["id"] for member in place(layout, policy, object_id)]
+        for epoch in (0, 1, 999):
+            self.assertEqual(expected, [member["id"] for member in place(
+                {**layout, "epoch": epoch}, policy, object_id)])
+        for field in ("seed", "placement"):
+            invalid = dict(layout)
+            del invalid[field]
+            with self.assertRaises(ReplicationError):
+                rank(invalid, object_id)
         reversed_layout = {**layout, "members": list(reversed(layout["members"]))}
         self.assertEqual(expected, [member["id"] for member in place(
             reversed_layout, policy, object_id)])

@@ -37,8 +37,9 @@
 (defn validate-layout
   "Validate and return `layout`.
 
-  A layout is `{:epoch uint :members [{:id string :domains {string string}}]}`.
-  Member order carries no meaning."
+  A layout contains `:epoch` and `:members` with Authority IDs and domains.
+  The main ranking path additionally requires `:placement` and the explicit
+  lowercase-hex `:seed`. Member order carries no meaning."
   [layout]
   (let [members (:members layout)
         ids (map :id members)]
@@ -115,16 +116,6 @@
           (if (zero? c) (recur (inc i)) c))))))
 
 (defn score
-  "Portable rendezvous score for one object/member/layout epoch."
-  [layout-epoch object-id member-id]
-  (identity/sha256
-   (wire/encode-canonical
-    {"epoch" layout-epoch
-     "member" member-id
-     "object" object-id
-     "profile" "netz/blob-placement/1"})))
-
-(defn stable-score
   "Portable rendezvous score bound to the explicit pool seed, never the epoch."
   [seed object-id member-id]
   (when-not (and (string? seed) (re-matches #"[0-9a-f]{64}" seed))
@@ -134,6 +125,8 @@
    (wire/encode-canonical
     {"seed" seed "member" member-id "object" object-id
      "profile" "netz/blob-placement/2"})))
+
+(def stable-score score)
 
 (defn rank-by-score
   "Shared eligibility and deterministic tie-breaking for a supplied score function."
@@ -154,7 +147,11 @@
 (defn rank
   "Eligible layout members in descending rendezvous order for `object-id`."
   [layout object-id]
-  (rank-by-score layout #(score (:epoch layout) object-id %)))
+  (when-not (= "netz/blob-placement/2" (:placement layout))
+    (throw (ex-info "Unsupported placement profile"
+                    {:type :netz.replication/invalid-placement-profile})))
+  (score (:seed layout) object-id "")
+  (rank-by-score layout #(score (:seed layout) object-id %)))
 
 (defn stable-rank
   "Rank with an explicit stable seed using the shared member ordering."
