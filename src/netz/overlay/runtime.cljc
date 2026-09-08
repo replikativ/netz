@@ -982,7 +982,7 @@
                                   (>? S pass-in app))
                                 (reset! pending-app [])
                                 true)))
-          complete-authenticated-transport!
+          complete-authenticated-transport-unlocked!
           (fn []
             (when (and authenticated-context
                        (= :pending @handshake-state))
@@ -1025,7 +1025,15 @@
                             (reset! pending-app []))
                     true)
 
-                  :else false))))]
+                  :else false))))
+          complete-authenticated-transport!
+          (fn []
+            ;; The poller and decrypted-frame loop can run on distinct JVM
+            ;; threads. The frame loop must wait for registration, not merely
+            ;; lose a CAS and proceed before connection facts become visible.
+            #?(:clj (locking handshake-state
+                      (complete-authenticated-transport-unlocked!))
+               :cljs (complete-authenticated-transport-unlocked!)))]
 
       ;; Announce ourselves immediately. Both ends do this unconditionally, so
       ;; the handshake needs no notion of who dialled whom.
