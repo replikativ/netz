@@ -344,8 +344,11 @@ This extension is not part of the alpha interoperability claim yet.
       pulls and commits JVM join-semilattice state over the portable sync
       carrier; the provider pins its full test Authority, topic and profile.
       The reverse JVM pull from Node also passes, including sender authorization,
-      application commit and closed sessions. JavaScript dissemination and full
-      base-protocol coverage remain.
+      application commit and closed sessions. A live Node subscriber repairs
+      an offline JVM publication, validates its origin and payload, and records
+      its application-committed frontier. Both offline subscriber tests wait
+      for retained history before connecting. Reverse JavaScript publication,
+      simultaneous three-runtime topology and full base-protocol coverage remain.
 - [x] Pass a real three-peer offline/rejoin test over http-kit, Kabel CBOR and
       authenticated Noise for both a fenced single-writer root and a
       multiwriter join-semilattice.

@@ -624,6 +624,41 @@
           (finally (stop-process! process))))
       (finally (stop-node! server)))))
 
+(deftest node-client-repairs-an-offline-jvm-publication
+  (let [url (str "ws://localhost:" (swap! port-counter inc))
+        topic "datahike/roots/node-demo"
+        capabilities (conj noise/default-capabilities wire/profile-capability
+                           overlay-runtime/extension-carrier-capability dissemination-wire/capability)
+        server-identity (<?? S (identity/generate-identity))
+        server (start-server
+                url server-identity capabilities nil nil
+                (fn [{:keys [authority-id]}]
+                  (= "a8386e4e777c12bb11c3344e3ac87b490b1cc13f0128301d28d658d4651791f4"
+                     authority-id)))]
+    (try
+      ;; Publish before the subprocess exists: delivery must use history repair.
+      (is (overlay-runtime/publish! (:node server) topic (identity/utf8-bytes "root-42")))
+      (when-not (wait-for 10000 #(seq (get-in (overlay-runtime/overlay-state (:node server))
+                                              [:dissemination :store])))
+        (throw (ex-info "Publication was not retained before Node connected" {})))
+      (let [process (.start (doto (ProcessBuilder.
+                                   ^java.util.List
+                                   [(or (System/getenv "NETZ_NODE") "node")
+                                    "target/mixed-dissemination-client.js" url
+                                    (identity/authority-id (:genesis server-identity))])
+                              (.redirectErrorStream true)))
+            output (future (slurp (.getInputStream process)))]
+        (try
+          (let [finished? (.waitFor process 30 TimeUnit/SECONDS)]
+            (is finished? "Node publication process timed out")
+            (when finished?
+              (let [text (deref output 5000 "Node output did not close")]
+                (is (= 0 (.exitValue process)) text)
+                (is (= "NETZ_MIXED_DISSEMINATION_OK root-42"
+                       (last (remove str/blank? (str/split-lines text)))) text))))
+          (finally (stop-process! process))))
+      (finally (stop-node! server)))))
+
 (deftest python-client-repairs-an-offline-jvm-publication
   (let [port (swap! port-counter inc)
         url (str "ws://localhost:" port)
@@ -643,6 +678,9 @@
       ;; rather than merely exercising the live forwarding path.
       (is (overlay-runtime/publish!
            (:node server) topic (identity/utf8-bytes "root-42")))
+      (when-not (wait-for 10000 #(seq (get-in (overlay-runtime/overlay-state (:node server))
+                                              [:dissemination :store])))
+        (throw (ex-info "Publication was not retained before Python connected" {})))
       (let [{:keys [exit output timed-out?]}
             (run-python-dissemination url server-authority 30)]
         (is (false? timed-out?) output)
