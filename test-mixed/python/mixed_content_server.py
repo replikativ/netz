@@ -3,6 +3,7 @@
 
 import argparse
 import asyncio
+import sys
 
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
@@ -65,6 +66,11 @@ async def serve(uri: str, remote_authority: bytes) -> None:
         await asyncio.wait_for(client.connected.wait(), timeout=15)
         print(f"NETZ_MIXED_CONTENT_READY {local_authority.hex()}", flush=True)
         await asyncio.wait_for(served.wait(), timeout=15)
+        # A backend read is not transport delivery. Keep the carrier alive
+        # until the JVM confirms it has received and verified the block.
+        confirmed = await asyncio.wait_for(asyncio.to_thread(sys.stdin.readline), timeout=15)
+        if confirmed.strip() != "done":
+            raise RuntimeError("JVM did not confirm the served block")
         if reads != 1:
             raise RuntimeError("content backend was not read exactly once")
         print("NETZ_MIXED_CONTENT_SERVED", flush=True)

@@ -338,8 +338,22 @@ This extension is not part of the alpha interoperability claim yet.
       synchronization now runs both Python/JVM directions, and portable
       dissemination repairs an offline JVM publication into the reusable
       Python client. Portable raw-CID content fetches now pass in both
-      Python/JVM directions. A JavaScript peer and full base-protocol coverage
-      remain.
+      Python/JVM directions. A separately compiled Node/ClojureScript peer now
+      fetches and serves verified JVM content over the production Kabel/CBOR/Noise
+      stack, with explicit serving authorization. A live Node receiver also
+      pulls and commits JVM join-semilattice state over the portable sync
+      carrier; the provider pins its full test Authority, topic and profile.
+      The reverse JVM pull from Node also passes, including sender authorization,
+      application commit and closed sessions. A live Node subscriber repairs
+      an offline JVM publication, validates its origin and payload, and records
+      its application-committed frontier. Both offline subscriber tests wait
+      for retained history before connecting. The reverse Node publication also
+      reaches the JVM with verified origin/payload and an application-committed
+      frontier before the publisher exits. Python then repairs that Node-origin
+      publication through the JVM while Node remains live, pinning the distinct
+      transport peer and publication origin. This verifies a three-runtime
+      dissemination relay, not full three-runtime base/content/sync conformance;
+      those broader gates remain.
 - [x] Pass a real three-peer offline/rejoin test over http-kit, Kabel CBOR and
       authenticated Noise for both a fenced single-writer root and a
       multiwriter join-semilattice.

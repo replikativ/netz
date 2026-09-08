@@ -25,18 +25,20 @@ def _identity() -> LocalIdentity:
     )
 
 
-async def receive(uri: str, remote_authority: bytes) -> bytes:
+async def receive(uri: str, remote_authority: bytes, topic: str = TOPIC,
+                  origin_authority: bytes | None = None) -> bytes:
+    expected_origin = origin_authority or remote_authority
     def authorize(context):
         if context["peer_authority"] != remote_authority:
             return False
         if context["frame_type"] != "gossip":
             return True
-        return (context["origin_authority"] == remote_authority
-                and context["topic"] == TOPIC)
+        return (context["origin_authority"] == expected_origin
+                and context["topic"] == topic)
 
     client = DisseminationClient(
         identity=_identity(), expected_authority=remote_authority,
-        topics=(TOPIC,), authorize=authorize,
+        topics=(topic,), authorize=authorize,
     )
     running = asyncio.create_task(client.run(uri, reconnect=False))
     try:
@@ -55,11 +57,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--uri", required=True)
     parser.add_argument("--remote-authority", required=True)
+    parser.add_argument("--origin-authority")
+    parser.add_argument("--topic", default=TOPIC)
     args = parser.parse_args()
     authority = bytes.fromhex(args.remote_authority)
     if len(authority) != 32:
         parser.error("--remote-authority must be 32 bytes of hexadecimal")
-    payload = asyncio.run(receive(args.uri, authority))
+    origin = bytes.fromhex(args.origin_authority) if args.origin_authority else authority
+    if len(origin) != 32:
+        parser.error("--origin-authority must be 32 bytes of hexadecimal")
+    payload = asyncio.run(receive(args.uri, authority, args.topic, origin))
     print(f"NETZ_MIXED_DISSEMINATION_OK {payload.decode('utf-8')}", flush=True)
 
 
