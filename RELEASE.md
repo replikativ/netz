@@ -339,8 +339,8 @@ This extension is not part of the alpha interoperability claim yet.
       dissemination repairs an offline JVM publication into the reusable
       Python client. Portable raw-CID content fetches now pass in both
       Python/JVM directions. A separately compiled Node/ClojureScript peer now
-      fetches verified JVM content over the production Kabel/CBOR/Noise stack.
-      Reverse JavaScript serving, JavaScript sync/dissemination and full
+      fetches and serves verified JVM content over the production Kabel/CBOR/Noise
+      stack, with explicit serving authorization. JavaScript sync/dissemination and full
       base-protocol coverage remain.
 - [x] Pass a real three-peer offline/rejoin test over http-kit, Kabel CBOR and
       authenticated Noise for both a fenced single-writer root and a

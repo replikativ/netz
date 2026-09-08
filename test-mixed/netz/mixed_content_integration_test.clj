@@ -91,7 +91,20 @@
   (client-fetches-verified-jvm-content
    [(or (System/getenv "NETZ_NODE") "node") "target/mixed-content-client.js"]))
 
-(deftest jvm-fetches-verified-python-content
+(defn- await-output-line [^BufferedReader reader prefix]
+  (let [result (future
+                 (loop [remaining 128]
+                   (when (pos? remaining)
+                     (when-let [line (.readLine reader)]
+                       (if (str/starts-with? line prefix)
+                         line
+                         (recur (dec remaining)))))))
+        value (deref result 30000 ::timeout)]
+    (when (= ::timeout value)
+      (throw (ex-info "Timed out waiting for content peer output" {:prefix prefix})))
+    value))
+
+(defn- jvm-fetches-verified-client-content [command node?]
   (let [port (swap! port-counter inc)
         url (str "ws://localhost:" port)
         capabilities (conj noise/default-capabilities
@@ -119,40 +132,44 @@
                    node {:timeout-ms 15000})]
     (install! (:middleware node))
     (<?? S (peer/start socket))
-    (let [python (or (System/getenv "NETZ_PYTHON") "python3")
-          process (.start
+    (let [process (.start
                    (doto (ProcessBuilder.
                           ^java.util.List
-                          [python "test-mixed/python/mixed_content_server.py"
-                           "--uri" url "--remote-authority"
-                           (identity/bytes->hex server-authority)])
+                          (cond-> (into command
+                                        ["--uri" url "--remote-authority"
+                                         (identity/bytes->hex server-authority)])
+                            node? (conj "serve")))
                      (.redirectErrorStream true)))
           reader (BufferedReader.
                   (InputStreamReader. (.getInputStream process)))]
       (try
-        (let [ready (.readLine reader)
+        (let [ready (await-output-line reader "NETZ_MIXED_CONTENT_READY ")
               ready-match
               (some->> ready
                        (re-matches
                         #"NETZ_MIXED_CONTENT_READY ([0-9a-f]{64})"))]
           (is ready-match ready)
           (when-let [[_ authority-hex] ready-match]
-            (let [python-authority (identity/hex->bytes authority-hex)
-                  python-peer (identity/authority-routing-id python-authority)
+            (let [client-authority (identity/hex->bytes authority-hex)
+                  client-peer (identity/authority-routing-id client-authority)
                   connected?
                   (loop [attempt 0]
                     (cond
-                      (overlay-runtime/connection-info socket python-peer) true
+                      (overlay-runtime/connection-info socket client-peer) true
                       (= attempt 400) false
                       :else (do (<?? S (timeout 25)) (recur (inc attempt)))))]
               (is connected? ready)
-              (let [result-channel ((:fetch! requester) python-peer cid)
+              (let [result-channel ((:fetch! requester) client-peer cid)
                     [result port]
                     (async/alts!! [result-channel (timeout 20000)])]
                 (is (= port result-channel) "portable content fetch timed out")
                 (is (= :ok (:status result)) (pr-str result))
                 (is (identity/bufs= data (:data result))))
-              (is (= "NETZ_MIXED_CONTENT_SERVED" (.readLine reader)))
+              (let [out (.getOutputStream process)]
+                (.write out (.getBytes "done\n" java.nio.charset.StandardCharsets/UTF_8))
+                (.flush out))
+              (is (= "NETZ_MIXED_CONTENT_SERVED"
+                     (await-output-line reader "NETZ_MIXED_CONTENT_SERVED")))
               (is (.waitFor process 10 TimeUnit/SECONDS))
               (is (= 0 (.exitValue process))))))
         (finally
@@ -162,3 +179,12 @@
           (<?? S (peer/stop socket))
           (.close reader)
           (<?? S (timeout 50)))))))
+
+(deftest jvm-fetches-verified-python-content
+  (jvm-fetches-verified-client-content
+   [(or (System/getenv "NETZ_PYTHON") "python3")
+    "test-mixed/python/mixed_content_server.py"] false))
+
+(deftest jvm-fetches-verified-node-content
+  (jvm-fetches-verified-client-content
+   [(or (System/getenv "NETZ_NODE") "node") "target/mixed-content-client.js"] true))

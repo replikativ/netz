@@ -11,7 +11,7 @@
             [netz.wire :as wire]
             [superv.async :refer [S]]))
 
-(defn main [_uri-option url _authority-option authority-hex]
+(defn main [_uri-option url _authority-option authority-hex & [mode]]
   (let [deadline (js/setTimeout
                   #(do (js/console.error "Node content conformance timed out")
                        (js/process.exit 1)) 25000)]
@@ -47,10 +47,33 @@
                 (a/<! (a/timeout 25))
                 (recur (inc attempt))))
             (let [expected (id/utf8-bytes "portable content over authenticated Kabel")
-                  result (a/<! ((:fetch! requester) remote (content-wire/raw-cid expected)))]
-              (when-not (and (= :ok (:status result))
-                             (id/bufs= expected (:data result)))
-                (throw (ex-info "JVM content fetch failed" {:result result}))))
+                  cid (content-wire/raw-cid expected)]
+              (if (= mode "serve")
+                (let [served (atom 0)
+                      stop-service
+                      (content/start-service!
+                       node {:authorize? (fn [context]
+                                           (and (= :content/read (:op context))
+                                                (= authority-hex (:authority-id context))
+                                                (id/bufs= cid (:cid context))))
+                             :get-block (fn [requested]
+                                          (when (id/bufs= cid requested)
+                                            (swap! served inc)
+                                            expected))})
+                      done (a/promise-chan)
+                      input (.createInterface (js/require "readline")
+                                              #js {:input (.-stdin js/process)})]
+                  (try
+                    (.once input "line" #(a/put! done %))
+                    (println "NETZ_MIXED_CONTENT_READY" (id/authority-id (:genesis identity)))
+                    (when-not (and (= "done" (a/<! done)) (= 1 @served))
+                      (throw (ex-info "JVM did not confirm the served block" {})))
+                    (println "NETZ_MIXED_CONTENT_SERVED")
+                    (finally (.close input) (stop-service))))
+                (let [result (a/<! ((:fetch! requester) remote cid))]
+                  (when-not (and (= :ok (:status result))
+                                 (id/bufs= expected (:data result)))
+                    (throw (ex-info "JVM content fetch failed" {:result result}))))))
             (finally
               ((:stop! requester))
               (runtime/stop! node)
