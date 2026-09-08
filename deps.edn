@@ -81,7 +81,10 @@
                        org.replikativ/spindel {:local/root "../spindel"}}
           :exec-fn cognitect.test-runner.api/test}
 
-  :cljs {:extra-deps {thheller/shadow-cljs {:mvn/version "3.4.11"}
+  ;; Konserve's generated async state machine needs more analyzer stack on
+  ;; newer JDKs. This applies to the CLJS compiler, not application runtimes.
+  :cljs {:jvm-opts ["-Xss4m"]
+         :extra-deps {thheller/shadow-cljs {:mvn/version "3.4.11"}
                       org.clojure/clojurescript {:mvn/version "1.12.145"}}}
 
   :format {:extra-deps {cljfmt/cljfmt {:mvn/version "0.9.2"}}
