@@ -4,6 +4,10 @@ Status: design and isolated stable-placement prototype. This document is not a
 claim that automatic membership replacement, safe layout migration, or a
 production distributed Konserve backend is complete.
 
+See [deployment models and topology](deployment-models.md) for cloud, independent
+party and personal-device use cases, and the separation between durable placement,
+latency-aware source selection and overlay connectivity.
+
 ## Contract and scope
 
 Netz should support an explicitly administered pool of devices storing immutable,

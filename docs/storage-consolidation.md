@@ -7,6 +7,10 @@ duplication. It does not activate automatic placement migration or deletion.
 
 * Placement profiles 1 and 2 share bounded target selection. Their distinct score
   inputs, known-answer vectors and authority semantics remain unchanged.
+* File and Konserve blob adapters share manifest-address and piece-position
+  validation in `store-validation.cljc`. Error types and index data are preserved;
+  the manifest mismatch message is now backend-neutral. Persistence and IO remain
+  separate, with no expansion of accepted receipt profiles.
 * Checkpoint validation lives in `migration-record.cljc`, used by both adapters.
 * `migration-konserve` replaces the experimental JVM `migration-file`: sealed
   CBOR bytes, AES-GCM with authenticated-only reads, explicit
@@ -47,12 +51,65 @@ bounded reads, install-marker ordering, piece/object verification and receipt
 replay. Share validators and run the same conformance suite against both backends
 before removing either implementation.
 
+### Released file-backend qualification findings
+
+The optional dependencies now use Konserve 0.9.393. That release fixes the
+directory-open suppression described below: the default path fails closed, with
+a native Windows barrier on JDK 22+. This resolves the error-propagation issue,
+not the remaining initial-provisioning, bounded-input or generic-store
+qualification requirements. The findings below record the 0.9.392 baseline.
+
+Inspection of Konserve 0.9.392's artifact confirms the write sequence with
+`:sync-blob? true` and `:in-place? false`: write segments, force blob, close,
+atomic move, then sync store directory. This is necessary but not a complete
+qualification of the generic Netz adapter:
+
+* `filestore/sync-base` skips custom filesystems and catches directory-open
+  `AccessDeniedException` without checking the operating system. Despite the
+  Windows-oriented comment, this can also suppress an access-denied directory
+  sync on POSIX. A strict qualified path must propagate that failure; do not
+  infer an fsync guarantee from configuration alone.
+* The generic adapter uses decoded `get` for pieces and records. Post-decoding
+  size verification does not replace bounded input before allocation/decoding.
+* Qualification must use an owned supported backend/configuration, not an
+  arbitrary caller store or a caller-supplied `:fsync?` assertion. Include initial
+  directory creation, immutable conflict behavior, and restart ordering in tests.
+
+Next implement shared backend conformance tests and a strict directory-sync
+failure test at the storage layer, then qualify a bounded file adapter. Until
+those pass, keep `netz/store/fsync/1` unavailable on generic Konserve stores and
+retain Netz's existing filesystem implementation. Simulated crash coverage alone
+does not qualify an OS/filesystem's power-loss behavior.
+
 Konserve's fault/crash harness belongs at the storage layer. Netz's pure/network
 simulator remains responsible for delivery, partitions, authority and migration.
 Do not combine these into a universal runtime abstraction. Actual process-kill
 and power-loss tests remain distinct from simulated crashes.
 
 ## Remaining order
+
+### Initial directory provisioning: proposed boundary
+
+Do not treat a successful sync of the leaf directory as proof that a newly
+created chain of ancestor names survives a crash. This applies to Netz's direct
+file adapter as well as the owned Konserve checkpoint store.
+
+The next storage increment should expose an explicit, pre-provisioned durable
+ancestor as a trust boundary. Provision descendants one component at a time and
+persist each parent entry before descending. On retry, repeat the barriers for
+the entire managed path, including components that now exist: an existence test
+does not prove a previous barrier completed. Do not require write access to the
+volume root, silently expand the managed boundary, or make read-only reconnects
+perform writes. Shared/renamed paths and symlinks need an explicit policy before
+this becomes an API. This is a proposal, not an implemented persistence guarantee.
+
+Tests must inject failure after each mkdir and parent barrier, reconnect/retry
+with existing-but-unconfirmed components, and verify no durable receipt can
+escape before every required barrier completes. Include nested paths, a
+pre-existing store, read-only reconnects, and Windows permission failures.
+Process-kill coverage must remain distinct from OS/power-loss qualification.
+
+### Execution order
 
 1. Keep the released Konserve checkpoint integration gate passing.
 2. Retain explicit strict-read and bounded-input requirements on future upgrades.

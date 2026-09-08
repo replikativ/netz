@@ -18,6 +18,7 @@
             [netz.replication.inventory :as inventory]
             [netz.replication.intent :as intent]
             [netz.replication.storage :as storage]
+            [netz.replication.store-validation :refer [verify-context! expected-piece!]]
             [netz.replication.wire :as replication-wire]
             [netz.wire :as wire])
   (:import (java.nio ByteBuffer)
@@ -161,24 +162,6 @@
                       {:type :netz.replication/file-entry-too-large
                        :path (str target) :size size :limit limit})))
     (Files/readAllBytes target)))
-
-(defn- verify-context! [manifest-id manifest]
-  (blob/validate-manifest manifest)
-  (when-not (and (bytes-n? 32 manifest-id)
-                 (same-bytes? manifest-id (blob/manifest-address manifest)))
-    (throw (ex-info "Manifest does not match its file-store address"
-                    {:type :netz.replication/manifest-address-mismatch})))
-  manifest)
-
-(defn- expected-piece! [manifest index piece-id]
-  (when-not (and (int? index)
-                 (<= 0 index)
-                 (< index (count (get manifest "pieces")))
-                 (same-bytes? piece-id (nth (get manifest "pieces") index)))
-    (throw (ex-info "Piece does not match its manifest position"
-                    {:type :netz.replication/piece-address-mismatch
-                     :index index})))
-  piece-id)
 
 (defn- read-piece! [store manifest index]
   (let [piece-id (nth (get manifest "pieces") index)

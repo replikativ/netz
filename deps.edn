@@ -54,13 +54,13 @@
   ;; test lives on its own path and the default suite never loads it.
   ;;   clojure -X:konserve:test :dirs '["test" "test-konserve"]'
   :konserve {:extra-paths ["test-konserve"]
-             :extra-deps {org.replikativ/konserve {:mvn/version "0.9.392"}}}
+             :extra-deps {org.replikativ/konserve {:mvn/version "0.9.393"}}}
 
   ;; Experimental checkpoint integration requires strict authenticated reads.
   ;; Uses the released AES-GCM and strict read-policy implementation.
   :checkpoint-test
   {:extra-paths ["test" "test-checkpoint"]
-   :extra-deps {org.replikativ/konserve {:mvn/version "0.9.392"}
+   :extra-deps {org.replikativ/konserve {:mvn/version "0.9.393"}
                 io.github.cognitect-labs/test-runner
                 {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
    :exec-fn cognitect.test-runner.api/test}
