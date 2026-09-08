@@ -1,37 +1,43 @@
-# Stable-placement layout body (experimental)
+# Initial stable-placement layout format (pre-release work)
 
-This draft defines a candidate body and address, not an activated signed wire
-protocol. The current blob statement parser and layout runtime reject it.
-Do not advertise support or use it to authorize transfers or retirement yet.
+Netz has not released its layout format. Replace the prototype format directly;
+do not maintain a legacy parser, profile-1-to-2 layout migration, or a parallel
+layout-v2 implementation. Keep explicit versioning for future released changes.
 
-The body preserves all fields and validation rules of the version-1
-`blob/layout` statement, except `v` is `2`, and adds exactly:
+The initial signed blob/layout body remains version 1, with its existing
+address and signature domains, and gains two required fields:
 
-- `placement`: the text `netz/blob-placement/2`.
-- `seed`: a 32-byte CBOR byte string naming the stable pool seed.
+- placement: the text netz/blob-placement/2, identifying the already tested
+  stable-seed scoring algorithm.
+- seed: a 32-byte CBOR byte string naming the stable pool seed.
 
-Unknown fields and placement profiles are rejected. Member order, authority
-lengths, member/domain limits, epoch bounds, and epoch-zero predecessor rules
-remain those of version 1. The address is SHA-256 of the UTF-8 domain
-`netz/blob-layout/v2` followed by a zero byte and the deterministic CBOR body.
-No version-1 address or signature preimage changes.
+These fields are included in the canonical signed body and layout address.
+Absent fields and unknown profiles are rejected; never synthesize a seed from
+the epoch or an implicit default. Existing prototype fixtures must be regenerated
+together across JVM, JavaScript and Python. No released-byte compatibility is
+claimed or required. The /2 scoring identifier distinguishes the existing
+experimental score vectors from the earlier epoch-based scoring algorithm;
+it does not require a second layout schema.
 
-Placement uses the existing profile-2 scoring algorithm: lowercase hexadecimal
-seed text in the score input, together with object ID, member ID and the exact
-placement-profile text. Converting the layout seed to hexadecimal is deliberate
-and preserves the existing JVM/JavaScript/Python stable-placement vectors.
-Epoch is excluded from placement scoring but remains bound by the layout address.
+The seed is converted to lowercase hexadecimal in the existing stable scoring
+input. Epoch remains an authority fence and is excluded from scoring. Ordinary
+successor layouts preserve the seed. Deliberate seed rotation, if added later,
+must be an explicit redistribution operation with copy/retention safeguards.
 
-## Required before activation
+## Implementation checklist
 
-Specify and implement the signature-envelope version/domain and capability
-negotiation. Define the profile-1-to-2 predecessor transition, prohibit implicit
-downgrades, and make seed changes explicit redistribution operations. A new
-epoch alone must not silently change the seed. Verify these rules during both
-live reconciliation and durable replay.
+- Require the fields in shared layout validators and include them in all signed
+  fixtures, builders and examples.
+- Carry profile and seed through the local placement layout. Use the same
+  dispatch/scoring path for initial intent admission, replay, revisions, repair
+  and replica-side retention authorization.
+- Update Python independently and compare exact canonical bodies, addresses,
+  signatures and selected targets across all three runtimes.
+- Test missing/unknown fields, seed tampering, epoch-only stability, seed-change
+  rejection, membership/domain changes, forks, stale receipts and crash/replay.
+- Reuse the existing controller's persisted successor intents and transfers.
+  Physical replica movement still needs safe retention and atomic retirement
+  checks, even though pre-release wire-format migration is unnecessary.
 
-Add shared exact CBOR/address/signature fixtures and independent Python
-validation. Route intent placement through one profile dispatch after successful
-layout verification; reuse the existing controller successor-intent persistence
-and receipt matching. Test forks, stale receipts, authority loss and crash/retry.
-The copy planner and advisory retirement API confer no deletion authority.
+This document records the intended consolidated format. Runtime activation is
+not complete until the checklist is implemented and verified.

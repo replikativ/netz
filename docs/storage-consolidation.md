@@ -202,12 +202,13 @@ The actual profile-2 activation gap is authenticated placement configuration:
 statement has neither seed nor placement-profile fields and `intent` selects
 profile-1 placement. A safe next increment therefore needs:
 
-1. A separately versioned signed layout representation that binds the exact
-   placement profile and 32-byte stable pool seed. Keep existing profile-1
-   bytes, addresses and signatures unchanged; reject unknown profiles.
+1. Consolidate the initial, unreleased signed layout representation to bind the
+   exact placement profile and 32-byte stable pool seed. Regenerate prototype
+   fixtures; no legacy parser or pre-release format migration is needed. Keep
+   explicit versioning for future releases and reject unknown profiles.
 2. Explicit transition rules: ordinary epoch advances preserve the seed;
    changing it is deliberate redistribution, not an incidental fence update.
-   Define how the first new-format layout links to the prior signed address.
+   Physical replica movement still requires copy and retention safeguards.
 3. One profile-dispatch point in intent placement, used by live admission and
    replay. Reuse the current revision/persistence/receipt machinery after that
    dispatch, with cross-runtime fixtures for exact bytes and selected targets.
