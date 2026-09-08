@@ -110,7 +110,7 @@ jobs:
             python3 -m venv /tmp/netz-mixed-venv
             /tmp/netz-mixed-venv/bin/python -m pip install '.[secure-client]'
       - run:
-          name: Run JVM/Python durable transfer
+          name: Run JVM/Node/Python content, sync, dissemination, and blob tests
           command: |
             NETZ_PYTHON=/tmp/netz-mixed-venv/bin/python clojure -X:secure-test:mixed-test :dirs '["test-mixed"]'
           no_output_timeout: 10m
