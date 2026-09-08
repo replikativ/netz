@@ -347,8 +347,10 @@ This extension is not part of the alpha interoperability claim yet.
       application commit and closed sessions. A live Node subscriber repairs
       an offline JVM publication, validates its origin and payload, and records
       its application-committed frontier. Both offline subscriber tests wait
-      for retained history before connecting. Reverse JavaScript publication,
-      simultaneous three-runtime topology and full base-protocol coverage remain.
+      for retained history before connecting. The reverse Node publication also
+      reaches the JVM with verified origin/payload and an application-committed
+      frontier before the publisher exits. Simultaneous three-runtime topology
+      and full base-protocol coverage remain.
 - [x] Pass a real three-peer offline/rejoin test over http-kit, Kabel CBOR and
       authenticated Noise for both a fenced single-writer root and a
       multiwriter join-semilattice.

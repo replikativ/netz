@@ -659,6 +659,55 @@
           (finally (stop-process! process))))
       (finally (stop-node! server)))))
 
+(deftest jvm-commits-a-node-publication
+  (let [url (str "ws://localhost:" (swap! port-counter inc))
+        topic "datahike/roots/node-demo"
+        node-authority "a8386e4e777c12bb11c3344e3ac87b490b1cc13f0128301d28d658d4651791f4"
+        capabilities (conj noise/default-capabilities wire/profile-capability
+                           overlay-runtime/extension-carrier-capability dissemination-wire/capability)
+        server-identity (<?? S (identity/generate-identity))
+        server (start-server url server-identity capabilities nil nil
+                             (fn [{:keys [authority-id]}] (= node-authority authority-id)))
+        delivered (promise)]
+    (try
+      (overlay-runtime/set-deliver!
+       (:node server)
+       (fn [_source received-topic payload publication]
+         (deliver delivered {:topic received-topic :payload payload :publication publication})))
+      (is (overlay-runtime/subscribe-topics! (:node server) #{topic}))
+      (let [process (.start (doto (ProcessBuilder.
+                                   ^java.util.List
+                                   [(or (System/getenv "NETZ_NODE") "node")
+                                    "target/mixed-dissemination-client.js" url
+                                    (identity/authority-id (:genesis server-identity)) "publish"])
+                              (.redirectErrorStream true)))
+            output (future (slurp (.getInputStream process)))]
+        (try
+          (let [{:keys [payload publication] received-topic :topic :as result}
+                (deref delivered 15000 nil)]
+            (is (some? result) "JVM did not receive Node publication")
+            (is (= topic received-topic))
+            (is (= node-authority (:origin-authority publication)))
+            (is (and payload (identity/bufs= (identity/utf8-bytes "root-42") payload)))
+            (when result
+              (is (overlay-runtime/application-committed! (:node server) publication))
+              (is (wait-for 5000 #(= (:seq publication)
+                                     (get-in (overlay-runtime/overlay-state (:node server))
+                                             [:sync :frontiers topic
+                                              [(:origin publication) (:epoch publication) topic]]))))
+              (let [out (.getOutputStream process)]
+                (.write out (.getBytes "done\n" java.nio.charset.StandardCharsets/UTF_8))
+                (.flush out))))
+          (let [finished? (.waitFor process 10 TimeUnit/SECONDS)]
+            (is finished? "Node publisher did not stop")
+            (when finished?
+              (let [text (deref output 5000 "Node output did not close")]
+                (is (= 0 (.exitValue process)) text)
+                (is (= "NETZ_MIXED_DISSEMINATION_OK root-42"
+                       (last (remove str/blank? (str/split-lines text)))) text))))
+          (finally (stop-process! process))))
+      (finally (stop-node! server)))))
+
 (deftest python-client-repairs-an-offline-jvm-publication
   (let [port (swap! port-counter inc)
         url (str "ws://localhost:" port)

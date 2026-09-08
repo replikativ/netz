@@ -13,7 +13,7 @@
 
 (def topic "datahike/roots/node-demo")
 
-(defn main [url authority]
+(defn main [url authority mode]
   (let [deadline (js/setTimeout #(do (js/console.error "Node publication timed out")
                                      (js/process.exit 1)) 25000)]
     (a/go
@@ -35,7 +35,10 @@
                                     (fn [context]
                                       (and (= authority (:authority-id context))
                                            (or (not= :gossip (:frame-type context))
-                                               (and (= authority (:origin-authority context))
+                                               (and (= (if (= mode "publish")
+                                                         (id/authority-id (:genesis identity))
+                                                         authority)
+                                                       (:origin-authority context))
                                                     (= topic (:topic context))))))
                                     :overlay-opts {:membership {:require-authority? true
                                                                 :dial-interval-ms 20}}}))
@@ -53,17 +56,28 @@
                                     (a/put! delivered :invalid))))
           (install! (:middleware node))
           (try
-            (let [publication (a/<! delivered)]
-              (when (= :invalid publication)
-                (throw (ex-info "Unexpected publication delivery" {})))
-              (loop [n 0]
-                (when-not (= (:seq publication)
-                             (get-in (runtime/overlay-state node)
-                                     [:sync :frontiers topic
-                                      [(:origin publication) (:epoch publication) topic]]))
-                  (when (= n 200) (throw (ex-info "Application receipt was not recorded" {})))
-                  (a/<! (a/timeout 25))
-                  (recur (inc n)))))
+            (if (= mode "publish")
+              (let [done (a/promise-chan)
+                    reader (.createInterface (js/require "readline")
+                                             #js {:input js/process.stdin})]
+                (.once reader "line" #(a/put! done %))
+                (try
+                  (when-not (runtime/publish! node topic (id/utf8-bytes "root-42"))
+                    (throw (ex-info "Publication admission failed" {})))
+                  (when-not (= "done" (a/<! done))
+                    (throw (ex-info "JVM did not acknowledge application commit" {})))
+                  (finally (.close reader))))
+              (let [publication (a/<! delivered)]
+                (when (= :invalid publication)
+                  (throw (ex-info "Unexpected publication delivery" {})))
+                (loop [n 0]
+                  (when-not (= (:seq publication)
+                               (get-in (runtime/overlay-state node)
+                                       [:sync :frontiers topic
+                                        [(:origin publication) (:epoch publication) topic]]))
+                    (when (= n 200) (throw (ex-info "Application receipt was not recorded" {})))
+                    (a/<! (a/timeout 25))
+                    (recur (inc n))))))
             (finally (runtime/stop! node) (a/<! (peer/stop socket))))
           (js/clearTimeout deadline)
           (println "NETZ_MIXED_DISSEMINATION_OK root-42")
