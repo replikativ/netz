@@ -6,7 +6,8 @@
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
             [netz.replication.controller-storage :as controller-storage]
-            [netz.replication.file-store :as file-store]
+            [netz.replication.directory-barrier :as directory-barrier]
+            [netz.replication-test-store :as file-store]
             [netz.replication.inventory :as inventory]
             [netz.replication.intent :as intent]
             [netz.replication.sender :as sender]
@@ -162,6 +163,24 @@
    :persistence "netz/store/fsync/1"
    :receipt receipt
    :manifest-id (identity/bytes->hex (:manifest-id split))})
+
+(deftest provisioning-failure-prevents-root-and-piece-success
+  (with-store-root [root (temporary-directory)]
+    (let [nested (.resolve root "nested/store")
+          error (java.nio.file.AccessDeniedException. "injected")]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (file-store/new-file-store nested {:durable-ancestor nil})))
+      (is (not (Files/exists (.getParent nested) (make-array java.nio.file.LinkOption 0))))
+      (with-redefs [directory-barrier/provision! (fn [& _] (throw error))]
+        (is (thrown? java.nio.file.AccessDeniedException
+                     (file-store/new-file-store nested {:durable-ancestor root}))))
+      (is (not (Files/exists nested (make-array java.nio.file.LinkOption 0))))
+      (let [store (file-store/new-file-store nested {:durable-ancestor root})
+            piece (first (:pieces split))]
+        (doseq [_ (range 2)]
+          (with-redefs [directory-barrier/provision! (fn [& _] (throw error))]
+            (is (thrown? java.nio.file.AccessDeniedException (stage! store piece))))
+          (is (= :ok (stage! store piece))))))))
 
 (deftest staged-pieces-survive-cleanup-and-restart
   (with-store-root [root (temporary-directory)]

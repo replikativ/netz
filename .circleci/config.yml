@@ -29,12 +29,14 @@ jobs:
       - run:
           name: Resolve Clojure dependencies
           command: |
+            clojure -X:deps prep :aliases '[:test]'
             clojure -A:test:secure-test:konserve:cljs:build -P
             clojure -A:replica-demo:test -P
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.gitlibs
       - restore_cache:
           keys:
             - npm-{{ checksum "package-lock.json" }}
@@ -50,6 +52,7 @@ jobs:
           root: /home/circleci/
           paths:
             - .m2
+            - .gitlibs
             - .npm
             - replikativ
 

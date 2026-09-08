@@ -11,7 +11,7 @@
             [netz.identity :as identity]
             [netz.overlay.runtime :as overlay-runtime]
             [netz.replication.blob :as blob]
-            [netz.replication.file-store :as file-store]
+            [netz.replication-test-store :as file-store]
             [netz.replication.runtime :as replication-runtime]
             [netz.replication.storage :as storage]
             [netz.replication.wire :as replication-wire]

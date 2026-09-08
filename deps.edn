@@ -26,8 +26,13 @@
  ;; the pure state machines deterministically, and a consumer of the library
  ;; should not carry it. `netz.sim.rng` stays in src/ -- the machines take an
  ;; `:rng` and must be reproducible, so that one is production code.
+ ;; Temporary Konserve #192 test pins provide directory provisioning. Replace
+ ;; all three coordinates together after release; runtime dependencies stay optional.
  {:test {:extra-paths ["test"]
-         :extra-deps {io.github.cognitect-labs/test-runner
+         :extra-deps {org.replikativ/konserve
+                      {:git/url "https://github.com/replikativ/konserve"
+                       :git/sha "f2bd3f4cf43b61442f0ca6c5c6a8995dd44a31f8"}
+                      io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}
                       org.clojure/data.json {:mvn/version "2.5.1"}
                       org.clojure/test.check {:mvn/version "1.1.1"}}
@@ -38,7 +43,10 @@
   :secure-test
   {:extra-paths ["test" "test-secure"]
    :extra-deps
-   {io.github.cognitect-labs/test-runner
+   {org.replikativ/konserve
+    {:git/url "https://github.com/replikativ/konserve"
+     :git/sha "f2bd3f4cf43b61442f0ca6c5c6a8995dd44a31f8"}
+    io.github.cognitect-labs/test-runner
     {:git/tag "v0.5.1" :git/sha "dfb30dd"}
     org.clojure/data.json {:mvn/version "2.5.1"}
     org.clojure/test.check {:mvn/version "1.1.1"}}
@@ -54,7 +62,9 @@
   ;; test lives on its own path and the default suite never loads it.
   ;;   clojure -X:konserve:test :dirs '["test" "test-konserve"]'
   :konserve {:extra-paths ["test-konserve"]
-             :extra-deps {org.replikativ/konserve {:mvn/version "0.9.394"}}}
+             :extra-deps {org.replikativ/konserve
+                          {:git/url "https://github.com/replikativ/konserve"
+                           :git/sha "f2bd3f4cf43b61442f0ca6c5c6a8995dd44a31f8"}}}
 
   ;; Experimental checkpoint integration requires strict authenticated reads.
   ;; Uses the released AES-GCM and strict read-policy implementation.

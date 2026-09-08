@@ -11,7 +11,7 @@
             [netz.replication.blob :as blob]
             [netz.replication.audit-runtime :as audit-runtime]
             [netz.replication.controller-runtime :as controller-runtime]
-            [netz.replication.file-store :as file-store]
+            [netz.replication-test-store :as file-store]
             [netz.replication.inventory :as inventory]
             [netz.replication.layout :as layout]
             [netz.replication.read-repair :as read-repair]

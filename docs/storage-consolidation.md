@@ -31,7 +31,9 @@ Run the opt-in integration gate with:
 clojure -X:checkpoint-test :dirs '["test-checkpoint"]'
 ```
 
-Both optional Konserve aliases on this branch use released Konserve 0.9.394.
+The JVM file-store test aliases temporarily pin Konserve #192 for directory
+provisioning. Run `clojure -X:deps prep :aliases '[:test]'` before using them.
+The checkpoint alias on this branch still uses released Konserve 0.9.394.
 The separate checkpoint-provisioning PR temporarily pins Konserve #192 for its
 new provisioning API; replace that pin after the API is released.
 Older Konserve versions without the required policy are refused by the adapter before
@@ -108,6 +110,12 @@ perform writes. Shared/renamed paths and symlinks need an explicit policy before
 this becomes a supported blob API. The helper excludes concurrent filesystem
 mutation and rejects symlink components inside its managed path. It does not
 establish the durability of the ancestor's own name.
+
+The JVM file adapter now adopts these barriers for root construction, new writes,
+existing-piece retries and existing-marker retries. Fsync construction requires
+`:durable-ancestor`; Konserve is resolved lazily and missing support fails before
+mutation. Best-effort construction does not load Konserve. Tests use explicitly
+owned temporary ancestors as sequencing fixtures, not power-loss evidence.
 
 The blob increment must cover these existing paths, not only store creation:
 
