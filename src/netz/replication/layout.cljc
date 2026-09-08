@@ -16,7 +16,7 @@
 
 (def ^:private statement-fields
   #{"v" "type" "cluster" "epoch" "previous" "members" "issued_at"
-    "signer"})
+    "signer" "placement" "seed"})
 (def ^:private member-fields #{"authority" "domains" "enabled"})
 
 (defn- safe-uint? [value]
@@ -77,6 +77,8 @@
       (and (exact-map? statement-fields statement)
            (= 1 (get statement "v"))
            (= statement-type (get statement "type"))
+           (= "netz/blob-placement/2" (get statement "placement"))
+           (bytes-n? 32 (get statement "seed"))
            (cluster-id? (get statement "cluster"))
            (safe-uint? epoch)
            (bytes-n? 32 previous)
@@ -111,6 +113,8 @@
   [statement]
   (validate-statement statement)
   {:epoch (get statement "epoch")
+   :placement (get statement "placement")
+   :seed (identity/bytes->hex (get statement "seed"))
    :members
    (mapv (fn [member]
            {:id (identity/bytes->hex (get member "authority"))
@@ -200,6 +204,10 @@
         {:state state :status :gap}
 
         (not (same-bytes? (get statement "previous") (:address current)))
+        {:state state :status :rejected}
+
+        (not (same-bytes? (get statement "seed")
+                          (get-in current [:statement "seed"])))
         {:state state :status :rejected}
 
         :else

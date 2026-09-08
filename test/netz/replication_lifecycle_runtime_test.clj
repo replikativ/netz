@@ -108,6 +108,8 @@
                          "enabled" true}))
                      vec)
         statement {"v" 1 "type" "blob/layout"
+                   "placement" "netz/blob-placement/2"
+                   "seed" (identity/hex->bytes (apply str (repeat 32 "aa")))
                    "cluster" (get retention "cluster")
                    "epoch" 0
                    "previous" (identity/hex->bytes

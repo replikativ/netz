@@ -36,6 +36,8 @@
         ["01" "02" "03"] ["alice" "bob" "carol"]))
 (def layout-statement
   {"v" 1 "type" "blob/layout" "cluster" cluster "epoch" 0
+   "placement" "netz/blob-placement/2"
+   "seed" (identity/hex->bytes (apply str (repeat 32 "aa")))
    "previous" (identity/hex->bytes (apply str (repeat 32 "00")))
    "members" members "issued_at" 900 "signer" controller})
 (def retention

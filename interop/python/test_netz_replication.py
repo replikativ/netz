@@ -112,6 +112,8 @@ class SignedLayoutTest(unittest.TestCase):
         statement = {
             "v": 1,
             "type": "blob/layout",
+            "placement": diagnostic["placement"],
+            "seed": bytes.fromhex(diagnostic["seed_hex"]),
             "cluster": bytes.fromhex(diagnostic["cluster_hex"]),
             "epoch": diagnostic["epoch"],
             "previous": bytes.fromhex(diagnostic["previous_hex"]),
@@ -145,6 +147,15 @@ class SignedLayoutTest(unittest.TestCase):
 
     def test_schema_is_closed_sorted_and_ascii(self):
         _, _, _, statement = self.values()
+        for field in ("seed", "placement"):
+            missing = dict(statement)
+            del missing[field]
+            with self.assertRaises(LayoutError):
+                validate_layout_statement(missing)
+        for changes in ({"seed": "aa" * 32}, {"seed": b"a"},
+                        {"placement": "netz/blob-placement/1"}):
+            with self.assertRaises(LayoutError):
+                validate_layout_statement({**statement, **changes})
         with self.assertRaises(LayoutError):
             validate_layout_statement({**statement, "extension": True})
         with self.assertRaises(LayoutError):
@@ -177,6 +188,9 @@ class SignedLayoutTest(unittest.TestCase):
             "issued_at": 1001,
         }
         self.assertEqual("accepted", reconcile(state, successor)["status"])
+        self.assertEqual("rejected", reconcile(state, {
+            **successor, "seed": b"\x01" * 32,
+        })["status"])
         self.assertEqual("forked",
                          reconcile(conflict["state"], successor)["status"])
         self.assertEqual("gap", reconcile(state, {

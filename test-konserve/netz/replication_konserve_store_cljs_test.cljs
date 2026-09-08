@@ -40,6 +40,8 @@
    "issued_at" 1000 "retain_until" 5000 "signer" authority})
 (def layout0
   {"v" 1 "type" "blob/layout" "cluster" (get retention "cluster")
+   "placement" "netz/blob-placement/2"
+   "seed" (identity/hex->bytes (apply str (repeat 32 "aa")))
    "epoch" 0
    "previous" (identity/hex->bytes (apply str (repeat 32 "00")))
    "members" [{"authority" authority "domains" {} "enabled" true}]

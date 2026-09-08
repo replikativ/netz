@@ -36,6 +36,8 @@
 (def split (blob/split (identity/seq->bytes (range 20)) {:piece-size 8}))
 (def layout0
   {"v" 1 "type" "blob/layout" "cluster" cluster "epoch" 0
+   "placement" "netz/blob-placement/2"
+   "seed" (identity/hex->bytes (apply str (repeat 32 "aa")))
    "previous" (identity/hex->bytes (apply str (repeat 32 "00")))
    "members" [{"authority" authority
                "domains" {"owner" "alice"}

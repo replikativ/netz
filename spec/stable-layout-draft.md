@@ -41,3 +41,10 @@ must be an explicit redistribution operation with copy/retention safeguards.
 
 This document records the intended consolidated format. Runtime activation is
 not complete until the checklist is implemented and verified.
+
+Current draft: JVM/CLJS and Python validators require both fields, chain
+reconciliation rejects ordinary successor seed changes, and the shared signed
+layout fixture has been regenerated. Local placement layouts carry the fields.
+The main placement engine still uses epoch scoring; switching that engine and
+its pure-model fixtures is the next required step. Do not deploy this draft as
+an activated stable-placement protocol.

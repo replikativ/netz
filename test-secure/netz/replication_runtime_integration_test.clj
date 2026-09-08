@@ -181,6 +181,8 @@
                             {:piece-size 8})
           layout-statement
           {"v" 1 "type" "blob/layout" "cluster" cluster "epoch" 0
+           "placement" "netz/blob-placement/2"
+           "seed" (identity/hex->bytes (apply str (repeat 32 "aa")))
            "previous" (identity/seq->bytes (repeat 32 0))
            "members" [{"authority" server-authority
                        "domains" {"site" "server"}
