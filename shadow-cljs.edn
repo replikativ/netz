@@ -12,4 +12,8 @@
   :mixed-content
   {:target :node-script
    :main netz.mixed-content-client/main
-   :output-to "target/mixed-content-client.js"}}}
+   :output-to "target/mixed-content-client.js"}
+  :mixed-sync
+  {:target :node-script
+   :main netz.mixed-sync-client/main
+   :output-to "target/mixed-sync-client.js"}}}

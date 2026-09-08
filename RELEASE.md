@@ -340,7 +340,10 @@ This extension is not part of the alpha interoperability claim yet.
       Python client. Portable raw-CID content fetches now pass in both
       Python/JVM directions. A separately compiled Node/ClojureScript peer now
       fetches and serves verified JVM content over the production Kabel/CBOR/Noise
-      stack, with explicit serving authorization. JavaScript sync/dissemination and full
+      stack, with explicit serving authorization. A live Node receiver also
+      pulls and commits JVM join-semilattice state over the portable sync
+      carrier; the provider pins its full test Authority, topic and profile.
+      Reverse JavaScript sync serving, JavaScript dissemination and full
       base-protocol coverage remain.
 - [x] Pass a real three-peer offline/rejoin test over http-kit, Kabel CBOR and
       authenticated Noise for both a fenced single-writer root and a

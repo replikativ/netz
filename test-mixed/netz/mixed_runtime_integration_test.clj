@@ -16,7 +16,7 @@
             [netz.replication.storage :as storage]
             [netz.replication.wire :as replication-wire]
             [netz.sync :as sync]
-            [netz.sync.profile :as sync-profile]
+            [netz.mixed-sync-profile :refer [portable-join-profile]]
             [netz.transport.noise :as noise]
             [netz.transport.secure :as secure-overlay]
             [netz.wire :as wire]
@@ -178,26 +178,6 @@
   (await (storage/-install-object!
           store session (:manifest-id split) (:manifest split) {}
           "netz/store/fsync/1")))
-
-(defn- portable-join-profile []
-  (reify sync-profile/SyncProfile
-    (-profile-id [_] "netz/join-semilattice/1")
-    (-describe [_ value _topic]
-      (wire/encode-canonical (vec (sort value))))
-    (-respond [_ value _topic remote-summary]
-      (let [remote (set (wire/decode remote-summary))
-            missing (vec (sort (remove remote value)))]
-        {:chunks (cond-> [] (seq missing)
-                   (conj (wire/encode-canonical missing)))
-         :checkpoint (wire/encode-canonical (vec (sort value)))}))
-    (-begin [_ value _topic] (set value))
-    (-apply-chunk [_ staging _topic chunk]
-      (into staging (wire/decode chunk)))
-    (-commit [_ value _topic staging checkpoint]
-      (let [described (set (wire/decode checkpoint))]
-        (when-not (every? staging described)
-          (throw (ex-info "checkpoint was not fully staged" {})))
-        (into (set value) staging)))))
 
 (defn- run-python-sync [url server-authority timeout-seconds]
   (let [python (or (System/getenv "NETZ_PYTHON") "python3")
@@ -468,6 +448,47 @@
           (replication-runtime/stop! runtime)
           (stop-node! server))))))
 
+(deftest node-receiver-pulls-portable-sync-from-jvm
+  (let [url (str "ws://localhost:" (swap! port-counter inc))
+        capabilities (conj noise/default-capabilities wire/profile-capability
+                           overlay-runtime/extension-carrier-capability sync/capability)
+        server-identity (<?? S (identity/generate-identity))
+        authorized (atom 0)
+        server (start-server
+                url server-identity capabilities
+                {:sync {:profiles {"netz/join-semilattice/1" (portable-join-profile)}
+                        :applications {"demo/join" #{"jvm"}}}}
+                (fn [{:keys [connection topic profile]}]
+                  (let [allowed? (and (= "a8386e4e777c12bb11c3344e3ac87b490b1cc13f0128301d28d658d4651791f4"
+                                         (:authority-id connection))
+                                      (= "demo/join" topic)
+                                      (= "netz/join-semilattice/1" profile))]
+                    (when allowed? (swap! authorized inc))
+                    allowed?)))]
+    (try
+      (let [process (.start (doto (ProcessBuilder.
+                                   ^java.util.List
+                                   [(or (System/getenv "NETZ_NODE") "node")
+                                    "target/mixed-sync-client.js" url
+                                    (identity/authority-id (:genesis server-identity))])
+                              (.redirectErrorStream true)))
+            output (future (slurp (.getInputStream process)))]
+        (try
+          (let [finished? (.waitFor process 30 TimeUnit/SECONDS)]
+            (is finished? "Node sync process timed out")
+            (when finished?
+              (let [text (deref output 5000 "Node output did not close")]
+                (is (= 0 (.exitValue process)) text)
+                (is (= "NETZ_MIXED_SYNC_OK jvm,node"
+                       (last (remove str/blank? (str/split-lines text)))) text))))
+          (is (= 1 @authorized))
+          (is (wait-for 5000 #(empty? (get-in (overlay-runtime/overlay-state (:node server))
+                                              [:sync :sessions]))))
+          (is (= 1 (get-in (overlay-runtime/overlay-state (:node server))
+                           [:sync :stats :chunks-sent])))
+          (finally (stop-process! process))))
+      (finally (stop-node! server)))))
+
 (deftest python-receiver-pulls-portable-sync-from-jvm
   (let [port (swap! port-counter inc)
         url (str "ws://localhost:" port)
@@ -541,8 +562,8 @@
         (is (wait-for
              10000
              #(= #{"jvm" "python"}
-                  (get-in (overlay-runtime/overlay-state (:node server))
-                          [:sync :applications "demo/join"])))
+                 (get-in (overlay-runtime/overlay-state (:node server))
+                         [:sync :applications "demo/join"])))
             "JVM receiver did not commit Python state")
         (let [{:keys [exit output timed-out?]}
               (deref python-result 35000

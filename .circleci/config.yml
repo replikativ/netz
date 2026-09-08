@@ -98,8 +98,8 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
-          name: Compile live Node content peer
-          command: npx shadow-cljs compile mixed-content
+          name: Compile live Node content and sync peers
+          command: npx shadow-cljs compile mixed-content mixed-sync
           no_output_timeout: 10m
       - run:
           name: Install Python for mixed-runtime conformance

@@ -167,8 +167,13 @@ Run `npx shadow-cljs compile mixed-content` before running `:mixed-test` locally
 The Node service permits only the configured requester Authority and exact CID.
 Both serving subprocesses wait for the JVM's verification acknowledgment before
 closing, rather than confusing a backend read with completed network delivery.
-This adds a live JavaScript requester and service, not yet JavaScript sync,
-dissemination or a simultaneous three-runtime topology. The
+This adds a live JavaScript requester and service. A separate Node receiver
+also pulls JVM state using the shared canonical-byte join-semilattice profile,
+checking application commit, synchronized status and session completion.
+The JVM authorizes its exact full test Authority, topic and profile. Compile
+it with `npx shadow-cljs compile mixed-sync` before running `:mixed-test`.
+Reverse JavaScript sync serving, dissemination and a simultaneous three-runtime
+topology remain unqualified. The
 JVM/JavaScript node layer additionally ingests authorization-first provider
 announcements and performs capped, capability-filtered two-hop discovery over
 already connected peers; it never implicitly dials or elevates a hint to
