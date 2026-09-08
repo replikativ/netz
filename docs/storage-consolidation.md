@@ -31,7 +31,9 @@ Run the opt-in integration gate with:
 clojure -X:checkpoint-test :dirs '["test-checkpoint"]'
 ```
 
-Both optional Konserve aliases use released Konserve 0.9.392; no Git pin is needed.
+Both optional Konserve aliases on this branch use released Konserve 0.9.394.
+The separate checkpoint-provisioning PR temporarily pins Konserve #192 for its
+new provisioning API; replace that pin after the API is released.
 Older Konserve versions without the required policy are refused by the adapter before
 opening a store. No files are automatically migrated between checkpoint formats.
 
@@ -53,7 +55,7 @@ before removing either implementation.
 
 ### Released file-backend qualification findings
 
-The optional dependencies now use Konserve 0.9.393. That release fixes the
+The optional dependencies now use Konserve 0.9.394. Version 0.9.393 fixes the
 directory-open suppression described below: the default path fails closed, with
 a native Windows barrier on JDK 22+. This resolves the error-propagation issue,
 not the remaining initial-provisioning, bounded-input or generic-store
@@ -88,20 +90,56 @@ and power-loss tests remain distinct from simulated crashes.
 
 ## Remaining order
 
-### Initial directory provisioning: proposed boundary
+### Initial directory provisioning: implementation boundary
 
 Do not treat a successful sync of the leaf directory as proof that a newly
 created chain of ancestor names survives a crash. This applies to Netz's direct
 file adapter as well as the owned Konserve checkpoint store.
 
-The next storage increment should expose an explicit, pre-provisioned durable
+Konserve #192 implements the shared JVM helper; Netz's separate checkpoint
+increment adopts it. The blob adapters have not adopted it yet. They need an
+explicit, pre-provisioned durable
 ancestor as a trust boundary. Provision descendants one component at a time and
 persist each parent entry before descending. On retry, repeat the barriers for
 the entire managed path, including components that now exist: an existence test
 does not prove a previous barrier completed. Do not require write access to the
 volume root, silently expand the managed boundary, or make read-only reconnects
 perform writes. Shared/renamed paths and symlinks need an explicit policy before
-this becomes an API. This is a proposal, not an implemented persistence guarantee.
+this becomes a supported blob API. The helper excludes concurrent filesystem
+mutation and rejects symlink components inside its managed path. It does not
+establish the durability of the ancestor's own name.
+
+The blob increment must cover these existing paths, not only store creation:
+
+| Path | Required barrier placement |
+| --- | --- |
+| Store construction | Provision the root beneath the explicitly trusted ancestor before returning a writable fsync store. |
+| New pieces, manifests, receipts, controller intents | Provision the complete parent chain before creating a temporary file; keep the file force, atomic rename, and final parent force. |
+| Existing-piece retry | Repeat parent-chain barriers before forcing and accepting the existing piece. |
+| Existing install-marker retry | Repeat barriers for every referenced piece and the marker before reporting installation success. |
+| Restart/replay | Do not infer a completed persistence barrier from an existing name or valid signature; distinguish replay of previously durable evidence from requalification of locally retained writes. |
+
+Use Konserve's `provision-directory!` and `sync-directory!` for the JVM path,
+including its Windows binding, rather than maintaining another native barrier.
+Resolve this optional storage dependency only when constructing an fsync file
+store; loading Netz's networking namespaces must not require Konserve. Missing
+helper support must fail before filesystem mutation, never fall back to the
+legacy leaf-only path. `:durable-ancestor` is a caller trust assertion, not a
+path discovered by walking upward until an existing directory is found.
+
+The equivalent Python work includes `blob_store.py` **and** `frontier_store.py`:
+both currently create parent chains and sync only their leaf. Python cannot call
+the JVM helper, so implement the same barrier contract using its supported OS
+primitives and run matching failure/retry cases. Do not advertise cross-platform
+fsync merely because POSIX tests pass. Best-effort mode remains explicitly
+distinct; do not silently downgrade a requested fsync profile.
+
+Update the filesystem test fixtures and demos to provide an explicit ancestor.
+A temporary directory can model this trust boundary for sequencing tests, but
+its existence does not certify power-loss durability. Existing one-argument
+fsync construction will require a migration note rather than implicit trust in
+the store root. Keep this change separate from the wire grammar: the persistence
+profile already requires the guarantee; the adapter must actually establish it.
 
 Tests must inject failure after each mkdir and parent barrier, reconnect/retry
 with existing-but-unconfirmed components, and verify no durable receipt can
