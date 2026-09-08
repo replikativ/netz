@@ -13,6 +13,7 @@ from typing import Mapping, Protocol, runtime_checkable
 from netz_codec import MAX_FRAME_BYTES, dumps, loads
 
 from .dissemination import MAX_STREAMS, Stream, have_frame
+from .directory_sync import provision_directory, sync_directory
 from .publication import MAX_SAFE_INTEGER
 
 FRONTIER_TYPE = "netz/dissemination-frontiers"
@@ -105,11 +106,17 @@ class MemoryFrontierStore:
 
 
 class FileFrontierStore:
-    """Atomic, fsynced single-file frontier store owned by one process."""
+    """Owned POSIX frontier file; writes require a trusted durable ancestor.
 
-    def __init__(self, path: str | os.PathLike[str]) -> None:
+    Omitting durable_ancestor permits reads only. Construction and reads do not
+    provision directories. The caller excludes concurrent filesystem mutation.
+    """
+
+    def __init__(self, path: str | os.PathLike[str], *,
+                 durable_ancestor: str | os.PathLike[str] | None = None) -> None:
         expanded = Path(path).expanduser()
         self.path = expanded if expanded.is_absolute() else Path.cwd() / expanded
+        self._durable_ancestor = durable_ancestor
         self._lock = asyncio.Lock()
 
     def _load(self) -> dict[Stream, int]:
@@ -137,15 +144,13 @@ class FileFrontierStore:
 
     @staticmethod
     def _force_directory(path: Path) -> None:
-        descriptor = os.open(path, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        sync_directory(path)
 
     def _save(self, frontiers: Mapping[Stream, int]) -> None:
         encoded = encode_frontiers(frontiers)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self._durable_ancestor is None:
+            raise FrontierStoreError("frontier writes require an explicit durable_ancestor")
+        provision_directory(self._durable_ancestor, self.path.parent)
         descriptor, name = tempfile.mkstemp(
             prefix=".netz-frontiers-", suffix=".tmp", dir=self.path.parent)
         temporary = Path(name)

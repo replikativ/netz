@@ -210,7 +210,7 @@ class DisseminationClientTest(unittest.IsolatedAsyncioTestCase):
                 identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
                 expected_authority=remote, topics=("db/roots",),
                 authorize=lambda _context: True,
-                frontier_store=FileFrontierStore(path),
+                frontier_store=FileFrontierStore(path, durable_ancestor=root),
             )
             with patch("netz_protocol.dissemination_client.open_secure_websocket",
                        return_value=first):
@@ -234,7 +234,7 @@ class DisseminationClientTest(unittest.IsolatedAsyncioTestCase):
                 identity=LocalIdentity(genesis={}, operational_private=bytes(32)),
                 expected_authority=remote, topics=("db/roots",),
                 authorize=lambda _context: True,
-                frontier_store=FileFrontierStore(path),
+                frontier_store=FileFrontierStore(path, durable_ancestor=root),
             )
             with patch("netz_protocol.dissemination_client.open_secure_websocket",
                        return_value=second):
