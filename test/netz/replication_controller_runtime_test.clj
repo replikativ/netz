@@ -474,6 +474,89 @@
       (is (instance? Throwable value)))
     (controller-runtime/stop! controller)))
 
+(deftest three-replica-successor-recovery-distinguishes-quorum-from-completion
+  (let [identities (mapv (fn [_] (await (identity/generate-identity))) (range 4))
+        ids (mapv #(identity/authority-id-bytes (:genesis %)) identities)
+        member (fn [index]
+                 {"authority" (nth ids index)
+                  "domains" {"owner" (str "owner-" index)} "enabled" true})
+        members-for (fn [indices]
+                      (vec (sort-by #(identity/bytes->hex (get % "authority"))
+                                    (map member indices))))
+        initial-layout (assoc layout0 "members" (members-for [0 1 2]))
+        next-layout (assoc initial-layout "epoch" 1
+                           "previous" (layout/address initial-layout)
+                           "members" (members-for [1 2 3]))
+        initial-retention (assoc retention "replicas" 3 "write_acks" 2
+                                 "minimum_domains" {"owner" 2})
+        next-retention (assoc initial-retention "revision" 2 "layout_epoch" 1)
+        object-id (identity/bytes->hex (:object-id split))
+        event-for
+        (fn [index statement attempt]
+          (let [replica (nth ids index)
+                template (stored-event statement attempt)
+                body (assoc (get (:receipt template) "statement")
+                            "replica" replica "signer" replica)
+                envelope (await (replication-wire/sign-statement
+                                 (nth identities index) body))]
+            (assoc template
+                   :replica-id (identity/bytes->hex replica) :receipt envelope)))
+        old-events (mapv #(event-for % initial-retention 0) [0 1 2])
+        initial-record (intent/make-initial-record
+                        (sign initial-layout) (sign initial-retention) (:manifest split))
+        store (memory-store {object-id initial-record} old-events)
+        current (atom (layout-state initial-layout))
+        offers (atom [])
+        controller (runtime store current offers {})]
+    (try
+      (is (true? (await (controller-runtime/ready controller))))
+      (is (true? (:complete? (controller-runtime/durability-status controller object-id))))
+      (let [accepted (layout/reconcile @current next-layout)]
+        (is (= :accepted (:status accepted)))
+        (reset! current (:state accepted)))
+      (is (= :ok (await (controller-runtime/revise!
+                         controller (sign next-layout) (sign next-retention)))))
+      (is (= (set (map #(identity/bytes->hex (nth ids %)) [1 2 3]))
+             (set (map #(identity/bytes->hex (:authority %)) @offers))))
+      (is (= :under-replicated
+             (:status (controller-runtime/durability-status controller object-id))))
+      (finally (controller-runtime/stop! controller)))
+    (let [replayed-offers (atom [])
+          restarted (runtime store current replayed-offers {})]
+      (try
+        (is (true? (await (controller-runtime/ready restarted))))
+        (is (empty? (:acknowledged (controller-runtime/durability-status restarted object-id))))
+        (is (empty? @replayed-offers))
+        ;; Receipt journals can retain old evidence. Even a newly signed event
+        ;; from the removed member must not become a vote for the successor.
+        (await (controller-runtime/notify-stored!
+                restarted (event-for 0 next-retention 1)))
+        (is (empty? (:acknowledged (controller-runtime/durability-status restarted object-id))))
+        (doseq [index [1 2]]
+          (let [replica-id (identity/bytes->hex (nth ids index))
+                attempt (get-in (controller-runtime/state restarted)
+                                [:objects object-id :attempts replica-id])
+                event (event-for index next-retention attempt)]
+            (swap! (:receipts store) conj event)
+            (await (controller-runtime/notify-stored! restarted event))))
+        (is (wait-for 2000 #(= :confirmed
+                               (:status (controller-runtime/durability-status restarted object-id)))))
+        (is (false? (:complete? (controller-runtime/durability-status restarted object-id))))
+        (is (= :ok (await (controller-runtime/repair! restarted object-id))))
+        (is (= [(identity/bytes->hex (nth ids 3))]
+               (mapv #(identity/bytes->hex (:authority %)) @replayed-offers)))
+        (let [attempt (get-in (first @replayed-offers) [:offer "attempt"])
+              event (event-for 3 next-retention attempt)]
+          (swap! (:receipts store) conj event)
+          (await (controller-runtime/notify-stored! restarted event)))
+        (is (wait-for 2000 #(:complete? (controller-runtime/durability-status restarted object-id))))
+        (finally (controller-runtime/stop! restarted))))
+    (let [restored (runtime store current (atom []) {})]
+      (try
+        (is (true? (await (controller-runtime/ready restored))))
+        (is (true? (:complete? (controller-runtime/durability-status restored object-id))))
+        (finally (controller-runtime/stop! restored))))))
+
 (deftest signed-layout-migration-replaces-the-intent-atomically
   (let [layout-envelope (sign layout0)
         retention-envelope (sign retention)

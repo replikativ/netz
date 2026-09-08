@@ -73,7 +73,14 @@ a fresh receipt from an already installed replica using layout-based admission.
 This exposed and fixed an overly restrictive sender phase check in JVM/CLJS and
 Python: the protocol allows an installed replica to answer an offer directly.
 
-Remaining work includes combining live transfer and process restart in a
-multi-replica transition scenario, followed by retirement/protection safety.
-The current single-target tests do not establish multi-replica availability or
-safe automatic retirement.
+An N=3/W=2 controller recovery test now uses four distinct signing identities
+and replaces one member. It checks persisted successor recovery, rejection of
+old receipts and a removed member, quorum after two fresh receipts without
+premature completion, repair directed only to the missing third target, and
+completion recovery on a second restart. Its journal is in-memory and offer
+dispatch is captured: this establishes controller accounting, not process-crash
+durability or multi-device availability.
+
+Remaining work includes combining live multi-peer transfer with process
+restart in a transition scenario, followed by retirement/protection safety.
+The current tests do not establish safe automatic retirement.
