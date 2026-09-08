@@ -507,4 +507,27 @@
                  (get object-id) (get "layout")
                  replication-wire/parse-envelope :statement
                  (get "epoch"))))
-    (controller-runtime/stop! controller)))
+    (controller-runtime/stop! controller)
+    ;; The layout changed without changing members or seed. A receipt for the
+    ;; prior authority epoch still cannot confirm the persisted successor.
+    (reset! (:receipts store) [(stored-event retention 1)])
+    (let [replayed-offers (atom [])
+          restarted (runtime store state replayed-offers {})]
+      (try
+        (is (true? (await (controller-runtime/ready restarted))))
+        (is (= :under-replicated
+               (:status (controller-runtime/durability-status restarted object-id))))
+        (is (empty? (get-in (controller-runtime/state restarted)
+                            [:objects object-id :acks])))
+        (is (empty? @replayed-offers) "replay alone must not dispatch repairs")
+        (is (= 1 (get-in (controller-runtime/state restarted)
+                         [:objects object-id :attempts authority-hex])))
+        (await (controller-runtime/notify-stored!
+                restarted (stored-event migrated-retention 1)))
+        (is (wait-for 2000
+                      #(= :confirmed
+                          (:status (controller-runtime/durability-status
+                                    restarted object-id)))))
+        (is (true? (:complete? (controller-runtime/durability-status
+                                restarted object-id))))
+        (finally (controller-runtime/stop! restarted))))))

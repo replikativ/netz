@@ -607,6 +607,10 @@ are then repaired through the ordinary `blob/need` exchange. If the object is
 already installed, the receiver MAY omit the need and piece exchange only
 after re-verifying the marker, pieces, complete object and claimed persistence
 boundary; it then signs a receipt for the new fenced attempt. The coordinator
+MUST accept this response while awaiting `blob/need`, subject to the same
+signature, peer, manifest, revision, epoch, attempt and persistence checks as
+a receipt following `blob/commit`. It need not request retransmission of
+already verified bytes merely to advance its local sender phase. The coordinator
 MUST verify and durably record that exact receipt before treating the audit or
 repair as successful. A receipt is point-in-time evidence, not proof that a
 Byzantine peer will retain the bytes afterward.

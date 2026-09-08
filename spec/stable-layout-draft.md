@@ -66,7 +66,14 @@ One earlier full JVM run reported an error whose detailed output was truncated;
 the subsequent complete logged run passed. The first error remains unexplained,
 not a demonstrated fix. Retain full logs for subsequent release runs.
 
-Remaining work includes an authenticated multi-peer layout-transition scenario
-that combines persisted successor intents, transfer, restart and stale-receipt
-rejection, followed by the retirement/protection safety work. Passing fixture
-and transfer tests alone is not evidence of safe automatic replica retirement.
+Controller transition coverage now includes restart from the persisted successor,
+rejection of an old-layout receipt, and confirmation by a fresh successor
+receipt. The live JVM Kabel/Noise test also advances a signed layout and obtains
+a fresh receipt from an already installed replica using layout-based admission.
+This exposed and fixed an overly restrictive sender phase check in JVM/CLJS and
+Python: the protocol allows an installed replica to answer an offer directly.
+
+Remaining work includes combining live transfer and process restart in a
+multi-replica transition scenario, followed by retirement/protection safety.
+The current single-target tests do not establish multi-replica availability or
+safe automatic retirement.
