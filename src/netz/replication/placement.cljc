@@ -124,13 +124,24 @@
      "object" object-id
      "profile" "netz/blob-placement/1"})))
 
-(defn rank
-  "Eligible layout members in descending rendezvous order for `object-id`."
-  [layout object-id]
+(defn stable-score
+  "Portable rendezvous score bound to the explicit pool seed, never the epoch."
+  [seed object-id member-id]
+  (when-not (and (string? seed) (re-matches #"[0-9a-f]{64}" seed))
+    (throw (ex-info "Placement seed must be 32 bytes as lowercase hex"
+                    {:type :netz.replication/invalid-placement-seed})))
+  (identity/sha256
+   (wire/encode-canonical
+    {"seed" seed "member" member-id "object" object-id
+     "profile" "netz/blob-placement/2"})))
+
+(defn rank-by-score
+  "Shared eligibility and deterministic tie-breaking for a supplied score function."
+  [layout score-fn]
   (validate-layout layout)
   (let [scored (mapv (fn [member]
                        (assoc member ::score
-                              (score (:epoch layout) object-id (:id member))))
+                              (score-fn (:id member))))
                      (eligible-members layout))]
     (->> scored
          (sort (fn [a b]
@@ -139,6 +150,18 @@
                      (compare (:id a) (:id b))
                      c))))
          (mapv #(dissoc % ::score)))))
+
+(defn rank
+  "Eligible layout members in descending rendezvous order for `object-id`."
+  [layout object-id]
+  (rank-by-score layout #(score (:epoch layout) object-id %)))
+
+(defn stable-rank
+  "Rank with an explicit stable seed using the shared member ordering."
+  [layout seed object-id]
+  ;; Validate even if no members are eligible.
+  (stable-score seed object-id "")
+  (rank-by-score layout #(stable-score seed object-id %)))
 
 (defn domain-counts
   "Distinct declared values for each constrained domain among `members`."
