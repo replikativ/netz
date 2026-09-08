@@ -15,7 +15,7 @@
         piece-id (:id (first pieces))]
     (is (= manifest (validation/verify-context! manifest-id manifest)))
     (is (identity/bufs= piece-id
-                       (validation/expected-piece! manifest 0 piece-id)))
+                        (validation/expected-piece! manifest 0 piece-id)))
     (doseq [address [nil "not-bytes" (identity/seq->bytes [1]) piece-id]]
       (is (= :netz.replication/manifest-address-mismatch
              (:type (error-data #(validation/verify-context! address manifest))))))
