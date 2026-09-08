@@ -7,9 +7,10 @@
   (migration/create
    {:binding {:cluster "pool" :object "blob" :old-layout "old-address"
               :new-layout "new-address" :controller "fencing-token"}
-    :layout {:epoch 1 :members (mapv #(hash-map :id (id %) :domains {"site" %})
-                                     ["1" "2" "3"])}
-    :seed (id "a") :policy {:replicas 3 :write-acks 2 :minimum-domains {"site" 2}}
+    :layout {:epoch 1 :seed (id "a") :placement "netz/blob-placement/2"
+             :members (mapv #(hash-map :id (id %) :domains {"site" %})
+                            ["1" "2" "3"])}
+    :policy {:replicas 3 :write-acks 2 :minimum-domains {"site" 2}}
     :old-holders #{(id "0") (id "1")} :retire-after 10}))
 (defn persist [s]
   (:state (migration/step s {:type :persisted :checkpoint (migration/checkpoint s)})))

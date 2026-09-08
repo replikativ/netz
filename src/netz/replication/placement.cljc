@@ -126,8 +126,6 @@
     {"seed" seed "member" member-id "object" object-id
      "profile" "netz/blob-placement/2"})))
 
-(def stable-score score)
-
 (defn rank-by-score
   "Shared eligibility and deterministic tie-breaking for a supplied score function."
   [layout score-fn]
@@ -152,13 +150,6 @@
                     {:type :netz.replication/invalid-placement-profile})))
   (score (:seed layout) object-id "")
   (rank-by-score layout #(score (:seed layout) object-id %)))
-
-(defn stable-rank
-  "Rank with an explicit stable seed using the shared member ordering."
-  [layout seed object-id]
-  ;; Validate even if no members are eligible.
-  (stable-score seed object-id "")
-  (rank-by-score layout #(stable-score seed object-id %)))
 
 (defn domain-counts
   "Distinct declared values for each constrained domain among `members`."

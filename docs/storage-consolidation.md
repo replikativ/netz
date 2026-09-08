@@ -197,10 +197,10 @@ checks cluster, privacy domain, retention revision, manifest, object, epoch,
 replica, attempt, expiry and persistence against the durable intent. Reuse these
 boundaries rather than introducing a second receipt or transfer engine.
 
-The actual profile-2 activation gap is authenticated placement configuration:
-`stable-placement` takes a stable seed, while the current signed `blob/layout`
-statement has neither seed nor placement-profile fields and `intent` selects
-profile-1 placement. A safe next increment therefore needs:
+Signed `blob/layout` now requires the stable seed and placement profile, and
+`intent` uses the main stable-placement engine. The experimental duplicate
+placement modules have been removed. The implementation and remaining safety
+requirements are:
 
 1. Consolidate the initial, unreleased signed layout representation to bind the
    exact placement profile and 32-byte stable pool seed. Regenerate prototype

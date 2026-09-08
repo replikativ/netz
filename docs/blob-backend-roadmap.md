@@ -1,6 +1,6 @@
 # From blob dissemination to a storage backend
 
-Status: design and isolated stable-placement prototype. This document is not a
+Status: initial signed stable placement implemented; broader backend design ongoing. This document is not a
 claim that automatic membership replacement, safe layout migration, or a
 production distributed Konserve backend is complete.
 
@@ -66,12 +66,9 @@ code was copied from these implementations.
 
 ## Increment 1: stable placement, without silent wire changes
 
-Profile 1 hashes the authority epoch into every member/object score. An epoch
-change therefore reshuffles placement even if membership is unchanged. Preserve
-its vectors and interpretation for existing peers.
-
-The isolated `netz.replication.stable-placement` prototype and Python
-`netz_protocol.stable_placement` use this canonical CBOR hash input:
+The initial pre-release layout replaces epoch-based scoring directly, without
+a legacy parser. The main JVM/CLJS and Python placement engines use this
+canonical CBOR hash input:
 
 ```
 {"profile": "netz/blob-placement/2", "seed": <64 lowercase hex characters>,
@@ -83,11 +80,11 @@ choose the first bounded rank-ordered combination satisfying the existing domain
 policy. The pool seed is public and stable, not an encryption secret. The epoch
 still matters for authorization and receipts, but never enters these scores.
 
-The prototype is not connected to signed layouts, retention, controller runtime,
-or the default placement API. Activation requires an explicit signed schema
-binding the profile and seed to the pool; unknown profiles must fail closed.
-No local config switch may reinterpret an already signed profile-1 layout.
-Treat seed/profile changes as migrations. Preserve cross-language vectors.
+Signed layouts require the profile and 32-byte seed. The default placement API,
+intent admission and replica authorization use these fields; unknown profiles
+fail closed. Ordinary successors reject seed changes. Deliberate redistribution
+through seed rotation is not supported. Cross-language vectors pin the initial
+format; no pre-release compatibility layer is retained.
 
 Tests cover epoch/order stability, unconstrained membership movement, domain
 constraints, disabled members, and a shared JVM/Python score vector. Minimal
