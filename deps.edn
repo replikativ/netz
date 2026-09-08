@@ -12,7 +12,7 @@
         ;; Ed25519, SHA-256, constant-time compare, CSPRNG — portable across
         ;; JVM and ClojureScript. Unlike kabel, netz cannot make crypto
         ;; optional: self-certifying identity is the bottom of the design.
-        org.replikativ/geheimnis {:mvn/version "0.2.39"}
+        org.replikativ/geheimnis {:mvn/version "0.2.40"}
         org.replikativ/superv.async {:mvn/version "0.3.50"}
         org.replikativ/hasch {:mvn/version "0.4.100"}
         ;; RFC 8949 deterministic CBOR for the language-neutral wire profile.
