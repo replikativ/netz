@@ -158,6 +158,13 @@ machine. The separately negotiated `netz/content/1` service and requester also
 pass authenticated raw-CID fetches in both Python/JVM directions, with the
 receiver independently verifying the returned bytes. Both Python directions
 now use the reusable reconnecting client rather than a one-shot carrier. The
+same mixed-runtime gate also compiles a Node/ClojureScript peer and checks a
+real Node-to-JVM fetch through Kabel WebSocket, CBOR and authenticated Noise.
+Its configured seed pins the full server Authority, capability negotiation
+selects the portable content carrier, and the requester verifies the raw CID.
+Run `npx shadow-cljs compile mixed-content` before running `:mixed-test` locally.
+This adds a live JavaScript requester, not yet JavaScript serving, sync,
+dissemination or a simultaneous three-runtime topology. The
 JVM/JavaScript node layer additionally ingests authorization-first provider
 announcements and performs capped, capability-filtered two-hop discovery over
 already connected peers; it never implicitly dials or elevates a hint to

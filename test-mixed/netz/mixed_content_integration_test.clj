@@ -27,7 +27,7 @@
     (when-not (.waitFor process 1 TimeUnit/SECONDS)
       (.destroyForcibly process))))
 
-(deftest python-fetches-verified-jvm-content
+(defn- client-fetches-verified-jvm-content [command]
   (let [port (swap! port-counter inc)
         url (str "ws://localhost:" port)
         capabilities (conj noise/default-capabilities
@@ -61,13 +61,12 @@
                             (when (identity/bufs= cid requested) data))})]
     (install! (:middleware node))
     (<?? S (peer/start socket))
-    (let [python (or (System/getenv "NETZ_PYTHON") "python3")
-          process (.start
+    (let [process (.start
                    (doto (ProcessBuilder.
                           ^java.util.List
-                          [python "test-mixed/python/mixed_content_fetcher.py"
-                           "--uri" url "--remote-authority"
-                           (identity/bytes->hex server-authority)])
+                          (into command
+                                ["--uri" url "--remote-authority"
+                                 (identity/bytes->hex server-authority)]))
                      (.redirectErrorStream true)))
           output (future (slurp (.getInputStream process)))]
       (try
@@ -82,6 +81,15 @@
           (overlay-runtime/stop! node)
           (<?? S (peer/stop socket))
           (<?? S (timeout 50)))))))
+
+(deftest python-fetches-verified-jvm-content
+  (client-fetches-verified-jvm-content
+   [(or (System/getenv "NETZ_PYTHON") "python3")
+    "test-mixed/python/mixed_content_fetcher.py"]))
+
+(deftest node-fetches-verified-jvm-content
+  (client-fetches-verified-jvm-content
+   [(or (System/getenv "NETZ_NODE") "node") "target/mixed-content-client.js"]))
 
 (deftest jvm-fetches-verified-python-content
   (let [port (swap! port-counter inc)

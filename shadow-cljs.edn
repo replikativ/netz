@@ -1,4 +1,4 @@
-{:deps {:aliases [:test :secure-test :konserve :cljs]}
+{:deps {:aliases [:test :secure-test :konserve :mixed-test :cljs]}
 
  :dependencies []
 
@@ -8,4 +8,8 @@
    :output-to "target/node-tests.js"
    ;; Only .cljc tests reach this build; the JVM-only integration tests are
    ;; .clj and are invisible here by construction.
-   :ns-regexp "-test$"}}}
+   :ns-regexp "-test$"}
+  :mixed-content
+  {:target :node-script
+   :main netz.mixed-content-client/main
+   :output-to "target/mixed-content-client.js"}}}
