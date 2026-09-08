@@ -327,12 +327,13 @@ This extension is not part of the alpha interoperability claim yet.
       and serving sessions plus direct content find/fetch and serving. Both
       content directions use this lifecycle in the Python/JVM gate. Multi-peer
       node orchestration remains outside the single-peer client.
-- [x] JVM and Python consume the same deterministic direct-binding fixture,
+- [x] JVM, Node/ClojureScript and Python consume the same deterministic direct-binding fixture,
       covering both identity records and binding signatures, the offer, all
       three Noise messages, handshake hash, encrypted serializer-14 fragment,
-      and serializer-0 outer carrier. CLJS runs the same binding logic and
-      adversarial transport suite; consuming this JSON fixture there remains
-      part of the three-runtime gate below.
+      and serializer-0 outer carrier. The shared JVM/Node test consumes the
+      JSON fixture and runs all handshake and transport steps; Python checks
+      it independently through noiseprotocol. This known-answer gate does not
+      replace the live three-runtime peer conformance gate below.
 - [ ] Pass independent JVM/JS/Python two-peer conformance tests. The durable
       blob subset now runs both Python/JVM directions and process-level resume;
       synchronization now runs both Python/JVM directions, and portable
