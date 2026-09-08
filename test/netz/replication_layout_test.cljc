@@ -146,7 +146,10 @@
                           identity genesis-layout))]
        (is (= layout-signature-hex
               (identity/bytes->hex (get envelope "signature"))))
-       (is (true? (<!! (replication-wire/verify-envelope envelope)))))))
+       (is (true? (<!! (replication-wire/verify-envelope envelope))))
+       (is (false? (<!! (replication-wire/verify-envelope
+                         (assoc-in envelope ["statement" "seed"]
+                                   (identity/seq->bytes (repeat 32 1))))))))))
 
 #?(:cljs
    (deftest generic-statement-envelope-signs-layouts-cljs
@@ -161,4 +164,7 @@
                 (is (= layout-signature-hex
                        (identity/bytes->hex (get envelope "signature"))))
                 (is (true? (<! (replication-wire/verify-envelope envelope))))
+                (is (false? (<! (replication-wire/verify-envelope
+                                 (assoc-in envelope ["statement" "seed"]
+                                           (identity/seq->bytes (repeat 32 1)))))))
                 (done))))))

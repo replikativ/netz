@@ -50,3 +50,23 @@ scoring for intent admission, controller revisions and replica authorization.
 The placement fixture has also been regenerated and the pure-model tests use
 explicit seeds. Full release and interoperability gates remain required before
 this draft is ready for deployment.
+
+## Verification and remaining scope
+
+The consolidated engine passed the full JVM suite (512 tests, 11,628
+assertions), full Node suite (376 tests, 10,763 assertions), and 114 isolated
+installed-wheel tests. The fresh mixed-runtime run passed 13 tests and 120
+assertions using rebuilt Node clients and the installed Python wheel. These
+mixed tests cover content, synchronization, dissemination and JVM/Python blob
+transfer; they do not prove live three-runtime signed-layout reconfiguration.
+Shared fixtures separately check the exact signed body, address, signature,
+scores and target ordering.
+
+One earlier full JVM run reported an error whose detailed output was truncated;
+the subsequent complete logged run passed. The first error remains unexplained,
+not a demonstrated fix. Retain full logs for subsequent release runs.
+
+Remaining work includes an authenticated multi-peer layout-transition scenario
+that combines persisted successor intents, transfer, restart and stale-receipt
+rejection, followed by the retirement/protection safety work. Passing fixture
+and transfer tests alone is not evidence of safe automatic replica retirement.

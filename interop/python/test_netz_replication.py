@@ -154,6 +154,9 @@ class SignedLayoutTest(unittest.TestCase):
             self.assertEqual(fixture["signature_hex"],
                              envelope["signature"].hex())
             self.assertTrue(verify_envelope(envelope))
+            self.assertFalse(verify_envelope({
+                **envelope, "statement": {**statement, "seed": b"\x01" * 32},
+            }))
 
     def test_schema_is_closed_sorted_and_ascii(self):
         _, _, _, statement = self.values()
