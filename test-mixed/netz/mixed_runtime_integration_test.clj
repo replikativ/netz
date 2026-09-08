@@ -581,6 +581,49 @@
       (finally
         (stop-node! server)))))
 
+(deftest jvm-receiver-pulls-portable-sync-from-node
+  (let [url (str "ws://localhost:" (swap! port-counter inc))
+        capabilities (conj noise/default-capabilities wire/profile-capability
+                           overlay-runtime/extension-carrier-capability sync/capability)
+        server-identity (<?? S (identity/generate-identity))
+        node-authority "a8386e4e777c12bb11c3344e3ac87b490b1cc13f0128301d28d658d4651791f4"
+        node-peer (identity/authority-routing-id node-authority)
+        server (start-server
+                url server-identity capabilities
+                {:sync {:profiles {"netz/join-semilattice/1" (portable-join-profile)}
+                        :applications {"demo/join" #{"jvm"}}}})]
+    (try
+      (let [process (.start (doto (ProcessBuilder.
+                                   ^java.util.List
+                                   [(or (System/getenv "NETZ_NODE") "node")
+                                    "target/mixed-sync-client.js" url
+                                    (identity/authority-id (:genesis server-identity)) "serve"])
+                              (.redirectErrorStream true)))
+            output (future (slurp (.getInputStream process)))]
+        (try
+          (is (wait-for 10000 #(overlay-runtime/connection-info (:peer server) node-peer)))
+          (let [facts (overlay-runtime/connection-info (:peer server) node-peer)]
+            (is (= node-authority (:authority-id facts)))
+            (is (overlay-runtime/portable-sync-connection? (:peer server) node-peer)))
+          (is (overlay-runtime/start-sync! (:node server) node-peer "demo/join"
+                                           "netz/join-semilattice/1"))
+          (is (wait-for 10000 #(let [state (:sync (overlay-runtime/overlay-state (:node server)))]
+                                 (and (= #{"jvm" "node"} (get-in state [:applications "demo/join"]))
+                                      (= :synchronized (get-in state [:status "demo/join"]))
+                                      (empty? (:sessions state))))))
+          (let [out (.getOutputStream process)]
+            (.write out (.getBytes "done\n" java.nio.charset.StandardCharsets/UTF_8))
+            (.flush out))
+          (let [finished? (.waitFor process 10 TimeUnit/SECONDS)]
+            (is finished? "Node sender did not stop")
+            (when finished?
+              (let [text (deref output 5000 "Node output did not close")]
+                (is (= 0 (.exitValue process)) text)
+                (is (= "NETZ_MIXED_SYNC_SERVED"
+                       (last (remove str/blank? (str/split-lines text)))) text))))
+          (finally (stop-process! process))))
+      (finally (stop-node! server)))))
+
 (deftest python-client-repairs-an-offline-jvm-publication
   (let [port (swap! port-counter inc)
         url (str "ws://localhost:" port)

@@ -343,7 +343,8 @@ This extension is not part of the alpha interoperability claim yet.
       stack, with explicit serving authorization. A live Node receiver also
       pulls and commits JVM join-semilattice state over the portable sync
       carrier; the provider pins its full test Authority, topic and profile.
-      Reverse JavaScript sync serving, JavaScript dissemination and full
+      The reverse JVM pull from Node also passes, including sender authorization,
+      application commit and closed sessions. JavaScript dissemination and full
       base-protocol coverage remain.
 - [x] Pass a real three-peer offline/rejoin test over http-kit, Kabel CBOR and
       authenticated Noise for both a fenced single-writer root and a

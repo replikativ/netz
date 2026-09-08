@@ -172,8 +172,10 @@ also pulls JVM state using the shared canonical-byte join-semilattice profile,
 checking application commit, synchronized status and session completion.
 The JVM authorizes its exact full test Authority, topic and profile. Compile
 it with `npx shadow-cljs compile mixed-sync` before running `:mixed-test`.
-Reverse JavaScript sync serving, dissemination and a simultaneous three-runtime
-topology remain unqualified. The
+The reverse JVM pull from Node also passes: Node pins the authorized JVM,
+topic and profile and stays connected until the JVM confirms application commit.
+JavaScript dissemination and a simultaneous three-runtime topology remain
+unqualified. The
 JVM/JavaScript node layer additionally ingests authorization-first provider
 announcements and performs capped, capability-filtered two-hop discovery over
 already connected peers; it never implicitly dials or elevates a hint to
