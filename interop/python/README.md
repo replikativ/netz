@@ -105,6 +105,15 @@ already owned on PyPI) and imports as `netz_protocol`:
 from netz_protocol import SyncReceiver, SyncSender, dumps, loads
 ```
 
+The release gate also tests the built wheel in a fresh virtual environment:
+first with no runtime dependencies, then with `[secure-client]` installed.
+`python -I interop/python/check_installed.py --core-only` verifies imports,
+Apache-2.0 metadata, the license file, type marker and a codec round trip.
+Without `--core-only`, it runs the protocol suite against that installed
+artifact. Isolated mode and import-origin checks prevent the adjacent checkout
+from masking missing wheel contents; tests still read the normative fixtures
+from the checkout. Skipped or zero discovered tests fail this release gate.
+
 The filesystem repository has no third-party dependency:
 
 ```python
