@@ -81,6 +81,24 @@ completion recovery on a second restart. Its journal is in-memory and offer
 dispatch is captured: this establishes controller accounting, not process-crash
 durability or multi-device availability.
 
-Remaining work includes combining live multi-peer transfer with process
-restart in a transition scenario, followed by retirement/protection safety.
-The current tests do not establish safe automatic retirement.
+A live JVM process test now keeps four replica peers running while forcibly
+terminating an owned writer JVM after its successor intent is fsync-persisted
+but before successor offers are dispatched. A fresh JVM reopens that journal,
+observes the successor as under-replicated despite the old receipts, and repairs
+the new three-member target set over Kabel/Noise. Independent scrubs verify all
+three successor copies and that the removed replica still retains its copy.
+The receiver peers share a parent JVM and all stores are on one host: this
+tests writer-process loss, not independent-device or power-loss durability.
+The fixture supplies the authorized layout chain as local configuration; it
+does not test layout-distribution recovery.
+
+Remaining work includes retirement/protection safety, target connection
+management and independent-device qualification. The current tests do not
+establish safe automatic retirement.
+
+The live process fixture gives each simulated independent owner a distinct
+discovery group and waits for the exact selected Authorities, not merely a
+connection count. Production placement must be reconciled with discovery-group
+limits and connection budgets: selecting a storage target does not by itself
+reserve a connection to it. Explicit target reachability/connection management
+remains part of the backend integration work.

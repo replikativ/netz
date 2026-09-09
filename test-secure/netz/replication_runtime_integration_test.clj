@@ -59,7 +59,7 @@
          (delete-tree! ~source-binding)
          (delete-tree! ~target-binding)))))
 
-(defn- start-server [url identity capabilities]
+(defn start-server [url identity capabilities]
   (let [id (identity/peer-id (:genesis identity))
         [app install!] (overlay-runtime/deferred-middleware)
         socket
@@ -82,7 +82,7 @@
     (<?? S (peer/start socket))
     {:id id :peer socket :node node}))
 
-(defn- start-client [url identity server capabilities]
+(defn start-client [url identity server capabilities]
   (let [id (identity/peer-id (:genesis identity))
         [app install!] (overlay-runtime/deferred-middleware)
         socket
@@ -97,19 +97,20 @@
                      S socket
                      {:identity identity
                       :topics #{:blob-test}
-                      :seeds [{:peer-id (:id server)
-                               :authority-id
-                               (identity/authority-id
-                                (:genesis (:identity server)))
-                               :addresses [url]
-                               :group "seed"}]
+                      :seeds (or (:seeds server)
+                                 [{:peer-id (:id server)
+                                   :authority-id
+                                   (identity/authority-id
+                                    (:genesis (:identity server)))
+                                   :addresses [url]
+                                   :group "seed"}])
                       :overlay-opts
                       {:membership {:require-authority? true
                                     :dial-interval-ms 20}}}))]
     (install! (:middleware node))
     {:id id :peer socket :node node}))
 
-(defn- stop-node! [{:keys [node peer]}]
+(defn stop-node! [{:keys [node peer]}]
   (overlay-runtime/stop! node)
   (<?? S (peer/stop peer)))
 
