@@ -7,9 +7,10 @@
   (migration/create
    {:binding {:cluster "pool" :object "blob" :old-layout "old-address"
               :new-layout "new-address" :controller "fencing-token"}
-    :layout {:epoch 1 :members (mapv #(hash-map :id (id %) :domains {"site" %})
-                                     ["1" "2" "3"])}
-    :seed (id "a") :policy {:replicas 3 :write-acks 2 :minimum-domains {"site" 2}}
+    :layout {:epoch 1 :seed (id "a") :placement "netz/blob-placement/2"
+             :members (mapv #(hash-map :id (id %) :domains {"site" %})
+                            ["1" "2" "3"])}
+    :policy {:replicas 3 :write-acks 2 :minimum-domains {"site" 2}}
     :old-holders #{(id "0") (id "1")} :retire-after 10}))
 (defn persist [s]
   (:state (migration/step s {:type :persisted :checkpoint (migration/checkpoint s)})))
@@ -22,6 +23,38 @@
 (defn fill [s]
   (reduce (fn [s replica] (persist (:state (migration/step s (receipt s replica)))))
           (persist s) (keys (:attempts s))))
+
+(deftest copy-planning-requires-current-durable-transition
+  (let [initial (initial)
+        state (persist initial)
+        context {:binding (:binding state) :now 20}
+        work (migration/copy-candidates state context)
+        replica (:replica (first work))
+        pending (:state (migration/step state (receipt state replica)))
+        accepted (persist pending)]
+    (is (empty? (migration/copy-candidates initial context)))
+    (is (= (mapv :id (:targets state)) (mapv :replica work)))
+    (is (every? #(= {:binding (:binding state) :replica (:replica %) :attempt 0} %) work))
+    (is (empty? (migration/copy-candidates pending context)))
+    (is (= (vec (rest work)) (migration/copy-candidates accepted context)))
+    (is (= work (migration/copy-candidates accepted (assoc context :now 100))))
+    (doseq [invalid [(assoc context :now -1) (assoc context :now nil)
+                     (assoc-in context [:binding :controller] "stale")]]
+      (is (empty? (migration/copy-candidates state invalid))))
+    (is (empty? (migration/copy-candidates
+                 (persist (:state (migration/step state {:type :halt}))) context)))))
+
+(deftest copy-planning-replays-exact-attempt-after-loss
+  (let [state (fill (initial))
+        replica (:id (first (:targets state)))
+        context {:binding (:binding state) :now 20}
+        lost (:state (migration/step state (assoc (receipt state replica) :type :lost)))]
+    (is (empty? (migration/copy-candidates state context)))
+    (is (empty? (migration/copy-candidates lost context)))
+    (is (= [{:binding (:binding state) :replica replica :attempt 1}]
+           (migration/copy-candidates (persist lost) context)))
+    (is (= (migration/copy-candidates (persist lost) context)
+           (migration/copy-candidates (migration/restore (migration/checkpoint lost)) context)))))
 
 (deftest all-n-and-persistence-before-retirement
   (let [s (persist (initial)) ids (vec (keys (:attempts s)))]

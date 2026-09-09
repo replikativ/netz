@@ -19,7 +19,7 @@ ZERO_ADDRESS = b"\x00" * 32
 AUTHORITY_ID = re.compile(r"^[0-9a-fA-F]{64}$")
 STATEMENT_FIELDS = {
     "v", "type", "cluster", "epoch", "previous", "members", "issued_at",
-    "signer",
+    "signer", "placement", "seed",
 }
 MEMBER_FIELDS = {"authority", "domains", "enabled"}
 
@@ -58,6 +58,8 @@ def validate_statement(statement: dict[str, Any]) -> dict[str, Any]:
     if (not isinstance(statement, dict) or set(statement) != STATEMENT_FIELDS
             or statement.get("v") != 1
             or statement.get("type") != STATEMENT_TYPE
+            or statement.get("placement") != "netz/blob-placement/2"
+            or not _bytes_n(statement.get("seed"), 32)
             or not _cluster_id(statement.get("cluster"))
             or not _uint(statement.get("epoch"))
             or not _bytes_n(statement.get("previous"), 32)
@@ -96,6 +98,8 @@ def placement_layout(statement: dict[str, Any]) -> dict[str, Any]:
     validate_statement(statement)
     return {
         "epoch": statement["epoch"],
+        "placement": statement["placement"],
+        "seed": statement["seed"].hex(),
         "members": [
             {
                 "id": member["authority"].hex(),
@@ -165,6 +169,8 @@ def reconcile(state: dict[str, Any],
         if statement["epoch"] > current_epoch + 1:
             return {"state": state, "status": "gap"}
         if statement["previous"] != current["address"]:
+            return {"state": state, "status": "rejected"}
+        if statement["seed"] != current["statement"]["seed"]:
             return {"state": state, "status": "rejected"}
         return {
             "state": {**state, "current": {

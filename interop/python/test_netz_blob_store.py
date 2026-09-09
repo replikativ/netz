@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from netz_codec import loads
 from netz_protocol.blob import split_blob
@@ -32,6 +33,7 @@ class PythonFileBlobStoreTest(unittest.IsolatedAsyncioTestCase):
         self.temporary.cleanup()
 
     def new_store(self, **options):
+        options.setdefault("durable_ancestor", self.root)
         store = FileBlobStore(self.root, **options)
         self.stores.append(store)
         return store
@@ -49,6 +51,53 @@ class PythonFileBlobStoreTest(unittest.IsolatedAsyncioTestCase):
     def addressed_path(self, directory, address, suffix):
         spelling = address.hex()
         return self.root / directory / spelling[:2] / (spelling[2:] + suffix)
+
+    async def test_fsync_requires_ancestor_before_creating_root(self):
+        target = self.root / "missing" / "store"
+        with self.assertRaises(BlobStoreError):
+            FileBlobStore(target)
+        self.assertFalse(target.parent.exists())
+        async with FileBlobStore(target, persistence=BEST_EFFORT):
+            self.assertTrue(target.is_dir())
+
+    async def test_provisioning_failure_blocks_new_and_existing_piece(self):
+        store = self.new_store()
+        piece = self.split["pieces"][0]
+        target = self.addressed_path("pieces", piece["id"], ".piece")
+        for existing in [False, True]:
+            error = PermissionError("injected provisioning failure")
+            with patch("netz_protocol.directory_sync.sync_directory", side_effect=error):
+                with self.assertRaises(PermissionError) as caught:
+                    await self.stage(store, piece)
+            self.assertIs(error, caught.exception)
+            self.assertEqual(existing, target.exists())
+            self.assertEqual("ok", await self.stage(store, piece))
+
+    async def test_existing_marker_repeats_all_piece_and_marker_barriers(self):
+        store = self.new_store()
+        for piece in self.split["pieces"]:
+            await self.stage(store, piece)
+        await self.install(store)
+        from netz_protocol.directory_sync import provision_directory
+        expected = [self.addressed_path("pieces", p, ".piece").parent
+                    for p in dict.fromkeys(self.split["manifest"]["pieces"])]
+        expected.append(self.addressed_path("manifests", self.split["manifest_id"], ".cbor").parent)
+        for failed_parent in expected:
+            error = PermissionError("injected existing-record barrier failure")
+
+            def provision(ancestor, target):
+                if target == failed_parent:
+                    raise error
+                return provision_directory(ancestor, target)
+
+            with patch("netz_protocol.blob_store.provision_directory", side_effect=provision):
+                with self.assertRaises(PermissionError) as caught:
+                    await self.install(store)
+                self.assertIs(error, caught.exception)
+        with patch("netz_protocol.blob_store.provision_directory",
+                   wraps=provision_directory) as provision:
+            self.assertEqual("ok", (await self.install(store))["result"])
+            self.assertEqual(expected, [call.args[1] for call in provision.call_args_list])
 
     async def test_staging_install_restart_and_jvm_marker_format(self):
         store = self.new_store(clock=lambda: 1200)

@@ -219,7 +219,7 @@
     (is (= 1 (get-in sender-7 [:stats :receipts])))))
 
 (deftest signed-receipt-crosses-persistence-before-quorum
-  (let [layout {:epoch 7
+  (let [layout {:placement "netz/blob-placement/2" :seed (apply str (repeat 64 "a")) :epoch 7
                 :members [{:id authority-hex :domains {"party" "remote"}}]}
         policy {:replicas 1 :write-acks 1 :minimum-domains {}}
         manifest {:object-id (identity/bytes->hex (:object-id split))
@@ -386,6 +386,22 @@
     (is (empty? (:sessions rejected)))
     (is (= [:send :transfer-failed] (mapv first actions)))
     (is (not-any? #(= :replication-stored (first %)) actions))))
+
+(deftest installed-replica-can-answer-an-offer-with-a-fresh-receipt
+  (let [{started :state} (start-sender)
+        {persisting :state actions :actions}
+        (sender-step started (inbound :transfer/verified-stored
+                                      (stored-frame session)))]
+    (is (= :persisting-receipt
+           (get-in persisting [:sessions (identity/bytes->hex session) :phase])))
+    (is (= [:persist-receipt] (mapv first actions)))
+    (is (not-any? #(= :replication-stored (first %)) actions))
+    (let [{actions :actions}
+          (sender-step started
+                       (inbound :transfer/verified-stored
+                                (assoc-in (stored-frame session)
+                                          ["receipt" "statement" "attempt"] 999)))]
+      (is (not-any? #(= :persist-receipt (first %)) actions)))))
 
 (deftest receipt-persistence-failure-retries-through-the-controller
   (let [{started :state} (start-sender)

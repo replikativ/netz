@@ -37,8 +37,9 @@
 (defn validate-layout
   "Validate and return `layout`.
 
-  A layout is `{:epoch uint :members [{:id string :domains {string string}}]}`.
-  Member order carries no meaning."
+  A layout contains `:epoch` and `:members` with Authority IDs and domains.
+  The main ranking path additionally requires `:placement` and the explicit
+  lowercase-hex `:seed`. Member order carries no meaning."
   [layout]
   (let [members (:members layout)
         ids (map :id members)]
@@ -115,22 +116,23 @@
           (if (zero? c) (recur (inc i)) c))))))
 
 (defn score
-  "Portable rendezvous score for one object/member/layout epoch."
-  [layout-epoch object-id member-id]
+  "Portable rendezvous score bound to the explicit pool seed, never the epoch."
+  [seed object-id member-id]
+  (when-not (and (string? seed) (re-matches #"[0-9a-f]{64}" seed))
+    (throw (ex-info "Placement seed must be 32 bytes as lowercase hex"
+                    {:type :netz.replication/invalid-placement-seed})))
   (identity/sha256
    (wire/encode-canonical
-    {"epoch" layout-epoch
-     "member" member-id
-     "object" object-id
-     "profile" "netz/blob-placement/1"})))
+    {"seed" seed "member" member-id "object" object-id
+     "profile" "netz/blob-placement/2"})))
 
-(defn rank
-  "Eligible layout members in descending rendezvous order for `object-id`."
-  [layout object-id]
+(defn rank-by-score
+  "Shared eligibility and deterministic tie-breaking for a supplied score function."
+  [layout score-fn]
   (validate-layout layout)
   (let [scored (mapv (fn [member]
                        (assoc member ::score
-                              (score (:epoch layout) object-id (:id member))))
+                              (score-fn (:id member))))
                      (eligible-members layout))]
     (->> scored
          (sort (fn [a b]
@@ -139,6 +141,15 @@
                      (compare (:id a) (:id b))
                      c))))
          (mapv #(dissoc % ::score)))))
+
+(defn rank
+  "Eligible layout members in descending rendezvous order for `object-id`."
+  [layout object-id]
+  (when-not (= "netz/blob-placement/2" (:placement layout))
+    (throw (ex-info "Unsupported placement profile"
+                    {:type :netz.replication/invalid-placement-profile})))
+  (score (:seed layout) object-id "")
+  (rank-by-score layout #(score (:seed layout) object-id %)))
 
 (defn domain-counts
   "Distinct declared values for each constrained domain among `members`."

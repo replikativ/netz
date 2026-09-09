@@ -327,7 +327,10 @@
         (not (connection-matches? entry from from-authority))
         (abort state session :connection-mismatch)
 
-        (not= :awaiting-receipt phase)
+        ;; An already installed replica can answer the offer with a fresh
+        ;; receipt directly, without requesting pieces or a commit. The same
+        ;; signature and exact intent-binding checks below still apply.
+        (not (#{:awaiting-need :awaiting-receipt} phase))
         (if (and (= :persisting-receipt phase)
                  (same-value? envelope
                               (get-in entry [:controller-event :receipt])))

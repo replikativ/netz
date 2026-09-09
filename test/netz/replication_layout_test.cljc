@@ -34,14 +34,16 @@
 
 (def genesis-layout
   {"v" 1 "type" "blob/layout" "cluster" cluster "epoch" 0
+   "placement" "netz/blob-placement/2"
+   "seed" (identity/hex->bytes (apply str (repeat 32 "aa")))
    "previous" (identity/hex->bytes (apply str (repeat 32 "00")))
    "members" members "issued_at" 1000
    "signer" controller})
 
 (def layout-address-hex
-  "9c9cf8f5a990b1bf6684e334cde0ba1ecc902dfd9e88440969704fda0c64657e")
+  "8db12ef36696aded0aa8c1c475c8b952ff0cde8f345e31a47345f172cff1b05e")
 (def layout-signature-hex
-  "ec9b11e2aa262a027b7e68507913023b2a6ba058f01da0aab9b06839727ee5c566a8b1e366ad344393b80ce0fcf625f3af1dc87e2b43a4a660503f1da533f508")
+  "e966fafb9d06fa3310338d77a29d1799b805fab2132214769b2e2923d906bcedc5e2444a5c7bbf3ab04b6f7142d0a4ef5f5440429bb5b4c669850b4da2eb2506")
 
 (defn successor [previous]
   (assoc previous
@@ -50,6 +52,12 @@
          "issued_at" (inc (get previous "issued_at"))))
 
 (deftest signed-layout-schema-and-address-are-portable
+  (doseq [invalid [(dissoc genesis-layout "seed")
+                   (dissoc genesis-layout "placement")
+                   (assoc genesis-layout "placement" "netz/blob-placement/1")
+                   (assoc genesis-layout "seed" (apply str (repeat 64 "a")))
+                   (assoc genesis-layout "seed" (identity/seq->bytes [1]))]]
+    (is (not (layout/valid-statement? invalid))))
   (is (layout/valid-statement? genesis-layout))
   (is (replication-wire/valid-statement? genesis-layout))
   (is (= layout-address-hex
@@ -71,6 +79,10 @@
         next-layout (successor genesis-layout)
         fork (assoc genesis-layout "issued_at" 1001)
         forked (:state (layout/reconcile state0 fork))]
+    (is (= :rejected
+           (:status (layout/reconcile
+                     state0 (assoc next-layout "seed"
+                                   (identity/seq->bytes (repeat 32 1)))))))
     (is (= :accepted (:status accepted)))
     (is (= :duplicate (:status (layout/reconcile state0 genesis-layout))))
     (is (= :conflict (:status (layout/reconcile state0 fork))))
@@ -134,7 +146,10 @@
                           identity genesis-layout))]
        (is (= layout-signature-hex
               (identity/bytes->hex (get envelope "signature"))))
-       (is (true? (<!! (replication-wire/verify-envelope envelope)))))))
+       (is (true? (<!! (replication-wire/verify-envelope envelope))))
+       (is (false? (<!! (replication-wire/verify-envelope
+                         (assoc-in envelope ["statement" "seed"]
+                                   (identity/seq->bytes (repeat 32 1))))))))))
 
 #?(:cljs
    (deftest generic-statement-envelope-signs-layouts-cljs
@@ -149,4 +164,7 @@
                 (is (= layout-signature-hex
                        (identity/bytes->hex (get envelope "signature"))))
                 (is (true? (<! (replication-wire/verify-envelope envelope))))
+                (is (false? (<! (replication-wire/verify-envelope
+                                 (assoc-in envelope ["statement" "seed"]
+                                           (identity/seq->bytes (repeat 32 1)))))))
                 (done))))))

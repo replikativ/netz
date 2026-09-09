@@ -105,6 +105,15 @@ already owned on PyPI) and imports as `netz_protocol`:
 from netz_protocol import SyncReceiver, SyncSender, dumps, loads
 ```
 
+The release gate also tests the built wheel in a fresh virtual environment:
+first with no runtime dependencies, then with `[secure-client]` installed.
+`python -I interop/python/check_installed.py --core-only` verifies imports,
+Apache-2.0 metadata, the license file, type marker and a codec round trip.
+Without `--core-only`, it runs the protocol suite against that installed
+artifact. Isolated mode and import-origin checks prevent the adjacent checkout
+from masking missing wheel contents; tests still read the normative fixtures
+from the checkout. Skipped or zero discovered tests fail this release gate.
+
 The filesystem repository has no third-party dependency:
 
 ```python
@@ -112,7 +121,8 @@ from netz_protocol import BLOB_STORE_FSYNC, FileBlobStore, split_blob
 
 split = split_blob(b"encrypted application bytes", piece_size=64 * 1024)
 session = bytes.fromhex("00" * 16)
-async with FileBlobStore("./netz-blobs") as store:
+# The existing ancestor's name must already be durable and exclusively owned.
+async with FileBlobStore("./netz-blobs", durable_ancestor=".") as store:
     for piece in split["pieces"]:
         await store.stage_piece(
             session, split["manifest_id"], split["manifest"],
@@ -230,7 +240,9 @@ client = DisseminationClient(
     expected_authority=remote,
     topics=("datahike/roots/example",),
     authorize=authorize,
-    frontier_store=FileFrontierStore("./netz-frontiers.cbor"),
+    # This existing directory's name must already be durable; the application
+    # owns it exclusively. Python directory barriers currently require POSIX.
+    frontier_store=FileFrontierStore("./netz-frontiers.cbor", durable_ancestor="."),
 )
 
 async def main():
@@ -241,6 +253,14 @@ async def main():
     await client.close()
     await running
 ```
+
+Migration: writable `FileFrontierStore` instances now require the keyword
+`durable_ancestor`, naming an existing directory whose own name is already
+durable. Omitting it allows non-mutating reads but rejects writes. Every write
+repeats the managed parent-chain barriers, including existing directories;
+failed barriers propagate before publishing the new frontier. Do not infer
+durability from directory existence. The helper currently supports POSIX only;
+it does not qualify Windows or arbitrary filesystem power-loss behavior.
 
 The default `MemoryFrontierStore` is process-local. The optional
 `FileFrontierStore` writes canonical CBOR to a temporary file, fsyncs it,

@@ -27,6 +27,8 @@
 (def member (identity/hex->bytes (apply str (repeat 32 "01"))))
 (def layout0
   {"v" 1 "type" "blob/layout" "cluster" cluster "epoch" 0
+   "placement" "netz/blob-placement/2"
+   "seed" (identity/hex->bytes (apply str (repeat 32 "aa")))
    "previous" (identity/hex->bytes (apply str (repeat 32 "00")))
    "members" [{"authority" member "domains" {} "enabled" true}]
    "issued_at" 1000 "signer" controller})

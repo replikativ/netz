@@ -21,6 +21,7 @@
             [netz.replication.layout-storage :as layout-storage]
             [netz.replication.lifecycle-storage :as lifecycle-storage]
             [netz.replication.storage :as storage]
+            [netz.replication.store-validation :refer [verify-context! expected-piece!]]
             [netz.replication.wire :as replication-wire]
             [netz.wire :as wire]
             [clojure.core.async :as async]
@@ -98,24 +99,6 @@
 (defn- controller-intent-key [store cluster object-id]
   [(:prefix store) ::controller-intent
    (cluster-hex cluster) (address-hex object-id)])
-
-(defn- verify-context! [manifest-id manifest]
-  (blob/validate-manifest manifest)
-  (when-not (and (bytes-n? 32 manifest-id)
-                 (same-bytes? manifest-id (blob/manifest-address manifest)))
-    (throw (ex-info "Manifest does not match its Konserve address"
-                    {:type :netz.replication/manifest-address-mismatch})))
-  manifest)
-
-(defn- expected-piece! [manifest index piece-id]
-  (when-not (and (int? index)
-                 (<= 0 index)
-                 (< index (count (get manifest "pieces")))
-                 (same-bytes? piece-id (nth (get manifest "pieces") index)))
-    (throw (ex-info "Piece does not match its manifest position"
-                    {:type :netz.replication/piece-address-mismatch
-                     :index index})))
-  piece-id)
 
 (defn- immutable-assoc! [store key value]
   (k/assoc (:store store) key value {:immutable? true} {:sync? false}))

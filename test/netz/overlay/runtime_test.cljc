@@ -407,6 +407,62 @@
            (is (nil? (async/poll! (:events ctx))))
            (close! in))))))
 
+#?(:clj
+   (deftest noise-registration-is-single-owner-before-inbound-delivery
+     (let [local (<!! (id/generate-identity))
+           remote (<!! (id/generate-identity))
+           record (<!! (id/sign-record remote [] 1))
+           remote-id (id/peer-id (:genesis remote))
+           authority (id/authority-id (:genesis remote))
+           capabilities #{wire/profile-capability rt/extension-carrier-capability
+                          dissemination-wire/capability}
+           facts (atom {:netz.transport.noise/authenticated-record record
+                        :netz.transport.noise/authenticated-routing-id remote-id
+                        :kabel.transport/authenticated-authority authority
+                        :kabel.transport/negotiated-capabilities capabilities})
+           signed (<!! (rt/sign-gossip S remote
+                                       {:type :gossip :topic "db/roots" :origin remote-id
+                                        :epoch 0 :seq 0 :hops 0 :payload (id/seq->bytes [7])}))
+           carrier (rt/extension-carrier dissemination-wire/capability
+                                         (dissemination-wire/frame->wire signed))
+           ctx (runtime-with [] (atom []))
+           peer (atom {}) in (chan) out (chan)
+           entered (promise) release (promise) calls (atom 0)
+           original @#'rt/register!]
+       (with-redefs-fn
+         {#'rt/register!
+          (fn [& args]
+            (swap! calls inc)
+            (deliver entered true)
+            (when-not (deref release 5000 false)
+              (throw (ex-info "Test registration latch timed out" {})))
+            (apply original args))}
+         (fn []
+           (try
+             ((rt/middleware {:ctx ctx :identity local :addresses [] :seq-no 1
+                              :authenticated-context-fn (constantly facts)
+                              :authorize-dissemination? (constantly true)})
+              [S peer [in out]])
+             (is (true? (deref entered 2000 false)) "Poller must enter registration first")
+             (is (= [true in] (alts!! [[in carrier] (timeout 2000)]))
+                 "Inbound loop must take the frame while registration is held")
+             ;; Keep the first completion in-flight while the frame loop races it.
+             (<!! (timeout 100))
+             (is (= 1 @calls) "Only one completion may enter registration")
+             (is (nil? (async/poll! (:events ctx)))
+                 "No event may precede registration completion")
+             (deliver release true)
+             (let [[connected _] (alts!! [(:events ctx) (timeout 2000)])
+                   [message _] (alts!! [(:events ctx) (timeout 2000)])]
+               (is (= {:type :dissemination-connected :peer remote-id} connected))
+               (is (= :message (:type message)))
+               (is (= "db/roots" (get-in message [:payload :topic])))
+               (is (= 1 @calls)))
+             (finally
+               (deliver release true)
+               (close! in)
+               (close! out))))))))
+
 (def extension-fixture
   {"v" 1
    "type" "blob/need"

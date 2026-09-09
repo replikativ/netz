@@ -11,26 +11,16 @@ dependency-free Python CBOR/session core—including strict signed dissemination
 and repair frames—plus a durable filesystem blob repository and transfer
 machines define the path to implementations outside the Clojure ecosystem.
 
-> **Release status: `0.1.0-alpha.1`.** The JVM, JavaScript, and Python paths now
-> share deterministic CBOR and authenticated Noise/Kabel fixtures. The secure
-> JVM overlay passes a real three-peer rejoin test, and a Python sender now
-> completes a real authenticated, fsync-backed transfer into the JVM runtime;
-> the reverse JVM-provider/Python-receiver path also survives a process restart
-> after a durable piece but before its ACK. The JVM runtime also repairs an
-> offline signed publication through the negotiated portable dissemination
-> carrier over a real Noise/Kabel WebSocket, and the Python subscriber can
-> restore application-committed frontiers from an atomic fsynced record and
-> run a bounded state-sync pull on that same authenticated connection. Python
-> can also fetch a verified raw-CID block from the JVM content service, while
-> the bounded JVM requester verifies a block served by Python over the same
-> negotiated authenticated carrier. Both Python directions use the reusable
-> reconnecting client with separate transport and storage authorization.
-> Exact configured
-> `wss` gateways have a supported dial policy. Arbitrary public discovery still
-> waits on socket-level resolved-IP pinning. The authenticated transport uses
-> released Kabel 0.3.134 and Geheimnis 0.2.39 artifacts. Rotation remains
-> explicitly reserved. See
-> [release readiness](RELEASE.md) for the exact gates.
+> **Pre-release target: `0.1.0-alpha.1` (Apache-2.0).** JVM, CLJS and Python
+> share protocol fixtures and live interoperability tests. The experimental
+> blob backend also has signed placement, repair and writer-process recovery
+> tests; it is not yet a production distributed storage service. See
+> [release readiness](RELEASE.md) and the [current storage verification](spec/stable-layout-draft.md)
+> for evidence and remaining work.
+>
+> Public dialing is limited to explicitly configured `wss` gateways. Arbitrary
+> public discovery still needs socket-level resolved-IP pinning. Identity-key
+> rotation remains reserved.
 
 ## What Netz owns
 
@@ -56,7 +46,7 @@ Build and test the current checkout:
 ```sh
 clojure -X:test :dirs '["test"]'
 npm ci
-npx shadow-cljs compile :node-test
+clojure -M:test:secure-test:konserve:cljs -m shadow.cljs.devtools.cli compile node-test
 node target/node-tests.js
 python3 -m unittest discover -s interop/python -v
 python3 -m pip wheel . --no-deps --wheel-dir /tmp/netz-python-dist

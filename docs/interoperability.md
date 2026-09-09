@@ -158,6 +158,46 @@ machine. The separately negotiated `netz/content/1` service and requester also
 pass authenticated raw-CID fetches in both Python/JVM directions, with the
 receiver independently verifying the returned bytes. Both Python directions
 now use the reusable reconnecting client rather than a one-shot carrier. The
+same mixed-runtime gate also compiles a Node/ClojureScript peer and checks a
+content fetches in both Node/JVM directions through Kabel WebSocket,
+CBOR and authenticated Noise.
+Its configured seed pins the full server Authority, capability negotiation
+selects the portable content carrier, and the requester verifies the raw CID.
+Run `npx shadow-cljs compile mixed-content` before running `:mixed-test` locally.
+The Node service permits only the configured requester Authority and exact CID.
+Both serving subprocesses wait for the JVM's verification acknowledgment before
+closing, rather than confusing a backend read with completed network delivery.
+This adds a live JavaScript requester and service. A separate Node receiver
+also pulls JVM state using the shared canonical-byte join-semilattice profile,
+checking application commit, synchronized status and session completion.
+The JVM authorizes its exact full test Authority, topic and profile. Compile
+it with `npx shadow-cljs compile mixed-sync` before running `:mixed-test`.
+The reverse JVM pull from Node also passes: Node pins the authorized JVM,
+topic and profile and stays connected until the JVM confirms application commit.
+The Node dissemination client repairs an offline JVM publication and records
+its application-committed frontier. Both Python and Node offline tests wait for
+the publication to enter JVM history before starting the subscriber; queue
+admission alone would not establish an offline-repair test.
+
+A three-runtime relay test starts a Node publisher, commits its publication on
+the JVM, then lets Python repair that publication through the JVM while Node
+remains live. Python separately pins the authenticated JVM connection and the
+original Node signing Authority. It commits the received payload before the
+test permits Node to exit. This is evidence for signed dissemination relay and
+recent-history repair, not durable application storage, power-loss recovery,
+or complete three-runtime content/sync/base-protocol conformance.
+
+To run the full mixed-runtime gate locally with Python dependencies installed:
+
+```sh
+npx shadow-cljs compile mixed-content mixed-sync mixed-dissemination
+clojure -X:secure-test:mixed-test :dirs '["test-mixed"]'
+```
+
+Set `NETZ_PYTHON` to the Python environment containing `netz-protocol` and its
+optional client dependencies when it is not the default `python3`.
+
+The
 JVM/JavaScript node layer additionally ingests authorization-first provider
 announcements and performs capped, capability-filtered two-hop discovery over
 already connected peers; it never implicitly dials or elevates a hint to

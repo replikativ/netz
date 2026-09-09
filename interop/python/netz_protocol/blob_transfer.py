@@ -551,7 +551,9 @@ class BlobSender(_Session):
         except Exception:
             return self._abort("invalid-receipt",
                                extra=[self._failure("invalid-receipt")])
-        if self.status != "awaiting-receipt":
+        # An installed replica may answer the offer directly. Exact receipt
+        # binding and durable recording remain mandatory below.
+        if self.status not in {"awaiting-need", "awaiting-receipt"}:
             if (self.status == "persisting-receipt"
                     and self.controller_event is not None
                     and dumps(frame["receipt"])

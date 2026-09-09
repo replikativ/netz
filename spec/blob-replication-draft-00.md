@@ -57,6 +57,8 @@ signed Netz envelope defined in section 6. Its body is:
   "v": 1, "type": "blob/layout",
   "cluster": bytes,
   "epoch": uint,
+  "placement": "netz/blob-placement/2",
+  "seed": bytes32,
   "previous": bytes32,
   "members": [
     {
@@ -185,12 +187,18 @@ For every enabled member, compute:
 
 ~~~text
 SHA-256(deterministic-CBOR({
-  "epoch": layout.epoch,
+  "seed": lowercase_hex(layout.seed),
   "member": member.id,
   "object": object_id,
-  "profile": "netz/blob-placement/1"
+  "profile": "netz/blob-placement/2"
 }))
 ~~~
+
+The signed seed MUST be exactly 32 bytes; its lowercase hex
+representation is used only in the score input. Missing seeds and unknown
+placement profiles MUST be rejected. Ordinary successor layouts MUST preserve
+the seed. Epoch fences authority and receipts but does not change placement.
+Explicit seed rotation is not supported by this initial format.
 
 `object_id` is an opaque byte string or text identifier fixed by the negotiated
 address profile. Scores sort by unsigned byte value, descending; equal scores
@@ -599,6 +607,10 @@ are then repaired through the ordinary `blob/need` exchange. If the object is
 already installed, the receiver MAY omit the need and piece exchange only
 after re-verifying the marker, pieces, complete object and claimed persistence
 boundary; it then signs a receipt for the new fenced attempt. The coordinator
+MUST accept this response while awaiting `blob/need`, subject to the same
+signature, peer, manifest, revision, epoch, attempt and persistence checks as
+a receipt following `blob/commit`. It need not request retransmission of
+already verified bytes merely to advance its local sender phase. The coordinator
 MUST verify and durably record that exact receipt before treating the audit or
 repair as successful. A receipt is point-in-time evidence, not proof that a
 Byzantine peer will retain the bytes afterward.

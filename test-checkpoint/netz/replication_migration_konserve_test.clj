@@ -1,6 +1,7 @@
 (ns netz.replication-migration-konserve-test
   (:require [clojure.test :refer [deftest is]]
             [konserve.core :as k]
+            [konserve.directory-sync :as directory-sync]
             [konserve.filestore :as fs]
             [konserve.impl.defaults :as defaults]
             [konserve.impl.storage-layout :as layout]
@@ -9,23 +10,52 @@
             [netz.replication.migration-konserve :as store]
             [netz.replication-migration-test :as model])
   (:import [java.nio.file Files]
+           [java.io IOException]
            [java.nio.file.attribute FileAttribute]))
+
+(deftest checkpoint-requires-explicit-provisioning-boundary
+  (is (= :netz.replication.migration-konserve/missing-durable-ancestor
+         (try (store/open! "unused" "unused" {}) nil
+              (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))))
+
+(deftest no-store-open-or-checkpoint-before-provisioning-completes
+  (doseq [fail-at (range 1 6)]
+    (let [root (Files/createTempDirectory "netz-checkpoint-provision-" (make-array FileAttribute 0))
+          path (.resolve root "a/b")
+          key ((ns-resolve 'konserve.encryptor 'generate-key))
+          options {:durable-ancestor root}
+          calls (atom 0) opens (atom 0)
+          template (model/initial)]
+      (try
+        (with-redefs [directory-sync/sync-directory!
+                      (fn [_] (when (= fail-at (swap! calls inc))
+                                (throw (IOException. "provisioning barrier failed"))))
+                      fs/connect-fs-store (fn [& _] (swap! opens inc))]
+          (is (thrown-with-msg? IOException #"provisioning barrier failed"
+                                (store/open! path key options))))
+        (is (zero? @opens))
+        (let [adapter (store/open! path key options)
+              saved (store/persist! adapter template template)]
+          (is (migration/ready? saved))
+          (is (= saved (store/load! (store/open! path key options) template 0))))
+        (finally (fs/delete-store (str root)))))))
 
 (deftest encrypted-cbor-checkpoint-reopen
   (let [path (str (Files/createTempDirectory "netz-konserve-checkpoint-" (make-array FileAttribute 0)))
         key ((ns-resolve 'konserve.encryptor 'generate-key))
         template (model/initial)]
     (try
-      (let [adapter (store/open! path key)]
+      (let [adapter (store/open! path key {:durable-ancestor path})]
         (is (thrown? Exception (store/load! adapter template 0)))
         (let [saved (store/persist! adapter template template)]
           (is (migration/ready? saved))
-          (is (= saved (store/load! (store/open! path key) template 0)))
+          (is (= saved (store/load! (store/open! path key {:durable-ancestor path}) template 0)))
           (is (thrown? Exception (store/load! adapter template 1)))
           (is (thrown? Exception
                        (store/load! adapter (assoc-in template [:binding :object] "wrong") 0)))
           (is (thrown? Exception
-                       (store/load! (store/open! path (apply str (repeat 64 "0"))) template 0)))
+                       (store/load! (store/open! path (apply str (repeat 64 "0"))
+                                                 {:durable-ancestor path}) template 0)))
           (is (empty? (model/candidates saved)))))
       (finally (fs/delete-store path)))))
 
@@ -34,7 +64,7 @@
         key ((ns-resolve 'konserve.encryptor 'generate-key))
         template (model/initial)]
     (try
-      (let [adapter (store/open! path key)
+      (let [adapter (store/open! path key {:durable-ancestor path})
             backing (:store adapter)
             key :netz.replication.migration-konserve/checkpoint]
         (store/persist! adapter template template)

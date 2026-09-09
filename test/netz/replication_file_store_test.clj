@@ -6,7 +6,8 @@
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
             [netz.replication.controller-storage :as controller-storage]
-            [netz.replication.file-store :as file-store]
+            [netz.replication.directory-barrier :as directory-barrier]
+            [netz.replication-test-store :as file-store]
             [netz.replication.inventory :as inventory]
             [netz.replication.intent :as intent]
             [netz.replication.sender :as sender]
@@ -143,6 +144,8 @@
 
 (def layout0
   {"v" 1 "type" "blob/layout"
+   "placement" "netz/blob-placement/2"
+   "seed" (identity/hex->bytes (apply str (repeat 32 "aa")))
    "cluster" (get retention "cluster") "epoch" 0
    "previous" (identity/hex->bytes (apply str (repeat 32 "00")))
    "members" [{"authority" authority "domains" {} "enabled" true}]
@@ -162,6 +165,24 @@
    :persistence "netz/store/fsync/1"
    :receipt receipt
    :manifest-id (identity/bytes->hex (:manifest-id split))})
+
+(deftest provisioning-failure-prevents-root-and-piece-success
+  (with-store-root [root (temporary-directory)]
+    (let [nested (.resolve root "nested/store")
+          error (java.nio.file.AccessDeniedException. "injected")]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (file-store/new-file-store nested {:durable-ancestor nil})))
+      (is (not (Files/exists (.getParent nested) (make-array java.nio.file.LinkOption 0))))
+      (with-redefs [directory-barrier/provision! (fn [& _] (throw error))]
+        (is (thrown? java.nio.file.AccessDeniedException
+                     (file-store/new-file-store nested {:durable-ancestor root}))))
+      (is (not (Files/exists nested (make-array java.nio.file.LinkOption 0))))
+      (let [store (file-store/new-file-store nested {:durable-ancestor root})
+            piece (first (:pieces split))]
+        (doseq [_ (range 2)]
+          (with-redefs [directory-barrier/provision! (fn [& _] (throw error))]
+            (is (thrown? java.nio.file.AccessDeniedException (stage! store piece))))
+          (is (= :ok (stage! store piece))))))))
 
 (deftest staged-pieces-survive-cleanup-and-restart
   (with-store-root [root (temporary-directory)]
@@ -256,6 +277,48 @@
       (is (= "netz/store/best-effort/1"
              (:persistence
               (install! store "netz/store/best-effort/1")))))))
+
+(deftest retained-install-rechecks-every-piece-and-marker-parent
+  (with-store-root [root (temporary-directory)]
+    (let [store (file-store/new-file-store root)
+          provision directory-barrier/provision!
+          calls (atom [])]
+      (doseq [piece (:pieces split)] (stage! store piece))
+      (install! store "netz/store/fsync/1")
+      (with-redefs [directory-barrier/provision!
+                    (fn [handle target]
+                      (swap! calls conj target)
+                      (provision handle target))]
+        (is (= :ok (:result (install! store "netz/store/fsync/1")))))
+      (is (= (inc (count (distinct (get (:manifest split) "pieces"))))
+             (count @calls)))
+      (doseq [failed-path @calls]
+        (let [error (java.nio.file.AccessDeniedException. (str failed-path))]
+          (with-redefs [directory-barrier/provision!
+                        (fn [handle target]
+                          (if (= target failed-path) (throw error)
+                              (provision handle target)))]
+            (is (thrown? java.nio.file.AccessDeniedException
+                         (install! store "netz/store/fsync/1"))))))
+      (is (= :ok (:result (install! store "netz/store/fsync/1")))))))
+
+(deftest receipt-and-controller-records-do-not-acknowledge-failed-barriers
+  (with-store-root [root (temporary-directory)]
+    (let [store (file-store/new-file-store root)
+          event (controller-event (signed-receipt))
+          cluster (get retention "cluster")
+          error (java.nio.file.AccessDeniedException. "injected")
+          operations [(fn [] (await (storage/-persist-receipt! store session event)))
+                      (fn [] (await (controller-storage/-persist-controller-intent!
+                                     store cluster (:object-id split) (durable-intent 0 0))))]]
+      (doseq [operation operations]
+        (with-redefs [directory-barrier/provision! (fn [& _] (throw error))]
+          (is (thrown? java.nio.file.AccessDeniedException (operation))))
+        ;; Rename may already have happened when the final directory sync fails.
+        ;; Assert refusal to acknowledge, not rollback of those bytes.
+        (with-redefs [directory-barrier/sync! (fn [& _] (throw error))]
+          (is (thrown? java.nio.file.AccessDeniedException (operation))))
+        (is (= :ok (operation)))))))
 
 (deftest signed-receipts-are-durable-and-cryptographically-replayed
   (with-store-root [root (temporary-directory)]

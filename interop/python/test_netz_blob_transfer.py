@@ -73,7 +73,8 @@ class PythonBlobTransferTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory(
             prefix="netz-python-transfer-")
-        self.store = FileBlobStore(self.temporary.name, clock=lambda: 1200)
+        self.store = FileBlobStore(self.temporary.name, durable_ancestor=self.temporary.name,
+                                   clock=lambda: 1200)
 
     async def asyncTearDown(self):
         await self.store.close()
@@ -241,6 +242,14 @@ class PythonBlobTransferTest(unittest.IsolatedAsyncioTestCase):
         sender.start()
         sender.receive("receiver", AUTHORITY, all_held)
         receipt["attempt"] = 0
+        direct = BlobSender("receiver", AUTHORITY, offer, now=1000)
+        direct.start()
+        direct_actions = direct.verified_stored("receiver", AUTHORITY, {
+            "v": 1, "type": "blob/stored", "session": SESSION,
+            "receipt": envelope(receipt),
+        })
+        self.assertEqual("persisting-receipt", direct.status)
+        self.assertEqual(["persist_receipt"], [a.kind for a in direct_actions])
         sender.verified_stored("receiver", AUTHORITY, {
             "v": 1, "type": "blob/stored", "session": SESSION,
             "receipt": envelope(receipt),

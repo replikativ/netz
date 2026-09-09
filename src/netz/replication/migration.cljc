@@ -7,13 +7,12 @@
   migration-konserve provides optional local JVM checkpoint IO; the distributed
   runtime adapter and authenticated wire format are not implemented."
   (:require [clojure.set :as set]
-            [netz.replication.placement :as placement]
-            [netz.replication.stable-placement :as stable]))
+            [netz.replication.placement :as placement]))
 
 (defn create
   "Prepare one transition. Binding carries exact cluster/object, old/new layout
   addresses, policy and controller fencing identity supplied by the trusted caller."
-  [{:keys [binding layout seed policy old-holders retire-after]}]
+  [{:keys [binding layout policy old-holders retire-after]}]
   (when-not (and (map? binding)
                  (= #{:cluster :object :old-layout :new-layout :controller}
                     (set (keys binding)))
@@ -25,7 +24,7 @@
                  (integer? retire-after) (<= 0 retire-after))
     (throw (ex-info "Invalid migration configuration" {:type ::invalid-config})))
   (let [policy (placement/validate-policy layout policy)
-        targets (stable/place layout seed policy (:object binding))]
+        targets (placement/place layout policy (:object binding))]
     {:binding (assoc binding :policy policy)
      :targets targets :old-holders old-holders :retire-after retire-after
      :attempts (zipmap (map :id targets) (repeat 0))
@@ -44,6 +43,27 @@
   (assoc record :persisted (:revision record)))
 
 (defn ready? [state] (= (:revision state) (:persisted state)))
+
+(defn copy-candidates
+  "Plan bounded copy work for the current durable transition, in placement order.
+  Results bind replica, attempt and the exact transition. They are not network
+  authorization: a runtime must validate current authority and signed layouts
+  before issuing transfers. No work is released while a checkpoint is pending.
+  Missing, obsolete-attempt and expired receipts require fresh evidence."
+  [state {:keys [binding now]}]
+  (if (and (ready? state) (not (:halted? state))
+           (= binding (:binding state))
+           (integer? now) (<= 0 now))
+    (into []
+          (keep (fn [{:keys [id]}]
+                  (let [attempt (get-in state [:attempts id])
+                        receipt (get-in state [:receipts id])]
+                    (when-not (and (= attempt (:attempt receipt))
+                                   (integer? (:expires receipt))
+                                   (< now (:expires receipt)))
+                      {:binding binding :replica id :attempt attempt}))))
+          (:targets state))
+    []))
 
 (defn- covered? [state now]
   (and (every? (fn [[id attempt]]

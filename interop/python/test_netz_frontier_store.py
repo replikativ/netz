@@ -2,6 +2,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from netz_codec import dumps
 from netz_protocol import (
@@ -31,12 +32,33 @@ class FrontierStoreTest(unittest.IsolatedAsyncioTestCase):
         stream = (bytes([3]) * 32, 4, "db/roots")
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "frontiers.cbor"
-            store = FileFrontierStore(path)
+            store = FileFrontierStore(path, durable_ancestor=root)
             self.assertEqual({}, await store.load_frontiers())
             await store.save_frontiers({stream: 11})
             restored = FileFrontierStore(path)
             self.assertEqual({stream: 11}, await restored.load_frontiers())
             self.assertEqual(decode_frontiers(path.read_bytes()), {stream: 11})
+
+    async def test_missing_ancestor_is_read_only_without_mutation(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "nested" / "frontiers.cbor"
+            store = FileFrontierStore(path)
+            self.assertEqual({}, await store.load_frontiers())
+            with self.assertRaises(FrontierStoreError):
+                await store.save_frontiers({})
+            self.assertFalse(path.parent.exists())
+
+    async def test_failed_provisioning_does_not_publish_frontiers(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "a" / "b" / "frontiers.cbor"
+            store = FileFrontierStore(path, durable_ancestor=root)
+            error = PermissionError("injected parent barrier failure")
+            with patch("netz_protocol.directory_sync.sync_directory", side_effect=error):
+                with self.assertRaises(PermissionError):
+                    await store.save_frontiers({})
+            self.assertFalse(path.exists())
+            await store.save_frontiers({})
+            self.assertEqual({}, await store.load_frontiers())
 
     async def test_memory_store_returns_an_independent_mapping(self):
         stream = (bytes([4]) * 32, 0, "db/roots")

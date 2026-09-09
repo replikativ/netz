@@ -88,23 +88,29 @@ def validate_policy(layout: dict[str, Any], policy: dict[str, Any]) -> dict[str,
     return normalized
 
 
-def score(layout_epoch: int, object_id: bytes | str, member_id: str) -> bytes:
+def score(seed: str, object_id: bytes | str, member_id: str) -> bytes:
     """Return the portable rendezvous score for one member and object."""
+    if (not isinstance(seed, str) or len(seed) != 64
+            or any(character not in "0123456789abcdef" for character in seed)):
+        raise ReplicationError("placement seed must be 32 bytes as lowercase hex")
     return sha256(dumps({
-        "epoch": layout_epoch,
+        "seed": seed,
         "member": member_id,
         "object": object_id,
-        "profile": "netz/blob-placement/1",
+        "profile": "netz/blob-placement/2",
     })).digest()
 
 
 def rank(layout: dict[str, Any], object_id: bytes | str) -> list[dict[str, Any]]:
     """Eligible members in descending score order, identity ascending on ties."""
+    if layout.get("placement") != "netz/blob-placement/2":
+        raise ReplicationError("unsupported placement profile")
+    score(layout.get("seed"), object_id, "")
     members = eligible_members(layout)
 
     def compare(left: dict[str, Any], right: dict[str, Any]) -> int:
-        left_score = score(layout["epoch"], object_id, left["id"])
-        right_score = score(layout["epoch"], object_id, right["id"])
+        left_score = score(layout["seed"], object_id, left["id"])
+        right_score = score(layout["seed"], object_id, right["id"])
         if left_score != right_score:
             return -1 if left_score > right_score else 1
         if left["id"] < right["id"]:

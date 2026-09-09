@@ -11,7 +11,7 @@
             [netz.replication.blob :as blob]
             [netz.replication.audit-runtime :as audit-runtime]
             [netz.replication.controller-runtime :as controller-runtime]
-            [netz.replication.file-store :as file-store]
+            [netz.replication-test-store :as file-store]
             [netz.replication.inventory :as inventory]
             [netz.replication.layout :as layout]
             [netz.replication.read-repair :as read-repair]
@@ -59,7 +59,7 @@
          (delete-tree! ~source-binding)
          (delete-tree! ~target-binding)))))
 
-(defn- start-server [url identity capabilities]
+(defn start-server [url identity capabilities]
   (let [id (identity/peer-id (:genesis identity))
         [app install!] (overlay-runtime/deferred-middleware)
         socket
@@ -82,7 +82,7 @@
     (<?? S (peer/start socket))
     {:id id :peer socket :node node}))
 
-(defn- start-client [url identity server capabilities]
+(defn start-client [url identity server capabilities]
   (let [id (identity/peer-id (:genesis identity))
         [app install!] (overlay-runtime/deferred-middleware)
         socket
@@ -97,19 +97,20 @@
                      S socket
                      {:identity identity
                       :topics #{:blob-test}
-                      :seeds [{:peer-id (:id server)
-                               :authority-id
-                               (identity/authority-id
-                                (:genesis (:identity server)))
-                               :addresses [url]
-                               :group "seed"}]
+                      :seeds (or (:seeds server)
+                                 [{:peer-id (:id server)
+                                   :authority-id
+                                   (identity/authority-id
+                                    (:genesis (:identity server)))
+                                   :addresses [url]
+                                   :group "seed"}])
                       :overlay-opts
                       {:membership {:require-authority? true
                                     :dial-interval-ms 20}}}))]
     (install! (:middleware node))
     {:id id :peer socket :node node}))
 
-(defn- stop-node! [{:keys [node peer]}]
+(defn stop-node! [{:keys [node peer]}]
   (overlay-runtime/stop! node)
   (<?? S (peer/stop peer)))
 
@@ -181,6 +182,8 @@
                             {:piece-size 8})
           layout-statement
           {"v" 1 "type" "blob/layout" "cluster" cluster "epoch" 0
+           "placement" "netz/blob-placement/2"
+           "seed" (identity/hex->bytes (apply str (repeat 32 "aa")))
            "previous" (identity/seq->bytes (repeat 32 0))
            "members" [{"authority" server-authority
                        "domains" {"site" "server"}
@@ -200,9 +203,9 @@
           retention-envelope
           (await (replication-wire/sign-statement client-identity retention))
           current-layout
-          (:state (layout/reconcile
-                   (layout/make-state cluster [client-authority])
-                   layout-statement))
+          (atom (:state (layout/reconcile
+                         (layout/make-state cluster [client-authority])
+                         layout-statement)))
           controller-ref (atom nil)
           complete (atom [])
           stored (atom [])
@@ -212,7 +215,11 @@
            (:node server)
            {:store target
             :now-fn (constantly 1100)
-            :authorize-offer! (fn [_] (storage/chan-of true))})
+            :authorize-offer!
+            (fn [{:keys [retention]}]
+              (storage/chan-of
+               (layout/retention-authorized? @current-layout server-authority
+                                             retention)))})
           source-runtime
           (replication-runtime/start!
            (:node client)
@@ -227,7 +234,7 @@
           controller
           (controller-runtime/start!
            {:store source :cluster cluster :controllers [client-authority]
-            :layout-state-fn (constantly current-layout)
+            :layout-state-fn #(deref current-layout)
             :now-fn (constantly 1100)
             :on-complete! #(swap! complete conj %)
             :on-failed! #(swap! failures conj %)
@@ -290,6 +297,31 @@
               (is (= :healthy (:status (await (inventory/scrub-object! target (:manifest-id split))))))
               (is (= 1 (:attempt (last @stored))))
               (finally (await (audit-runtime/stop! auditor))))))
+        (testing "a signed successor obtains fresh receipts over the live transport"
+          (let [next-layout (assoc layout-statement "epoch" 1
+                                   "previous" (layout/address layout-statement)
+                                   "issued_at" 1000)
+                next-retention (assoc retention "layout_epoch" 1 "revision" 2)
+                next-envelope (await (replication-wire/sign-statement
+                                      client-identity next-layout))
+                next-retention-envelope (await (replication-wire/sign-statement
+                                                client-identity next-retention))
+                accepted (layout/reconcile @current-layout next-layout)
+                object-id (identity/bytes->hex (:object-id split))]
+            (is (true? (await (replication-wire/verify-envelope next-envelope))))
+            (is (= :accepted (:status accepted)))
+            (reset! current-layout (:state accepted))
+            (is (= :ok (await (controller-runtime/revise!
+                               controller next-envelope next-retention-envelope))))
+            (is (wait-for 10000
+                          #(some (fn [event] (= 1 (:layout-epoch event))) @stored)))
+            (is (= :confirmed
+                   (:status (await (controller-runtime/await-durable!
+                                    controller object-id
+                                    {:timeout-ms 2000 :poll-ms 10})))))
+            (is (= 1 (get-in (controller-runtime/state controller)
+                             [:objects object-id :layout-epoch])))
+            (is (empty? @failures))))
         (finally
           (controller-runtime/stop! controller)
           (replication-runtime/stop! source-runtime)

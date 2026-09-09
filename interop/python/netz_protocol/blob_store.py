@@ -18,6 +18,7 @@ import time
 from typing import Any, Callable
 
 from netz_codec import dumps, loads
+from .directory_sync import provision_directory
 
 from .blob import (
     OBJECT_TAG,
@@ -66,7 +67,10 @@ def _safe_uint(value: Any) -> bool:
 class FileBlobStore:
     """Asynchronous, content-addressed filesystem blob repository.
 
-    ``fsync`` is the default persistence profile. It forces staged pieces,
+    ``fsync`` is the default persistence profile and requires an explicit
+    ``durable_ancestor`` whose own name is already durable. The managed tree
+    must be exclusively owned; directory barriers currently require POSIX.
+    It repeats parent-chain barriers on writes/retries and forces staged pieces,
     atomic installation markers, and their containing directories before a
     method reports success. ``best-effort`` retains atomic replacement but
     makes no crash-durability claim. Cancelling an await does not roll back a
@@ -76,6 +80,7 @@ class FileBlobStore:
 
     def __init__(self, root: str | os.PathLike[str], *,
                  persistence: str = FSYNC,
+                 durable_ancestor: str | os.PathLike[str] | None = None,
                  clock: Callable[[], int] | None = None,
                  max_inventory_records: int = 1_000_000) -> None:
         if persistence not in PERSISTENCE_PROFILES:
@@ -87,8 +92,16 @@ class FileBlobStore:
             raise BlobStoreError("invalid inventory bound", "invalid-options")
         if clock is not None and not callable(clock):
             raise BlobStoreError("invalid store clock", "invalid-options")
-        self.root = Path(root).expanduser().resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.root = Path(os.path.abspath(Path(root).expanduser()))
+        self._durable_ancestor = (Path(os.path.abspath(durable_ancestor))
+                                  if durable_ancestor is not None and os.fspath(durable_ancestor)
+                                  else durable_ancestor)
+        if persistence == FSYNC:
+            if durable_ancestor is None:
+                raise BlobStoreError("fsync requires an explicit durable_ancestor", "invalid-options")
+            provision_directory(self._durable_ancestor, self.root)
+        else:
+            self.root.mkdir(parents=True, exist_ok=True)
         if not self.root.is_dir():
             raise BlobStoreError("blob-store root is not a directory",
                                  "invalid-root")
@@ -168,7 +181,10 @@ class FileBlobStore:
             os.close(descriptor)
 
     def _atomic_write(self, target: Path, data: bytes) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
+        if self._fsync:
+            provision_directory(self._durable_ancestor, target.parent)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=".netz-", suffix=".tmp", dir=target.parent)
         temporary = Path(temporary_name)
@@ -314,6 +330,7 @@ class FileBlobStore:
             target = self._piece_path(address)
             if self._regular_file(target) and self._read_piece(manifest, index):
                 if self._fsync:
+                    provision_directory(self._durable_ancestor, target.parent)
                     self._force_path(target)
                     self._force_path(target.parent)
             else:
@@ -343,6 +360,7 @@ class FileBlobStore:
                 if self._fsync:
                     self._force_pieces(manifest)
                     target = self._marker_path(address)
+                    provision_directory(self._durable_ancestor, target.parent)
                     self._force_path(target)
                     self._force_path(target.parent)
                 return {**self._installed(existing), "result": "ok"}
@@ -369,6 +387,7 @@ class FileBlobStore:
     def _force_pieces(self, manifest: dict[str, Any]) -> None:
         for piece in dict.fromkeys(manifest["pieces"]):
             target = self._piece_path(piece)
+            provision_directory(self._durable_ancestor, target.parent)
             self._force_path(target)
             self._force_path(target.parent)
 

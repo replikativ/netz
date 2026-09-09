@@ -11,12 +11,12 @@
             [netz.identity :as identity]
             [netz.overlay.runtime :as overlay-runtime]
             [netz.replication.blob :as blob]
-            [netz.replication.file-store :as file-store]
+            [netz.replication-test-store :as file-store]
             [netz.replication.runtime :as replication-runtime]
             [netz.replication.storage :as storage]
             [netz.replication.wire :as replication-wire]
             [netz.sync :as sync]
-            [netz.sync.profile :as sync-profile]
+            [netz.mixed-sync-profile :refer [portable-join-profile]]
             [netz.transport.noise :as noise]
             [netz.transport.secure :as secure-overlay]
             [netz.wire :as wire]
@@ -179,26 +179,6 @@
           store session (:manifest-id split) (:manifest split) {}
           "netz/store/fsync/1")))
 
-(defn- portable-join-profile []
-  (reify sync-profile/SyncProfile
-    (-profile-id [_] "netz/join-semilattice/1")
-    (-describe [_ value _topic]
-      (wire/encode-canonical (vec (sort value))))
-    (-respond [_ value _topic remote-summary]
-      (let [remote (set (wire/decode remote-summary))
-            missing (vec (sort (remove remote value)))]
-        {:chunks (cond-> [] (seq missing)
-                   (conj (wire/encode-canonical missing)))
-         :checkpoint (wire/encode-canonical (vec (sort value)))}))
-    (-begin [_ value _topic] (set value))
-    (-apply-chunk [_ staging _topic chunk]
-      (into staging (wire/decode chunk)))
-    (-commit [_ value _topic staging checkpoint]
-      (let [described (set (wire/decode checkpoint))]
-        (when-not (every? staging described)
-          (throw (ex-info "checkpoint was not fully staged" {})))
-        (into (set value) staging)))))
-
 (defn- run-python-sync [url server-authority timeout-seconds]
   (let [python (or (System/getenv "NETZ_PYTHON") "python3")
         arguments
@@ -243,12 +223,12 @@
         (.close stream)
         (future-cancel output)))))
 
-(defn- run-python-dissemination [url server-authority timeout-seconds]
+(defn- run-python-dissemination [url server-authority timeout-seconds & extra-args]
   (let [python (or (System/getenv "NETZ_PYTHON") "python3")
         arguments
-        [python "test-mixed/python/mixed_dissemination_receiver.py"
-         "--uri" url
-         "--remote-authority" (identity/bytes->hex server-authority)]
+        (into [python "test-mixed/python/mixed_dissemination_receiver.py"
+               "--uri" url
+               "--remote-authority" (identity/bytes->hex server-authority)] extra-args)
         builder (doto (ProcessBuilder. ^java.util.List arguments)
                   (.redirectErrorStream true))
         process (.start builder)
@@ -468,6 +448,47 @@
           (replication-runtime/stop! runtime)
           (stop-node! server))))))
 
+(deftest node-receiver-pulls-portable-sync-from-jvm
+  (let [url (str "ws://localhost:" (swap! port-counter inc))
+        capabilities (conj noise/default-capabilities wire/profile-capability
+                           overlay-runtime/extension-carrier-capability sync/capability)
+        server-identity (<?? S (identity/generate-identity))
+        authorized (atom 0)
+        server (start-server
+                url server-identity capabilities
+                {:sync {:profiles {"netz/join-semilattice/1" (portable-join-profile)}
+                        :applications {"demo/join" #{"jvm"}}}}
+                (fn [{:keys [connection topic profile]}]
+                  (let [allowed? (and (= "a8386e4e777c12bb11c3344e3ac87b490b1cc13f0128301d28d658d4651791f4"
+                                         (:authority-id connection))
+                                      (= "demo/join" topic)
+                                      (= "netz/join-semilattice/1" profile))]
+                    (when allowed? (swap! authorized inc))
+                    allowed?)))]
+    (try
+      (let [process (.start (doto (ProcessBuilder.
+                                   ^java.util.List
+                                   [(or (System/getenv "NETZ_NODE") "node")
+                                    "target/mixed-sync-client.js" url
+                                    (identity/authority-id (:genesis server-identity))])
+                              (.redirectErrorStream true)))
+            output (future (slurp (.getInputStream process)))]
+        (try
+          (let [finished? (.waitFor process 30 TimeUnit/SECONDS)]
+            (is finished? "Node sync process timed out")
+            (when finished?
+              (let [text (deref output 5000 "Node output did not close")]
+                (is (= 0 (.exitValue process)) text)
+                (is (= "NETZ_MIXED_SYNC_OK jvm,node"
+                       (last (remove str/blank? (str/split-lines text)))) text))))
+          (is (= 1 @authorized))
+          (is (wait-for 5000 #(empty? (get-in (overlay-runtime/overlay-state (:node server))
+                                              [:sync :sessions]))))
+          (is (= 1 (get-in (overlay-runtime/overlay-state (:node server))
+                           [:sync :stats :chunks-sent])))
+          (finally (stop-process! process))))
+      (finally (stop-node! server)))))
+
 (deftest python-receiver-pulls-portable-sync-from-jvm
   (let [port (swap! port-counter inc)
         url (str "ws://localhost:" port)
@@ -541,8 +562,8 @@
         (is (wait-for
              10000
              #(= #{"jvm" "python"}
-                  (get-in (overlay-runtime/overlay-state (:node server))
-                          [:sync :applications "demo/join"])))
+                 (get-in (overlay-runtime/overlay-state (:node server))
+                         [:sync :applications "demo/join"])))
             "JVM receiver did not commit Python state")
         (let [{:keys [exit output timed-out?]}
               (deref python-result 35000
@@ -559,6 +580,146 @@
                             [:sync :sessions]))))
       (finally
         (stop-node! server)))))
+
+(deftest jvm-receiver-pulls-portable-sync-from-node
+  (let [url (str "ws://localhost:" (swap! port-counter inc))
+        capabilities (conj noise/default-capabilities wire/profile-capability
+                           overlay-runtime/extension-carrier-capability sync/capability)
+        server-identity (<?? S (identity/generate-identity))
+        node-authority "a8386e4e777c12bb11c3344e3ac87b490b1cc13f0128301d28d658d4651791f4"
+        node-peer (identity/authority-routing-id node-authority)
+        server (start-server
+                url server-identity capabilities
+                {:sync {:profiles {"netz/join-semilattice/1" (portable-join-profile)}
+                        :applications {"demo/join" #{"jvm"}}}})]
+    (try
+      (let [process (.start (doto (ProcessBuilder.
+                                   ^java.util.List
+                                   [(or (System/getenv "NETZ_NODE") "node")
+                                    "target/mixed-sync-client.js" url
+                                    (identity/authority-id (:genesis server-identity)) "serve"])
+                              (.redirectErrorStream true)))
+            output (future (slurp (.getInputStream process)))]
+        (try
+          (is (wait-for 10000 #(overlay-runtime/connection-info (:peer server) node-peer)))
+          (let [facts (overlay-runtime/connection-info (:peer server) node-peer)]
+            (is (= node-authority (:authority-id facts)))
+            (is (overlay-runtime/portable-sync-connection? (:peer server) node-peer)))
+          (is (overlay-runtime/start-sync! (:node server) node-peer "demo/join"
+                                           "netz/join-semilattice/1"))
+          (is (wait-for 10000 #(let [state (:sync (overlay-runtime/overlay-state (:node server)))]
+                                 (and (= #{"jvm" "node"} (get-in state [:applications "demo/join"]))
+                                      (= :synchronized (get-in state [:status "demo/join"]))
+                                      (empty? (:sessions state))))))
+          (let [out (.getOutputStream process)]
+            (.write out (.getBytes "done\n" java.nio.charset.StandardCharsets/UTF_8))
+            (.flush out))
+          (let [finished? (.waitFor process 10 TimeUnit/SECONDS)]
+            (is finished? "Node sender did not stop")
+            (when finished?
+              (let [text (deref output 5000 "Node output did not close")]
+                (is (= 0 (.exitValue process)) text)
+                (is (= "NETZ_MIXED_SYNC_SERVED"
+                       (last (remove str/blank? (str/split-lines text)))) text))))
+          (finally (stop-process! process))))
+      (finally (stop-node! server)))))
+
+(deftest node-client-repairs-an-offline-jvm-publication
+  (let [url (str "ws://localhost:" (swap! port-counter inc))
+        topic "datahike/roots/node-demo"
+        capabilities (conj noise/default-capabilities wire/profile-capability
+                           overlay-runtime/extension-carrier-capability dissemination-wire/capability)
+        server-identity (<?? S (identity/generate-identity))
+        server (start-server
+                url server-identity capabilities nil nil
+                (fn [{:keys [authority-id]}]
+                  (= "a8386e4e777c12bb11c3344e3ac87b490b1cc13f0128301d28d658d4651791f4"
+                     authority-id)))]
+    (try
+      ;; Publish before the subprocess exists: delivery must use history repair.
+      (is (overlay-runtime/publish! (:node server) topic (identity/utf8-bytes "root-42")))
+      (when-not (wait-for 10000 #(seq (get-in (overlay-runtime/overlay-state (:node server))
+                                              [:dissemination :store])))
+        (throw (ex-info "Publication was not retained before Node connected" {})))
+      (let [process (.start (doto (ProcessBuilder.
+                                   ^java.util.List
+                                   [(or (System/getenv "NETZ_NODE") "node")
+                                    "target/mixed-dissemination-client.js" url
+                                    (identity/authority-id (:genesis server-identity))])
+                              (.redirectErrorStream true)))
+            output (future (slurp (.getInputStream process)))]
+        (try
+          (let [finished? (.waitFor process 30 TimeUnit/SECONDS)]
+            (is finished? "Node publication process timed out")
+            (when finished?
+              (let [text (deref output 5000 "Node output did not close")]
+                (is (= 0 (.exitValue process)) text)
+                (is (= "NETZ_MIXED_DISSEMINATION_OK root-42"
+                       (last (remove str/blank? (str/split-lines text)))) text))))
+          (finally (stop-process! process))))
+      (finally (stop-node! server)))))
+
+(deftest python-repairs-a-node-publication-through-jvm
+  (let [url (str "ws://localhost:" (swap! port-counter inc))
+        topic "datahike/roots/node-demo"
+        node-authority "a8386e4e777c12bb11c3344e3ac87b490b1cc13f0128301d28d658d4651791f4"
+        capabilities (conj noise/default-capabilities wire/profile-capability
+                           overlay-runtime/extension-carrier-capability dissemination-wire/capability)
+        server-identity (<?? S (identity/generate-identity))
+        server (start-server url server-identity capabilities nil nil
+                             (fn [{:keys [authority-id]}]
+                               (contains? #{node-authority python-sync-authority} authority-id)))
+        delivered (promise)]
+    (try
+      (overlay-runtime/set-deliver!
+       (:node server)
+       (fn [_source received-topic payload publication]
+         (deliver delivered {:topic received-topic :payload payload :publication publication})))
+      (is (overlay-runtime/subscribe-topics! (:node server) #{topic}))
+      (let [process (.start (doto (ProcessBuilder.
+                                   ^java.util.List
+                                   [(or (System/getenv "NETZ_NODE") "node")
+                                    "target/mixed-dissemination-client.js" url
+                                    (identity/authority-id (:genesis server-identity)) "publish"])
+                              (.redirectErrorStream true)))
+            output (future (slurp (.getInputStream process)))]
+        (try
+          (let [{:keys [payload publication] received-topic :topic :as result}
+                (deref delivered 15000 nil)]
+            (is (some? result) "JVM did not receive Node publication")
+            (is (= topic received-topic))
+            (is (= node-authority (:origin-authority publication)))
+            (is (and payload (identity/bufs= (identity/utf8-bytes "root-42") payload)))
+            (when result
+              (is (overlay-runtime/application-committed! (:node server) publication))
+              (is (wait-for 5000 #(= (:seq publication)
+                                     (get-in (overlay-runtime/overlay-state (:node server))
+                                             [:sync :frontiers topic
+                                              [(:origin publication) (:epoch publication) topic]]))))
+              ;; Node remains alive until Python commits the relayed publication.
+              ;; Python pins the JVM connection and the distinct Node origin.
+              (is (.isAlive process) "Node must remain live during relay repair")
+              (let [{:keys [exit output timed-out?]}
+                    (run-python-dissemination
+                     url (identity/authority-id-bytes (:genesis server-identity)) 30
+                     "--topic" topic "--origin-authority" node-authority)]
+                (is (false? timed-out?) output)
+                (is (= 0 exit) output)
+                (is (= "NETZ_MIXED_DISSEMINATION_OK root-42"
+                       (last (remove str/blank? (str/split-lines output)))) output))
+              (is (.isAlive process) "Node must await the final commit acknowledgement")
+              (let [out (.getOutputStream process)]
+                (.write out (.getBytes "done\n" java.nio.charset.StandardCharsets/UTF_8))
+                (.flush out))))
+          (let [finished? (.waitFor process 10 TimeUnit/SECONDS)]
+            (is finished? "Node publisher did not stop")
+            (when finished?
+              (let [text (deref output 5000 "Node output did not close")]
+                (is (= 0 (.exitValue process)) text)
+                (is (= "NETZ_MIXED_DISSEMINATION_OK root-42"
+                       (last (remove str/blank? (str/split-lines text)))) text))))
+          (finally (stop-process! process))))
+      (finally (stop-node! server)))))
 
 (deftest python-client-repairs-an-offline-jvm-publication
   (let [port (swap! port-counter inc)
@@ -579,6 +740,9 @@
       ;; rather than merely exercising the live forwarding path.
       (is (overlay-runtime/publish!
            (:node server) topic (identity/utf8-bytes "root-42")))
+      (when-not (wait-for 10000 #(seq (get-in (overlay-runtime/overlay-state (:node server))
+                                              [:dissemination :store])))
+        (throw (ex-info "Publication was not retained before Python connected" {})))
       (let [{:keys [exit output timed-out?]}
             (run-python-dissemination url server-authority 30)]
         (is (false? timed-out?) output)

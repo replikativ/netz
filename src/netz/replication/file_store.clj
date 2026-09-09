@@ -15,9 +15,11 @@
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
             [netz.replication.controller-storage :as controller-storage]
+            [netz.replication.directory-barrier :as directory-barrier]
             [netz.replication.inventory :as inventory]
             [netz.replication.intent :as intent]
             [netz.replication.storage :as storage]
+            [netz.replication.store-validation :refer [verify-context! expected-piece!]]
             [netz.replication.wire :as replication-wire]
             [netz.wire :as wire])
   (:import (java.nio ByteBuffer)
@@ -103,9 +105,11 @@
 (defn- exists? [^Path value]
   (Files/exists value no-links))
 
-(defn- create-parent! [^Path target]
-  (Files/createDirectories (.getParent target)
-                           (make-array java.nio.file.attribute.FileAttribute 0)))
+(defn- create-parent! [store ^Path target]
+  (if (:fsync? store)
+    (directory-barrier/provision! (:directory-barrier store) (.getParent target))
+    (Files/createDirectories (.getParent target)
+                             (make-array java.nio.file.attribute.FileAttribute 0))))
 
 (defn- force-file! [^Path target]
   (with-open [channel (FileChannel/open
@@ -113,14 +117,11 @@
                        (into-array OpenOption [StandardOpenOption/WRITE]))]
     (.force channel true)))
 
-(defn- force-directory! [^Path directory]
-  (with-open [channel (FileChannel/open
-                       directory
-                       (into-array OpenOption [StandardOpenOption/READ]))]
-    (.force channel true)))
+(defn- force-directory! [store ^Path directory]
+  (directory-barrier/sync! (:directory-barrier store) directory))
 
 (defn- atomic-write! [store ^Path target bytes]
-  (create-parent! target)
+  (create-parent! store target)
   (let [directory (.getParent target)
         temporary (Files/createTempFile
                    directory ".netz-" ".tmp"
@@ -145,7 +146,7 @@
                           {:type :netz.replication/atomic-move-unsupported
                            :target (str target)}
                           cause))))
-      (when (:fsync? store) (force-directory! directory))
+      (when (:fsync? store) (force-directory! store directory))
       target
       (finally
         (Files/deleteIfExists temporary)))))
@@ -161,24 +162,6 @@
                       {:type :netz.replication/file-entry-too-large
                        :path (str target) :size size :limit limit})))
     (Files/readAllBytes target)))
-
-(defn- verify-context! [manifest-id manifest]
-  (blob/validate-manifest manifest)
-  (when-not (and (bytes-n? 32 manifest-id)
-                 (same-bytes? manifest-id (blob/manifest-address manifest)))
-    (throw (ex-info "Manifest does not match its file-store address"
-                    {:type :netz.replication/manifest-address-mismatch})))
-  manifest)
-
-(defn- expected-piece! [manifest index piece-id]
-  (when-not (and (int? index)
-                 (<= 0 index)
-                 (< index (count (get manifest "pieces")))
-                 (same-bytes? piece-id (nth (get manifest "pieces") index)))
-    (throw (ex-info "Piece does not match its manifest position"
-                    {:type :netz.replication/piece-address-mismatch
-                     :index index})))
-  piece-id)
 
 (defn- read-piece! [store manifest index]
   (let [piece-id (nth (get manifest "pieces") index)
@@ -267,8 +250,9 @@
   (let [target (piece-path store piece-id)]
     (if (and (exists? target) (read-piece! store manifest index))
       (when (:fsync? store)
+        (create-parent! store target)
         (force-file! target)
-        (force-directory! (.getParent target)))
+        (force-directory! store (.getParent target)))
       (atomic-write! store target data))
     (when-not (read-piece! store manifest index)
       (throw (ex-info "Piece failed verification after staging"
@@ -279,8 +263,9 @@
 (defn- force-pieces! [store manifest]
   (doseq [piece-id (distinct (get manifest "pieces"))]
     (let [target (piece-path store piece-id)]
+      (create-parent! store target)
       (force-file! target)
-      (force-directory! (.getParent target)))))
+      (force-directory! store (.getParent target)))))
 
 (defn- install-object!
   [store manifest-id manifest persistence]
@@ -297,8 +282,9 @@
         (when (:fsync? store)
           (force-pieces! store manifest)
           (let [target (marker-path store manifest-id)]
+            (create-parent! store target)
             (force-file! target)
-            (force-directory! (.getParent target))))
+            (force-directory! store (.getParent target))))
         (assoc (marker->installed existing) :result :ok))
       (do
         (when (:fsync? store) (force-pieces! store manifest))
@@ -600,6 +586,9 @@
 
   - `:persistence` is `netz/store/fsync/1` (default) or
     `netz/store/best-effort/1`;
+  - `:durable-ancestor` is required for fsync: an existing directory whose name
+    is already durable, exclusively owned against concurrent filesystem changes.
+    Fsync also requires Konserve's directory provisioning helper on the classpath;
   - `:clock` returns Unix milliseconds and is injectable for deterministic
   tests;
   - `:max-receipts` bounds restart scanning (default 100,000);
@@ -634,9 +623,14 @@
                     (pos? max-controller-intents))
        (throw (ex-info "Invalid file blob-store options"
                        {:type :netz.replication/invalid-file-store-options})))
-     (Files/createDirectories root
-                              (make-array java.nio.file.attribute.FileAttribute 0))
-     (->FileBlobStore root persistence
-                      (= persistence "netz/store/fsync/1")
-                      clock max-receipts max-inventory-records
-                      max-controller-intents (Object.)))))
+     (let [barrier (when (= persistence "netz/store/fsync/1")
+                     (directory-barrier/open (:durable-ancestor opts)))]
+       (if barrier
+         (directory-barrier/provision! barrier root)
+         (Files/createDirectories root
+                                  (make-array java.nio.file.attribute.FileAttribute 0)))
+       (assoc (->FileBlobStore root persistence
+                               (= persistence "netz/store/fsync/1")
+                               clock max-receipts max-inventory-records
+                               max-controller-intents (Object.))
+              :directory-barrier barrier)))))

@@ -29,12 +29,14 @@ jobs:
       - run:
           name: Resolve Clojure dependencies
           command: |
+            clojure -X:deps prep :aliases '[:test]'
             clojure -A:test:secure-test:konserve:cljs:build -P
             clojure -A:replica-demo:test -P
       - save_cache:
           key: deps-{{ checksum "deps.edn" }}
           paths:
             - /home/circleci/.m2
+            - /home/circleci/.gitlibs
       - restore_cache:
           keys:
             - npm-{{ checksum "package-lock.json" }}
@@ -50,6 +52,7 @@ jobs:
           root: /home/circleci/
           paths:
             - .m2
+            - .gitlibs
             - .npm
             - replikativ
 
@@ -70,6 +73,19 @@ jobs:
       - run:
           name: Run JVM tests
           command: clojure -X:test :dirs '["test"]'
+          no_output_timeout: 10m
+
+  test-checkpoint:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Prepare checkpoint integration dependency
+          command: clojure -X:deps prep :aliases '[:checkpoint-test]'
+      - run:
+          name: Check provisioning, encrypted checkpoints and crash boundaries
+          command: clojure -X:checkpoint-test :dirs '["test-checkpoint"]'
           no_output_timeout: 10m
 
   test-konserve:
@@ -98,6 +114,10 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
+          name: Compile live Node content, sync, and dissemination peers
+          command: npx shadow-cljs compile mixed-content mixed-sync mixed-dissemination
+          no_output_timeout: 10m
+      - run:
           name: Install Python for mixed-runtime conformance
           command: |
             sudo apt-get update
@@ -106,7 +126,7 @@ jobs:
             python3 -m venv /tmp/netz-mixed-venv
             /tmp/netz-mixed-venv/bin/python -m pip install '.[secure-client]'
       - run:
-          name: Run JVM/Python durable transfer
+          name: Run JVM/Node/Python content, sync, dissemination, and blob tests
           command: |
             NETZ_PYTHON=/tmp/netz-mixed-venv/bin/python clojure -X:secure-test:mixed-test :dirs '["test-mixed"]'
           no_output_timeout: 10m
@@ -148,6 +168,15 @@ jobs:
       - run:
           name: Build Python wheel
           command: python -m pip wheel . --no-deps --wheel-dir /tmp/netz-python-dist
+      - run:
+          name: Verify installed wheel without checkout imports
+          command: |
+            wheel_env=$(mktemp -d)
+            python -m venv "$wheel_env"
+            "$wheel_env/bin/python" -m pip install --no-deps /tmp/netz-python-dist/*.whl
+            "$wheel_env/bin/python" -I interop/python/check_installed.py --core-only
+            "$wheel_env/bin/python" -m pip install 'netz-protocol[secure-client]'
+            "$wheel_env/bin/python" -I interop/python/check_installed.py
 
   build:
     executor: tools/clojurecli
@@ -179,6 +208,9 @@ workflows:
           context: dockerhub-deploy
           requires: [setup]
       - test-mixed:
+          context: dockerhub-deploy
+          requires: [setup]
+      - test-checkpoint:
           context: dockerhub-deploy
           requires: [setup]
       - test-cljs:
