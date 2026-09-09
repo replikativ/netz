@@ -29,7 +29,6 @@ jobs:
       - run:
           name: Resolve Clojure dependencies
           command: |
-            clojure -X:deps prep :aliases '[:test]'
             clojure -A:test:secure-test:konserve:cljs:build -P
             clojure -A:replica-demo:test -P
       - save_cache:
@@ -81,9 +80,6 @@ jobs:
       - attach_workspace:
           at: /home/circleci
       - run:
-          name: Prepare checkpoint integration dependency
-          command: clojure -X:deps prep :aliases '[:checkpoint-test]'
-      - run:
           name: Check provisioning, encrypted checkpoints and crash boundaries
           command: clojure -X:checkpoint-test :dirs '["test-checkpoint"]'
           no_output_timeout: 10m
@@ -115,7 +111,7 @@ jobs:
           at: /home/circleci
       - run:
           name: Compile live Node content, sync, and dissemination peers
-          command: npx shadow-cljs compile mixed-content mixed-sync mixed-dissemination
+          command: clojure -M:test:secure-test:konserve:mixed-test:cljs -m shadow.cljs.devtools.cli compile mixed-content mixed-sync mixed-dissemination
           no_output_timeout: 10m
       - run:
           name: Install Python for mixed-runtime conformance
@@ -148,7 +144,7 @@ jobs:
           at: /home/circleci
       - run:
           name: Compile ClojureScript tests
-          command: npx shadow-cljs compile :node-test
+          command: clojure -M:test:secure-test:konserve:cljs -m shadow.cljs.devtools.cli compile node-test
           no_output_timeout: 10m
       - run:
           name: Run ClojureScript tests
@@ -168,6 +164,9 @@ jobs:
       - run:
           name: Build Python wheel
           command: python -m pip wheel . --no-deps --wheel-dir /tmp/netz-python-dist
+      - store_artifacts:
+          path: /tmp/netz-python-dist
+          destination: python-dist
       - run:
           name: Verify installed wheel without checkout imports
           command: |
@@ -186,37 +185,40 @@ jobs:
       - run:
           name: Build JVM artifact
           command: clojure -T:build jar
+      - store_artifacts:
+          path: target/netz-0.1.0-alpha.1.jar
+          destination: netz-0.1.0-alpha.1.jar
 
 workflows:
   build-test:
     jobs:
       - setup:
-          context: dockerhub-deploy
+          context: docker-deploy
       - format-check:
-          context: dockerhub-deploy
+          context: docker-deploy
           requires: [setup]
       - test-clj:
-          context: dockerhub-deploy
+          context: docker-deploy
           requires: [setup]
       - test-konserve:
-          context: dockerhub-deploy
+          context: docker-deploy
           requires: [setup]
       - test-replica:
-          context: dockerhub-deploy
+          context: docker-deploy
           requires: [setup]
       - test-secure:
-          context: dockerhub-deploy
+          context: docker-deploy
           requires: [setup]
       - test-mixed:
-          context: dockerhub-deploy
+          context: docker-deploy
           requires: [setup]
       - test-checkpoint:
-          context: dockerhub-deploy
+          context: docker-deploy
           requires: [setup]
       - test-cljs:
-          context: dockerhub-deploy
+          context: docker-deploy
           requires: [setup]
       - test-python
       - build:
-          context: dockerhub-deploy
+          context: docker-deploy
           requires: [setup]

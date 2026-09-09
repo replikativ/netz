@@ -366,7 +366,7 @@ This extension is not part of the alpha interoperability claim yet.
 
 ```sh
 clojure -X:test :dirs '["test"]'
-# Released Kabel 0.3.134 and Geheimnis 0.2.39:
+# Released Kabel 0.3.134 and Geheimnis 0.2.40:
 clojure -X:secure-test :dirs '["test" "test-secure"]'
 # After installing `.[secure-client]` into the selected interpreter:
 NETZ_PYTHON=python3 clojure -X:secure-test:mixed-test :dirs '["test-mixed"]'
@@ -374,7 +374,7 @@ clojure -X:konserve:test :dirs '["test" "test-konserve"]'
 # With ../urd, ../datahike, ../yggdrasil, and ../spindel checked out:
 clojure -X:stack :dirs '["test-stack"]'
 npm ci
-npx shadow-cljs compile :node-test
+clojure -M:test:secure-test:konserve:cljs -m shadow.cljs.devtools.cli compile node-test
 node target/node-tests.js
 python3 -m unittest discover -s interop/python -v
 python3 -m pip wheel . --no-deps --wheel-dir /tmp/netz-python-dist
@@ -384,3 +384,23 @@ clojure -T:build jar
 
 Deployment is intentionally not part of CI. `clojure -T:build deploy` requires
 explicit Clojars credentials and a human-selected release tag.
+
+## CircleCI setup
+
+Netz uses `replikativ/clj-tools@0` and the `docker-deploy` context, matching
+Konserve's organization setup. The custom jobs retain separate secure transport,
+process-crash, checkpoint, Datahike replica, Node, Python and mixed-runtime gates.
+Konserve provisioning uses released 0.9.395; Git dependency preparation is no
+longer required for it. The Node compilation commands explicitly select their
+Clojure aliases, including the mixed-client source path where appropriate.
+
+The repository must be enabled in CircleCI and allowed to use `docker-deploy`.
+Configuring YAML alone does not install the project integration or make checks
+appear on GitHub. A successful local YAML parse is not CircleCI execution proof.
+
+The build jobs retain the JVM JAR and Python wheel as CI artifacts. They do not
+publish either package. Unlike projects with automatically generated versions,
+Netz currently declares fixed alpha versions in `build.clj` and `pyproject.toml`;
+unconditional deployment on every main commit would attempt version reuse.
+Public deployment must therefore be a separately gated release operation after
+the protocol and backend qualification work, not a side effect of these tests.
