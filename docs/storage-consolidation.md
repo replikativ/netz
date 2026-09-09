@@ -31,9 +31,9 @@ Run the opt-in integration gate with:
 clojure -X:checkpoint-test :dirs '["test-checkpoint"]'
 ```
 
-The JVM file-store and checkpoint test aliases temporarily pin Konserve #192 for directory
-provisioning. Run `clojure -X:deps prep :aliases '[:test]'` before using them.
-All four coordinates use the same revision; replace them together after release.
+The JVM file-store and checkpoint test aliases use released Konserve 0.9.395
+for directory provisioning. All four coordinates use the same release; no Git
+dependency preparation is required.
 Older Konserve versions without the required policy are refused by the adapter before
 opening a store. No files are automatically migrated between checkpoint formats.
 
@@ -55,7 +55,7 @@ before removing either implementation.
 
 ### Released file-backend qualification findings
 
-The optional dependencies now use Konserve 0.9.394. Version 0.9.393 fixes the
+The provisioning test dependencies now use Konserve 0.9.395. Version 0.9.393 fixes the
 directory-open suppression described below: the default path fails closed, with
 a native Windows barrier on JDK 22+. This resolves the error-propagation issue,
 not the remaining initial-provisioning, bounded-input or generic-store
@@ -164,9 +164,8 @@ experimental two-argument API rather than silently asserting an ancestor was
 durable. The administrator owns the durable ancestor and excludes concurrent
 filesystem mutation. The ordinary Konserve connect API is unchanged.
 
-The checkpoint and blob test aliases temporarily share Konserve #192's exact
-revision; replace all four coordinates with the corresponding release after
-publication. Direct blob-directory provisioning is implemented, but generic
+The checkpoint and blob test aliases share released Konserve 0.9.395, which
+includes #192. Direct blob-directory provisioning is implemented, but generic
 Konserve blob receipts remain unqualified. Successful barrier calls and these
 failure-injection tests are not proof of arbitrary power-loss survival.
 
