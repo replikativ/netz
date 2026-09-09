@@ -32,9 +32,14 @@
         event (git/event system)
         captured (transfer/capture! adapter event authority git/encode [])
         archive-path (temp-dir)
-        packed (archive/stage-local! (file-store/new-file-store archive-path) (archive/prepare captured))
+        ;; This fixture owns an already-created temporary directory. Declare it
+        ;; explicitly as the trusted ancestor on both creation and reopen.
+        archive-options {:durable-ancestor archive-path}
+        packed (archive/stage-local! (file-store/new-file-store archive-path archive-options)
+                                     (archive/prepare captured))
         restored-bytes (store/await! (materialization/read-installed!
-                                      (file-store/new-file-store archive-path) (:binding packed)))
+                                      (file-store/new-file-store archive-path archive-options)
+                                      (:binding packed)))
         export (archive/restore restored-bytes (:statement captured))
         statement (:statement export)
         target-store (store/await! (memory/new-mem-store))
