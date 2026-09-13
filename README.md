@@ -123,6 +123,8 @@ clojure -M:blob-demo
   stable-placement prototype, migration safety, and remaining release gates
 - [Replica connectivity](docs/replica-connectivity.md) — bounded placement-target
   dial priority, lifecycle, diagnostics, and guarantee boundaries
+- [Datahike locality experiment](docs/datahike-locality.md) — producer-planned
+  durable replicas versus consumer-populated read caches
 - [Storage GC](docs/storage-gc.md) — Datahike/Yggdrasil reachability versus
   pool retention and surplus-replica retirement
 - [Storage consolidation](docs/storage-consolidation.md) — Konserve checkpoint

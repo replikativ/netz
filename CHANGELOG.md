@@ -6,6 +6,12 @@ may make incompatible protocol changes.
 
 ## 0.1.0-alpha.1 — 2026-09-13
 
+- Added a developer-only Datahike locality model which keeps producer-planned
+  durable replicas separate from consumer-populated caches. It compares current
+  hash placement with static regional planning and exposes the need for distinct
+  full-placement and write-acknowledgement failure-domain constraints before a
+  later placement profile standardizes locality.
+
 - Added a release-artifact verifier that keeps the Maven and Python versions,
   public documentation, generated POM, Apache-2.0 license and required jar
   namespaces aligned. CircleCI now has a separate opt-in `release=true`
