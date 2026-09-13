@@ -193,7 +193,16 @@
                  "signer" signer}]
     (is (replication-wire/valid-statement? lease))
     (is (replication-wire/valid-statement? deletion))
-    (is (replication-wire/valid-statement? deleted))))
+    (is (replication-wire/valid-statement? deleted))
+    (is (replication-wire/valid-frame?
+         {"v" 1 "type" "blob/delete"
+          "deletion" (fake-envelope deletion)}))
+    (is (replication-wire/valid-frame?
+         {"v" 1 "type" "blob/deleted"
+          "receipt" (fake-envelope deleted)}))
+    (is (not (replication-wire/valid-frame?
+              {"v" 1 "type" "blob/delete"
+               "deletion" (fake-envelope lease)})))))
 
 (deftest retirement-verifier-is-portable
   ;; Requiring this namespace from the .cljc suite keeps its complete

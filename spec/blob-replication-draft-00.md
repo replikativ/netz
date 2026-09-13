@@ -542,7 +542,8 @@ handler is installed: both endpoints must cryptographically negotiate the exact
 capability for the current connection. The capability is intentionally absent
 from the reference implementation's default set while this extension remains
 experimental.
-Every frame is a closed map with `v: 1` and a 16-byte random `session`:
+Every frame is a closed map with `v: 1`. Transfer frames carry a 16-byte random
+`session`:
 
 ~~~text
 blob/offer  {session, attempt, replica, retention, manifest}
@@ -555,7 +556,25 @@ blob/stored {session, receipt}
 blob/abort  {session, code}
 ~~~
 
-Here `retention` and `receipt` are signed envelopes, `manifest` in an offer is
+Lifecycle convergence uses sessionless targeted frames because the signed
+controller revision and `(cluster, privacy_domain, object)` tuple are its
+idempotency key:
+
+~~~text
+blob/delete  {deletion}
+blob/deleted {receipt}
+~~~
+
+`deletion` is a signed `blob/deletion` envelope and `receipt` is a signed
+`blob/deleted` envelope. The deletion signer MUST equal the immediate
+authenticated sending Authority. The receipt's `replica` and `signer` MUST
+both equal its immediate authenticated sending Authority. A sender MUST resolve
+the intended full Authority to exactly one current connection which negotiated
+the CBOR wire, extension carrier, and blob capability; zero or ambiguous
+matches fail closed. Carrier acceptance is not a deletion acknowledgement.
+
+In the transfer frames, `retention` and `receipt` are signed envelopes,
+`manifest` in an offer is
 the complete transfer manifest, and other `manifest` fields are its 32-byte
 address. An offer's addresses MUST match its signed retention statement and
 its target `replica` MUST be the authenticated receiving Authority. A stored

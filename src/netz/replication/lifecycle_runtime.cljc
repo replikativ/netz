@@ -76,8 +76,12 @@
         :emit-deletion-receipt
         (let [[key envelope] args]
           (try
-            (when-let [callback (:on-deletion-receipt! ctx)]
-              (callback {:key key :envelope envelope}))
+            (when-let [callback @(:on-deletion-receipt! ctx)]
+              (callback
+               {:key key :envelope envelope
+                :controller-id
+                (some-> (get-in @(:state ctx) [:records key :statement "signer"])
+                        identity/bytes->hex)}))
             (swap! (:stats ctx) update :deletion-receipts inc)
             (catch #?(:clj Throwable :cljs :default) _
               (swap! (:stats ctx) update :callback-errors inc)))
@@ -241,7 +245,7 @@
                                    :cljs #(.now js/Date)))
              :layout-state-fn layout-state-fn
              :admit-offer? admit-offer?
-             :on-deletion-receipt! on-deletion-receipt!
+             :on-deletion-receipt! (atom on-deletion-receipt!)
              :events (chan event-capacity)
              :ready (async/promise-chan)
              :startup-error (atom nil)
@@ -311,6 +315,19 @@
 
 (defn state [ctx] @(:state ctx))
 (defn stats [ctx] @(:stats ctx))
+
+(defn set-deletion-receipt-handler!
+  "Install or replace the non-blocking durable deletion-receipt callback.
+
+  This closes the construction cycle when a lifecycle service and its
+  authenticated carrier share a node. Passing nil disables delivery; durable
+  receipts remain in the lifecycle journal and replay on restart."
+  [ctx callback]
+  (when-not (or (nil? callback) (ifn? callback))
+    (throw (ex-info "Invalid deletion receipt handler"
+                    {:type ::invalid-receipt-handler})))
+  (reset! (:on-deletion-receipt! ctx) callback)
+  nil)
 
 (defn stop!
   "Stop accepting lifecycle work. Idempotent."

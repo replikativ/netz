@@ -66,6 +66,8 @@ FRAME_FIELDS = {
     "blob/commit": {"v", "type", "session", "manifest", "count"},
     "blob/stored": {"v", "type", "session", "receipt"},
     "blob/abort": {"v", "type", "session", "code"},
+    "blob/delete": {"v", "type", "deletion"},
+    "blob/deleted": {"v", "type", "receipt"},
 }
 
 
@@ -273,8 +275,10 @@ def validate_frame(frame: dict[str, Any]) -> dict[str, Any]:
         raise ReplicationWireError("invalid durable-blob frame")
     kind = frame.get("type")
     fields = FRAME_FIELDS.get(kind)
-    if (fields is None or set(frame) != fields or frame.get("v") != 1
-            or not _bytes_n(frame.get("session"), 16)):
+    if fields is None or set(frame) != fields or frame.get("v") != 1:
+        raise ReplicationWireError("invalid durable-blob frame")
+    transfer_frame = kind not in {"blob/delete", "blob/deleted"}
+    if transfer_frame and not _bytes_n(frame.get("session"), 16):
         raise ReplicationWireError("invalid durable-blob frame")
     if kind == "blob/offer":
         try:
@@ -311,8 +315,20 @@ def validate_frame(frame: dict[str, Any]) -> dict[str, Any]:
             valid = parse_envelope(frame["receipt"])["statement"]["type"] == "blob/stored"
         except Exception:
             valid = False
-    else:  # blob/abort
+    elif kind == "blob/abort":
         valid = _text(frame["code"])
+    elif kind == "blob/delete":
+        try:
+            valid = (parse_envelope(frame["deletion"])["statement"]["type"]
+                     == "blob/deletion")
+        except Exception:
+            valid = False
+    else:  # blob/deleted
+        try:
+            valid = (parse_envelope(frame["receipt"])["statement"]["type"]
+                     == "blob/deleted")
+        except Exception:
+            valid = False
     if not valid:
         raise ReplicationWireError("invalid durable-blob frame")
     return frame

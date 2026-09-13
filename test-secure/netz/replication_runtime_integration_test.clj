@@ -12,9 +12,13 @@
             [netz.replication.audit-runtime :as audit-runtime]
             [netz.replication.controller-runtime :as controller-runtime]
             [netz.replication.connectivity-runtime :as connectivity-runtime]
+            [netz.replication.erasure :as erasure]
+            [netz.replication.erasure-runtime :as erasure-runtime]
             [netz.replication-test-store :as file-store]
             [netz.replication.inventory :as inventory]
             [netz.replication.layout :as layout]
+            [netz.replication.lifecycle-runtime :as lifecycle-runtime]
+            [netz.replication.lifecycle-storage :as lifecycle-storage]
             [netz.replication.read-repair :as read-repair]
             [netz.replication.runtime :as replication-runtime]
             [netz.replication.storage :as storage]
@@ -154,6 +158,18 @@
      "replica" replica
      "retention" (await (replication-wire/sign-statement identity retention))
      "manifest" (:manifest split)}))
+
+(defrecord MemoryLifecycleStore [records deletes]
+  lifecycle-storage/PBlobLifecycleStore
+  (-load-lifecycle-records [_] (storage/chan-of @records))
+  (-persist-lifecycle! [_ key value]
+    (when (= :blob/lifecycle (first key))
+      (swap! records assoc (second key) value))
+    (storage/chan-of :ok))
+  (-delete-object! [_ key _statement persistence]
+    (swap! deletes conj key)
+    (storage/chan-of {:result :ok :persistence persistence
+                      :deleted-at 2100})))
 
 (deftest placement-demand-selects-the-authenticated-target
   (with-store-roots [source-root (temporary-directory)
@@ -705,3 +721,106 @@
           (replication-runtime/stop! target-runtime)
           (stop-node! client)
           (stop-node! server))))))
+
+(deftest erasure-converges-over-the-authenticated-portable-carrier
+  (with-store-roots [controller-root (temporary-directory)
+                     replica-root (temporary-directory)]
+    (let [url (str "ws://localhost:" (swap! port-counter inc))
+          capabilities (conj noise/default-capabilities
+                             replication-wire/capability
+                             overlay-runtime/extension-carrier-capability
+                             wire/profile-capability)
+          controller-identity (<?? S (identity/generate-identity))
+          replica-identity (<?? S (identity/generate-identity))
+          replica (assoc (start-server url replica-identity capabilities)
+                         :identity replica-identity)
+          controller (assoc (start-client url controller-identity replica
+                                          capabilities)
+                            :identity controller-identity)
+          controller-authority
+          (identity/authority-id-bytes (:genesis controller-identity))
+          replica-authority
+          (identity/authority-id-bytes (:genesis replica-identity))
+          replica-id (identity/bytes->hex replica-authority)
+          cluster (identity/seq->bytes (range 16))
+          privacy-domain (identity/seq->bytes (range 16 32))
+          manifest (identity/seq->bytes (repeat 32 3))
+          object (identity/seq->bytes (repeat 32 4))
+          deletion {"v" 1 "type" "blob/deletion" "cluster" cluster
+                    "privacy_domain" privacy-domain "revision" 2
+                    "manifest" manifest "object" object "layout_epoch" 1
+                    "issued_at" 2000 "delete_after" 2000
+                    "signer" controller-authority}
+          deletion-envelope
+          (await (replication-wire/sign-statement controller-identity deletion))
+          controller-store (file-store/new-file-store controller-root
+                                                      {:clock (constantly 2100)})
+          replica-store (file-store/new-file-store replica-root
+                                                   {:clock (constantly 2100)})
+          lifecycle-store (->MemoryLifecycleStore (atom {}) (atom []))
+          lifecycle
+          (lifecycle-runtime/start!
+           {:identity replica-identity :store lifecycle-store
+            :controllers [controller-authority] :now-fn (constantly 2100)})
+          replica-runtime
+          (replication-runtime/start!
+           (:node replica)
+           {:store replica-store
+            :apply-deletion!
+            #(lifecycle-runtime/apply-envelope! lifecycle (:envelope %))})
+          coordinator-ref (atom nil)
+          controller-runtime
+          (replication-runtime/start!
+           (:node controller)
+           {:store controller-store
+            :on-deletion-receipt!
+            #(when-let [coordinator @coordinator-ref]
+               (erasure-runtime/accept-receipt! coordinator (:envelope %)))})
+          coordinator
+          (erasure-runtime/start!
+           {:cluster cluster :controllers [controller-authority]
+            :store controller-store :scan-ms 60000
+            :now-fn (constantly 2100)
+            :dispatch-deletion!
+            (replication-runtime/deletion-dispatcher controller-runtime)})]
+      (lifecycle-runtime/set-deletion-receipt-handler!
+       lifecycle (replication-runtime/deletion-receipt-dispatcher
+                  replica-runtime))
+      (reset! coordinator-ref coordinator)
+      (try
+        (is (true? (await (lifecycle-runtime/ready lifecycle))))
+        (is (true? (await (erasure-runtime/ready coordinator))))
+        (is (wait-for 10000
+                      #(contains? (overlay-runtime/connections
+                                   (:peer controller)) (:id replica))))
+        (is (false?
+             (replication-runtime/send-deletion!
+              controller-runtime replica-id
+              (await (replication-wire/sign-statement
+                      replica-identity
+                      (assoc deletion "signer" replica-authority)))))
+            "the carrier must not send a command signed by another Authority")
+        (is (false?
+             (replication-runtime/send-deletion!
+              controller-runtime (apply str (repeat 64 "f"))
+              deletion-envelope))
+            "an unconnected Authority is not a routing fallback")
+        (is (true? (await (erasure-runtime/begin!
+                           coordinator deletion-envelope [replica-authority]))))
+        (is (wait-for
+             10000
+             #(= :complete
+                 (:status (first (erasure/statuses
+                                  (erasure-runtime/state coordinator)))))))
+        (is (= 1 (count @(:deletes lifecycle-store))))
+        (is (= 1 (:deletions-accepted
+                  (replication-runtime/stats replica-runtime))))
+        (is (= 1 (:deletion-receipts
+                  (replication-runtime/stats controller-runtime))))
+        (finally
+          (erasure-runtime/stop! coordinator)
+          (replication-runtime/stop! controller-runtime)
+          (replication-runtime/stop! replica-runtime)
+          (lifecycle-runtime/stop! lifecycle)
+          (stop-node! controller)
+          (stop-node! replica))))))
