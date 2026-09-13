@@ -113,18 +113,20 @@ physical deletion but before its result is durable deliberately reissues the
 same generation, so storage deletion must be idempotent. A halt prevents new
 work while still allowing an already-completed deletion fact to be journaled.
 
-The model itself is **not a disk-backed runtime or authenticated wire schema**.
-It assumes trusted, verified inputs and intact local checkpoint reads. Receipt
-authentication, binding layout addresses to actual signed layouts, controller
-authority refresh after restart, durable adapter IO, bounded counters, wire
-encoding, retention renewal, and serialized deletion are still activation gates.
-Its retirement output remains local advisory work, not network authorization or
-a physical-delete implementation. Grace, protected holders, fresh binding,
-unexpired N-target coverage and completed persistence are checked again when
-querying armed work. Authority changes must invalidate outstanding results;
-never cache them as delete capabilities. The eventual runtime must serialize
-that final query with pin/lease mutation and idempotent deletion. The caller must
-refresh current authority even when restoring an old checkpoint.
+The model itself is **not a disk-backed runtime or physical-delete
+implementation**. The portable `blob/retirement` command and independent
+JVM/Python verifier now authenticate the exact successor layout, current
+retention and all N replacement receipts. The pure migration model still
+assumes those inputs have already crossed that verifier. Binding the verified
+command to its Konserve checkpoint, controller-authority refresh after restart,
+durable adapter IO, bounded counters, retention renewal, and serialized deletion
+remain activation gates. Its retirement output remains local advisory work.
+Grace, protected holders, fresh binding, unexpired N-target coverage and
+completed persistence are checked again when querying armed work. Authority
+changes must invalidate outstanding results; never cache them as delete
+capabilities. The eventual runtime must serialize that final query with
+pin/lease mutation and idempotent deletion. The caller must refresh current
+authority even when restoring an old checkpoint.
 
 Use a pure state machine first, with a durable runtime interpreting its effects.
 Persist the authorized transition identity (exact old/new layout addresses and

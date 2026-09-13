@@ -385,6 +385,58 @@ accepted retention time. An accepted deletion is absorbing for that tuple: a
 later lease cannot resurrect the same addressed object in the same privacy
 domain.
 
+A controller authorizes removal of one surplus physical replica after a
+direct layout transition using `blob/retirement`:
+
+~~~text
+{
+  "v": 1, "type": "blob/retirement",
+  "cluster": bytes, "privacy_domain": bytes,
+  "revision": positive_uint,
+  "manifest": bytes32, "object": bytes32,
+  "layout_epoch": uint,
+  "layout": current_layout_address_bytes32,
+  "previous_layout": previous_layout_address_bytes32,
+  "replica": retiring_replica_authority_bytes32,
+  "retention": signed_current_retention_envelope,
+  "receipts": [signed_current_stored_envelope, ...],
+  "issued_at": uint, "retire_after": uint,
+  "signer": controller_authority_bytes32
+}
+~~~
+
+`receipts` MUST contain exactly one envelope for every one of the `N` targets
+selected by the embedded retention policy and current layout. It is sorted by
+unsigned replica Authority bytes and contains no duplicates. Every receipt
+MUST have a valid replica signature and exactly match the namespace, object,
+manifest, current layout epoch, retention revision and retention deadline. Its
+persistence profile MUST be explicitly accepted by the retiring replica and
+MUST NOT be `netz/store/volatile/1`. All receipts and the retention statement
+must remain unexpired when the command is evaluated.
+
+The retiring replica MUST verify the controller signature, the embedded
+retention signature, controller authorization and a current, non-forked layout
+chain. Its configured controller set MUST exactly match the set which admitted
+the layout, and the current layout signer MUST belong to that set. `layout`
+MUST be the exact address of that current layout,
+`previous_layout` MUST be its predecessor link, the current epoch MUST be
+positive, and current deterministic placement MUST exclude `replica` while
+satisfying the retention domain constraints. The command revision follows the
+same controller stream and MUST be higher than the embedded retention
+revision. Evaluation fails closed before `retire_after`.
+
+A valid retirement command is evidence for considering one local deletion; it
+is not a transferable delete capability and does not request global deletion.
+Immediately before physical removal, the addressed replica MUST serialize a
+recheck of the exact command, current authority, its durable local retention
+record, pins, leases and in-progress reads or transfers with an idempotent
+storage deletion. It MUST preserve the object if any protection changed or if
+the command no longer verifies. Crash replay may repeat the same retirement
+generation, so deletion MUST be idempotent. Draft-00 defines no network receipt
+for retirement completion; the replica records completion in its local durable
+migration state. `blob/deletion` and `blob/deleted` remain the distinct global
+namespace-deletion mechanism.
+
 A replica's successful installation statement is:
 
 ~~~text

@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
+            [netz.replication.retirement :as retirement]
             [netz.replication.wire :as replication-wire]
             #?(:clj [clojure.core.async :refer [<!!]])))
 
@@ -192,6 +193,11 @@
     (is (replication-wire/valid-statement? lease))
     (is (replication-wire/valid-statement? deletion))
     (is (replication-wire/valid-statement? deleted))))
+
+(deftest retirement-verifier-is-portable
+  ;; Requiring this namespace from the .cljc suite keeps its complete
+  ;; dependency graph in both the JVM and Node compilation gates.
+  (is (some? retirement/verify-command)))
 
 #?(:clj
    (deftest statement-signatures-verify-and-tampering-fails

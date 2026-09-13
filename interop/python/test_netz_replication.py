@@ -22,6 +22,10 @@ from netz_protocol.replication_layout import (
     retention_authorized,
     validate_statement as validate_layout_statement,
 )
+from netz_protocol.replication_retirement import (
+    RetirementError,
+    verify_command as verify_retirement_command,
+)
 from netz_protocol.identity import authority_id, genesis
 from netz_protocol.materialization import (
     MaterializationError,
@@ -397,6 +401,133 @@ class SignedBlobProtocolTest(unittest.TestCase):
         tampered = {**signed, "statement": {
             **signed["statement"], "retain_until": 2001}}
         self.assertFalse(verify_envelope(tampered))
+
+
+@unittest.skipUnless(find_spec("cryptography"),
+                     "optional crypto dependency is not installed")
+class SignedRetirementCommandTest(unittest.TestCase):
+    @staticmethod
+    def identity(seed: int):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey,
+        )
+
+        private_key = bytes([seed]) * 32
+        public_key = (Ed25519PrivateKey.from_private_bytes(private_key)
+                      .public_key().public_bytes_raw())
+        return private_key, genesis(
+            [public_key], 1, [public_key], bytes([seed + 32]) * 32)
+
+    def values(self):
+        controller_key, controller = self.identity(1)
+        _, retired = self.identity(2)
+        replacements = [self.identity(seed) for seed in (3, 4, 5)]
+        controller_id = authority_id(controller)
+        retired_id = authority_id(retired)
+        replacement_ids = [authority_id(value) for _, value in replacements]
+        cluster = bytes(range(16))
+        split = split_blob(b"portable retirement evidence", 8)
+
+        def members(authorities):
+            return sorted(({
+                "authority": authority,
+                "domains": {"site": f"site-{index}"},
+                "enabled": True,
+            } for index, authority in enumerate(authorities)),
+                          key=lambda member: member["authority"])
+
+        old_layout = {
+            "v": 1, "type": "blob/layout", "cluster": cluster, "epoch": 0,
+            "placement": "netz/blob-placement/2", "seed": b"\x09" * 32,
+            "previous": ZERO_ADDRESS,
+            "members": members([retired_id, *replacement_ids[:2]]),
+            "issued_at": 900, "signer": controller_id,
+        }
+        current_layout = {
+            **old_layout,
+            "epoch": 1,
+            "previous": layout_address(old_layout),
+            "members": members(replacement_ids),
+            "issued_at": 1000,
+        }
+        state = make_layout_state(cluster, [controller_id])
+        state = reconcile(state, old_layout)["state"]
+        state = reconcile(state, current_layout)["state"]
+        retention = {
+            "v": 1, "type": "blob/retention", "cluster": cluster,
+            "privacy_domain": bytes(range(16, 32)), "revision": 2,
+            "manifest": split["manifest_id"], "object": split["object_id"],
+            "layout_epoch": 1, "replicas": 3, "write_acks": 2,
+            "minimum_domains": {"site": 2}, "issued_at": 1000,
+            "retain_until": 5000, "signer": controller_id,
+        }
+        retention_envelope = sign_statement(
+            controller, controller_key, retention)
+        receipts = []
+        for (private_key, replica), replica_id in zip(
+                replacements, replacement_ids):
+            receipts.append(sign_statement(replica, private_key, {
+                "v": 1, "type": "blob/stored", "cluster": cluster,
+                "privacy_domain": retention["privacy_domain"],
+                "retention_revision": 2, "manifest": split["manifest_id"],
+                "object": split["object_id"], "layout_epoch": 1,
+                "replica": replica_id, "attempt": 1,
+                "persistence": "netz/store/fsync/1", "stored_at": 1100,
+                "retain_until": 5000, "signer": replica_id,
+            }))
+        receipts.sort(key=lambda value: value["statement"]["replica"])
+        command = {
+            "v": 1, "type": "blob/retirement", "cluster": cluster,
+            "privacy_domain": retention["privacy_domain"], "revision": 3,
+            "manifest": split["manifest_id"], "object": split["object_id"],
+            "layout_epoch": 1, "layout": layout_address(current_layout),
+            "previous_layout": layout_address(old_layout),
+            "replica": retired_id, "retention": retention_envelope,
+            "receipts": receipts, "issued_at": 1150, "retire_after": 1200,
+            "signer": controller_id,
+        }
+        options = {
+            "layout_state": state, "local_authority": retired_id,
+            "controllers": [controller_id],
+            "accepted_persistence": {"netz/store/fsync/1"}, "now": 1200,
+        }
+        return controller, controller_key, command, options
+
+    def test_all_n_replacement_receipts_are_required(self):
+        controller, private_key, command, options = self.values()
+        envelope = sign_statement(controller, private_key, command)
+        verified = verify_retirement_command(envelope, **options)
+        self.assertEqual(3, len(verified["targets"]))
+        self.assertEqual(3, len(verified["receipts"]))
+
+        incomplete = {**command, "receipts": command["receipts"][:-1]}
+        with self.assertRaises(RetirementError):
+            verify_retirement_command(
+                sign_statement(controller, private_key, incomplete), **options)
+        bad_receipt = {
+            **command["receipts"][0],
+            "signature": b"\x00" * 64,
+        }
+        tampered = {
+            **command,
+            "receipts": [bad_receipt, *command["receipts"][1:]],
+        }
+        with self.assertRaises(RetirementError):
+            verify_retirement_command(
+                sign_statement(controller, private_key, tampered), **options)
+        with self.assertRaises(RetirementError):
+            verify_retirement_command(envelope, **{**options, "now": 5000})
+        with self.assertRaises(RetirementError):
+            verify_retirement_command(envelope, **{
+                **options,
+                "accepted_persistence": {"netz/store/volatile/1"},
+            })
+        with self.assertRaises(RetirementError):
+            verify_retirement_command(envelope, **{
+                **options,
+                "layout_state": {**options["layout_state"],
+                                 "controllers": set()},
+            })
 
 
 if __name__ == "__main__":

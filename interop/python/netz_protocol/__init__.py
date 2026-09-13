@@ -149,6 +149,10 @@ from .replication_layout import (
     retention_authorized as replication_retention_authorized,
     validate_statement as validate_replication_layout,
 )
+from .replication_retirement import (
+    RetirementError,
+    verify_command as verify_replication_retirement,
+)
 from .materialization import (
     MaterializationError,
     application_binding,
@@ -228,6 +232,7 @@ __all__ = [
     "ReceiveResult",
     "ReplicationError",
     "ReplicationWireError",
+    "RetirementError",
     "ROOT_PROFILE",
     "RootLogProfile",
     "SyncError",
@@ -313,6 +318,7 @@ __all__ = [
     "verify_publication",
     "verify_block",
     "verify_replication_envelope",
+    "verify_replication_retirement",
     "verify_snapshot_ref",
     "validate_replication_statement",
     "validate_replication_layout",
