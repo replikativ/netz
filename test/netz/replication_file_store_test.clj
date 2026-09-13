@@ -11,6 +11,9 @@
             [netz.replication-test-store :as file-store]
             [netz.replication.inventory :as inventory]
             [netz.replication.intent :as intent]
+            [netz.replication.lifecycle :as lifecycle]
+            [netz.replication.lifecycle-runtime :as lifecycle-runtime]
+            [netz.replication.lifecycle-storage :as lifecycle-storage]
             [netz.replication.sender :as sender]
             [netz.replication.storage :as storage]
             [netz.replication.transfer :as transfer]
@@ -69,6 +72,16 @@
     (.resolve (.resolve (.resolve root "manifests") (subs hex 0 2))
               (str (subs hex 2) ".cbor"))))
 
+(defn staging-path [^Path root manifest-id]
+  (let [hex (identity/bytes->hex manifest-id)]
+    (.resolve (.resolve (.resolve root "staging") (subs hex 0 2))
+              (str (subs hex 2) ".cbor"))))
+
+(defn deletion-work-path [^Path root manifest-id]
+  (let [hex (identity/bytes->hex manifest-id)]
+    (.resolve (.resolve (.resolve root "deletion-work") (subs hex 0 2))
+              (str (subs hex 2) ".cbor"))))
+
 (defn receipt-files [^Path root]
   (let [receipts (.resolve root "receipts")]
     (if-not (Files/exists receipts (make-array java.nio.file.LinkOption 0))
@@ -99,6 +112,25 @@
   (await (storage/-stage-piece!
           store session (:manifest-id split) (:manifest split)
           (:index piece) (:id piece) (:data piece))))
+
+(defn object-key [statement]
+  (str (identity/bytes->hex (get statement "cluster")) "/"
+       (identity/bytes->hex (get statement "privacy_domain")) "/"
+       (identity/bytes->hex (get statement "object"))))
+
+(defn deletion-for
+  ([value] (deletion-for value 2))
+  ([value revision]
+   {"v" 1 "type" "blob/deletion"
+    "cluster" (identity/hex->bytes (apply str (repeat 16 "10")))
+    "privacy_domain" (identity/hex->bytes (apply str (repeat 16 "20")))
+    "revision" revision
+    "manifest" (:manifest-id value)
+    "object" (:object-id value)
+    "layout_epoch" 7
+    "issued_at" 1200
+    "delete_after" 1200
+    "signer" authority}))
 
 (deftest erasure-campaigns-cross-the-file-durability-boundary
   (with-store-root [root (temporary-directory)]
@@ -165,6 +197,125 @@
            :operational {:public (identity/hex->bytes public-hex)
                          :private (identity/hex->bytes private-hex)}}
           statement)))
+
+(declare controller-event)
+
+(deftest installed-object-erasure-is-durable-and-replayable
+  (with-store-root [root (temporary-directory)]
+    (let [store (file-store/new-file-store root {:clock (constantly 1300)})
+          deletion (deletion-for split)
+          emitted (atom [])]
+      (doseq [piece (:pieces split)] (stage! store piece))
+      (install! store "netz/store/fsync/1")
+      (is (= :ok (await (storage/-persist-receipt!
+                         store session
+                         (controller-event (signed-receipt))))))
+      (let [runtime
+            (lifecycle-runtime/start!
+             {:identity {:genesis genesis
+                         :operational
+                         {:public (identity/hex->bytes public-hex)
+                          :private (identity/hex->bytes private-hex)}}
+              :store store :controllers [authority]
+              :now-fn (constantly 1300)
+              :on-deletion-receipt! #(swap! emitted conj %)})]
+        (is (true? (await (lifecycle-runtime/ready runtime))))
+        (is (true? (await (lifecycle-runtime/apply-envelope!
+                           runtime (sign-statement deletion)))))
+        (is (= :deleted (lifecycle/status
+                         (lifecycle-runtime/state runtime) deletion)))
+        (is (= 1 (count @emitted)))
+        (is (true? (await (replication-wire/verify-envelope
+                           (:envelope (first @emitted))))))
+        (lifecycle-runtime/stop! runtime))
+
+      (is (not (Files/exists (marker-path root (:manifest-id split))
+                             (make-array java.nio.file.LinkOption 0))))
+      (is (not (Files/exists (staging-path root (:manifest-id split))
+                             (make-array java.nio.file.LinkOption 0))))
+      (is (empty? (receipt-files root)))
+      (doseq [piece (:pieces split)]
+        (is (not (Files/exists (piece-path root (:id piece))
+                               (make-array java.nio.file.LinkOption 0)))))
+
+      (let [replayed (atom [])
+            restarted
+            (lifecycle-runtime/start!
+             {:identity {:genesis genesis
+                         :operational
+                         {:public (identity/hex->bytes public-hex)
+                          :private (identity/hex->bytes private-hex)}}
+              :store (file-store/new-file-store root
+                                                {:clock (constantly 1400)})
+              :controllers [authority]
+              :now-fn (constantly 1400)
+              :on-deletion-receipt! #(swap! replayed conj %)})]
+        (is (true? (await (lifecycle-runtime/ready restarted))))
+        (is (= 1 (count @replayed)))
+        (lifecycle-runtime/stop! restarted)))))
+
+(deftest partial-staging-is-attributable-and-erasable
+  (with-store-root [root (temporary-directory)]
+    (let [store (file-store/new-file-store root {:clock (constantly 1300)})
+          piece (first (:pieces split))
+          statement (deletion-for split)]
+      (is (= :ok (stage! store piece)))
+      (is (Files/exists (staging-path root (:manifest-id split))
+                        (make-array java.nio.file.LinkOption 0)))
+      (is (= {:result :ok :persistence "netz/store/fsync/1"
+              :deleted-at 1300}
+             (await (lifecycle-storage/-delete-object!
+                     store (object-key statement) statement
+                     "netz/store/fsync/1"))))
+      (is (not (Files/exists (piece-path root (:id piece))
+                             (make-array java.nio.file.LinkOption 0))))
+      (is (not (Files/exists (staging-path root (:manifest-id split))
+                             (make-array java.nio.file.LinkOption 0)))))))
+
+(deftest shared-pieces-block-receipts-and-deletion-work-resumes
+  (with-store-root [root (temporary-directory)]
+    (let [store (file-store/new-file-store root {:clock (constantly 1300)})
+          left (blob/split (identity/seq->bytes [1 2 3 4 5 6 7 8])
+                           {:piece-size 4})
+          right (blob/split (identity/seq->bytes [1 2 3 4 9 10 11 12])
+                            {:piece-size 4})
+          install-value!
+          (fn [value]
+            (doseq [piece (:pieces value)]
+              (await (storage/-stage-piece!
+                      store session (:manifest-id value) (:manifest value)
+                      (:index piece) (:id piece) (:data piece))))
+            (await (storage/-install-object!
+                    store session (:manifest-id value) (:manifest value)
+                    {} "netz/store/fsync/1")))
+          delete-value!
+          (fn [target-store value]
+            (let [statement (deletion-for value)]
+              (await (lifecycle-storage/-delete-object!
+                      target-store (object-key statement) statement
+                      "netz/store/fsync/1"))))]
+      (install-value! left)
+      (install-value! right)
+      (is (identity/bufs= (:id (first (:pieces left)))
+                          (:id (first (:pieces right)))))
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo #"Shared pieces"
+           (delete-value! store left)))
+      (is (Files/exists (deletion-work-path root (:manifest-id left))
+                        (make-array java.nio.file.LinkOption 0)))
+      (is (= :healthy (:status
+                       (await (inventory/scrub-object!
+                               store (:manifest-id right))))))
+
+      ;; Once the remaining reference is erased, a restarted store resumes
+      ;; the first deletion from its private work descriptor.
+      (is (= :ok (:result (delete-value! store right))))
+      (let [restarted (file-store/new-file-store root
+                                                 {:clock (constantly 1400)})]
+        (is (= :ok (:result (delete-value! restarted left))))
+        (is (not (Files/exists
+                  (deletion-work-path root (:manifest-id left))
+                  (make-array java.nio.file.LinkOption 0))))))))
 
 (def retention
   {"v" 1 "type" "blob/retention"

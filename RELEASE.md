@@ -178,6 +178,12 @@ This extension is not part of the alpha interoperability claim yet.
       transfer, verifies reconciled lease/deletion envelopes, and fails closed
       when backend erasure is not explicitly implemented. JVM and Node
       Konserve memory backends cover restart ordering.
+- [x] Implement the lifecycle boundary in the JVM filesystem repository.
+      Staging descriptors make partial transfers attributable; a durable
+      deletion-work record survives marker removal and process restart; pieces
+      and matching storage receipts cross the configured persistence barrier
+      before success. Shared content-addressed pieces fail closed instead of
+      producing a false deletion receipt.
 - [x] Implement controller-side erasure convergence with an explicit monotone
       holder set, persist-before-dispatch retries, verified persist-before-count
       deletion receipts, late-holder reopening, and fail-closed restart. File

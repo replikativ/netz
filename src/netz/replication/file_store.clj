@@ -19,6 +19,7 @@
             [netz.replication.erasure-storage :as erasure-storage]
             [netz.replication.inventory :as inventory]
             [netz.replication.intent :as intent]
+            [netz.replication.lifecycle-storage :as lifecycle-storage]
             [netz.replication.storage :as storage]
             [netz.replication.store-validation :refer [verify-context! expected-piece!]]
             [netz.replication.wire :as replication-wire]
@@ -33,6 +34,12 @@
 (def ^:private marker-fields
   #{"v" "type" "manifest" "object" "descriptor" "persistence" "stored_at"})
 
+(def ^:private staging-fields
+  #{"v" "type" "manifest" "object" "descriptor"})
+
+(def ^:private deletion-work-fields
+  #{"v" "type" "manifest" "object" "descriptor"})
+
 (def ^:private receipt-record-fields
   #{"v" "type" "session" "object" "manifest" "replica" "layout_epoch"
     "attempt" "persistence" "receipt"})
@@ -45,6 +52,8 @@
 (def ^:private max-receipt-bytes (* 64 1024))
 (def ^:private max-controller-intent-bytes (* 5 1024 1024))
 (def ^:private max-erasure-record-bytes (* 16 1024 1024))
+(def ^:private max-lifecycle-record-bytes (* 5 1024 1024))
+(def ^:private max-deletion-work-bytes (* 2 1024 1024))
 
 (defn- byte-array? [value]
   (wire/byte-buffer? value))
@@ -92,6 +101,12 @@
 (defn- marker-path [store manifest-id]
   (addressed-path (:root store) "manifests" manifest-id ".cbor"))
 
+(defn- staging-path [store manifest-id]
+  (addressed-path (:root store) "staging" manifest-id ".cbor"))
+
+(defn- deletion-work-path [store manifest-id]
+  (addressed-path (:root store) "deletion-work" manifest-id ".cbor"))
+
 (defn- receipt-path [store record]
   (addressed-path (:root store) "receipts"
                   (identity/sha256 (wire/encode-canonical record)) ".cbor"))
@@ -111,6 +126,15 @@
   (let [hex (identity/bytes->hex
              (identity/sha256 (identity/utf8-bytes key)))]
     (path (erasure-root store cluster)
+          (subs hex 0 2) (str (subs hex 2) ".cbor"))))
+
+(defn- lifecycle-root [store]
+  (path (:root store) "lifecycle"))
+
+(defn- lifecycle-path [store key]
+  (let [hex (identity/bytes->hex
+             (identity/sha256 (identity/utf8-bytes key)))]
+    (path (lifecycle-root store)
           (subs hex 0 2) (str (subs hex 2) ".cbor"))))
 
 (defn- exists? [^Path value]
@@ -161,6 +185,12 @@
       target
       (finally
         (Files/deleteIfExists temporary)))))
+
+(defn- durable-delete! [store ^Path target]
+  (when (Files/deleteIfExists target)
+    (when (:fsync? store)
+      (force-directory! store (.getParent target))))
+  nil)
 
 (defn- read-bounded [^Path target limit]
   (when-not (Files/isRegularFile target no-links)
@@ -223,6 +253,46 @@
          (safe-uint? (get marker "stored_at")))
     (catch Throwable _ false)))
 
+(defn- valid-descriptor-record? [fields type record manifest-id manifest]
+  (try
+    (verify-context! manifest-id manifest)
+    (and (map? record)
+         (= fields (set (keys record)))
+         (= 1 (get record "v"))
+         (= type (get record "type"))
+         (same-bytes? manifest-id (get record "manifest"))
+         (same-bytes? (get manifest "object") (get record "object"))
+         (same-value? manifest (get record "descriptor")))
+    (catch Throwable _ false)))
+
+(defn- descriptor-record [type manifest-id manifest]
+  {"v" 1 "type" type "manifest" manifest-id
+   "object" (get manifest "object") "descriptor" manifest})
+
+(defn- load-descriptor-record! [target limit fields type manifest-id]
+  (when (exists? target)
+    (let [record (wire/decode (read-bounded target limit))
+          manifest (get record "descriptor")]
+      (when-not (valid-descriptor-record? fields type record
+                                          manifest-id manifest)
+        (throw (ex-info "Invalid blob descriptor record"
+                        {:type :netz.replication/invalid-descriptor-record
+                         :path (str target)})))
+      manifest)))
+
+(defn- ensure-staging! [store manifest-id manifest]
+  (let [target (staging-path store manifest-id)]
+    (if-let [existing (load-descriptor-record!
+                       target max-marker-bytes staging-fields
+                       "blob/staging" manifest-id)]
+      (when-not (same-value? existing manifest)
+        (throw (ex-info "Conflicting staged manifest"
+                        {:type :netz.replication/conflicting-staging})))
+      (atomic-write! store target
+                     (wire/encode-canonical
+                      (descriptor-record "blob/staging"
+                                         manifest-id manifest))))))
+
 (defn- load-marker! [store manifest-id manifest]
   (let [target (marker-path store manifest-id)]
     (when (exists? target)
@@ -241,7 +311,13 @@
 
 (defn- load-staging! [store manifest-id manifest]
   (verify-context! manifest-id manifest)
-  (let [held (held-pieces store manifest)
+  (let [staged (load-descriptor-record!
+                (staging-path store manifest-id) max-marker-bytes
+                staging-fields "blob/staging" manifest-id)
+        _ (when (and staged (not (same-value? staged manifest)))
+            (throw (ex-info "Conflicting staged manifest"
+                            {:type :netz.replication/conflicting-staging})))
+        held (held-pieces store manifest)
         marker (load-marker! store manifest-id manifest)
         installed (when (and marker
                              (= (count held)
@@ -258,6 +334,7 @@
     (throw (ex-info "Refusing to stage an invalid piece"
                     {:type :netz.replication/invalid-piece
                      :index index})))
+  (ensure-staging! store manifest-id manifest)
   (let [target (piece-path store piece-id)]
     (if (and (exists? target) (read-piece! store manifest index))
       (when (:fsync? store)
@@ -296,6 +373,7 @@
             (create-parent! store target)
             (force-file! target)
             (force-directory! store (.getParent target))))
+        (durable-delete! store (staging-path store manifest-id))
         (assoc (marker->installed existing) :result :ok))
       (do
         (when (:fsync? store) (force-pieces! store manifest))
@@ -313,6 +391,7 @@
                              :stored-at stored-at})))
           (atomic-write! store (marker-path store manifest-id)
                          (wire/encode-canonical marker))
+          (durable-delete! store (staging-path store manifest-id))
           (assoc (marker->installed marker) :result :ok))))))
 
 (defn- load-installed-piece! [store manifest-id index piece-id]
@@ -507,6 +586,176 @@
                    (assoc result key record))
                  (sorted-map)))))
 
+(defn- lifecycle-machine-key? [key]
+  (and (vector? key)
+       (= 2 (count key))
+       (= :blob/lifecycle (first key))
+       (string? (second key))
+       (boolean
+        (re-matches #"[0-9a-f]{32}/[0-9a-f]{32}/[0-9a-f]{64}"
+                    (second key)))))
+
+(defn- load-lifecycle-records! [store]
+  (let [root (lifecycle-root store)]
+    (->> (regular-cbor-files
+          root (:max-lifecycle-records store)
+          :netz.replication/too-many-lifecycle-records
+          "Lifecycle journal")
+         (map (fn [^Path target]
+                (let [record-hex
+                      (sharded-address!
+                       root target "lifecycle-record"
+                       :netz.replication/invalid-lifecycle-path)
+                      [key record]
+                      (lifecycle-storage/wire->record
+                       (wire/decode
+                        (read-bounded target max-lifecycle-record-bytes)))]
+                  (when-not (= record-hex
+                               (identity/bytes->hex
+                                (identity/sha256
+                                 (identity/utf8-bytes key))))
+                    (throw (ex-info "Invalid durable lifecycle record"
+                                    {:type :netz.replication/invalid-lifecycle-record
+                                     :path (str target)})))
+                  [key record])))
+         (reduce (fn [result [key record]]
+                   (when (contains? result key)
+                     (throw (ex-info "Duplicate durable lifecycle record"
+                                     {:type :netz.replication/invalid-lifecycle-record
+                                      :key key})))
+                   (assoc result key record))
+                 (sorted-map)))))
+
+(defn- descriptor-files [store directory label]
+  (let [root (path (:root store) directory)]
+    (mapv (fn [^Path target]
+            [(identity/hex->bytes
+              (sharded-address!
+               root target label
+               :netz.replication/invalid-descriptor-path))
+             target])
+          (regular-cbor-files
+           root (:max-inventory-records store)
+           :netz.replication/too-many-descriptor-records
+           (str label " inventory")))))
+
+(defn- load-marker-descriptor-at! [manifest-id target]
+  (let [marker (wire/decode (read-bounded target max-marker-bytes))
+        manifest (get marker "descriptor")]
+    (when-not (valid-marker? marker manifest-id manifest)
+      (throw (ex-info "Invalid installed-object marker"
+                      {:type :netz.replication/invalid-install-marker
+                       :path (str target)})))
+    manifest))
+
+(defn- load-staging-descriptor-at! [manifest-id target]
+  (or (load-descriptor-record!
+       target max-marker-bytes staging-fields "blob/staging" manifest-id)
+      (throw (ex-info "Missing staged-object descriptor"
+                      {:type :netz.replication/invalid-descriptor-record
+                       :path (str target)}))))
+
+(defn- live-piece-addresses! [store]
+  (let [installed (for [[manifest-id target]
+                        (descriptor-files store "manifests"
+                                          "installed-manifest")]
+                    (load-marker-descriptor-at! manifest-id target))
+        staged (for [[manifest-id target]
+                     (descriptor-files store "staging" "staged-manifest")]
+                 (load-staging-descriptor-at! manifest-id target))]
+    (into #{}
+          (comp (mapcat #(get % "pieces"))
+                (map identity/bytes->hex))
+          (concat installed staged))))
+
+(defn- matching-statement? [record statement]
+  (and (same-bytes? (get record "object") (get statement "object"))
+       (same-bytes? (get record "manifest") (get statement "manifest"))))
+
+(defn- delete-storage-receipts! [store statement]
+  (doseq [^Path target
+          (regular-cbor-files (path (:root store) "receipts")
+                              (:max-receipts store))]
+    (let [record (wire/decode (read-bounded target max-receipt-bytes))]
+      (when-not (valid-receipt-record? record)
+        (throw (ex-info "Invalid durable receipt record"
+                        {:type :netz.replication/invalid-receipt-record
+                         :path (str target)})))
+      (when (matching-statement? record statement)
+        (durable-delete! store target)))))
+
+(defn- statement-object-key [statement]
+  (str (identity/bytes->hex (get statement "cluster")) "/"
+       (identity/bytes->hex (get statement "privacy_domain")) "/"
+       (identity/bytes->hex (get statement "object"))))
+
+(defn- validate-deletion-request! [store key statement requested]
+  (replication-wire/validate-statement statement)
+  (when-not (and (contains? #{"blob/retention" "blob/lease" "blob/deletion"}
+                            (get statement "type"))
+                 (= key (statement-object-key statement))
+                 (= requested (:persistence store)))
+    (throw (ex-info "Invalid file-store deletion request"
+                    {:type :netz.replication/invalid-deletion-request
+                     :key key :requested requested}))))
+
+(declare load-installed-manifest!)
+
+(defn- candidate-descriptor! [store statement]
+  (let [manifest-id (get statement "manifest")
+        target-descriptors
+        (keep identity
+              [(load-descriptor-record!
+                (deletion-work-path store manifest-id)
+                max-deletion-work-bytes deletion-work-fields
+                "blob/deletion-work" manifest-id)
+               (load-installed-manifest! store manifest-id)
+               (load-descriptor-record!
+                (staging-path store manifest-id) max-marker-bytes
+                staging-fields "blob/staging" manifest-id)])]
+    (when (and (seq target-descriptors)
+               (or (not-every? #(same-value? (first target-descriptors) %)
+                               (rest target-descriptors))
+                   (not (same-bytes? (get statement "object")
+                                     (get (first target-descriptors)
+                                          "object")))))
+      (throw (ex-info "Deletion records disagree about object identity"
+                      {:type :netz.replication/conflicting-deletion-records})))
+    (first target-descriptors)))
+
+(defn- delete-object! [store key statement requested]
+  (validate-deletion-request! store key statement requested)
+  (let [manifest-id (get statement "manifest")
+        manifest (candidate-descriptor! store statement)]
+    (when manifest
+      ;; The work descriptor is the crash-recovery authority after the public
+      ;; install/staging records disappear.
+      (atomic-write! store (deletion-work-path store manifest-id)
+                     (wire/encode-canonical
+                      (descriptor-record "blob/deletion-work"
+                                         manifest-id manifest)))
+      (durable-delete! store (marker-path store manifest-id))
+      (durable-delete! store (staging-path store manifest-id))
+      (let [target-pieces (into {} (map (juxt identity/bytes->hex identity))
+                                (get manifest "pieces"))
+            shared (into #{} (filter (live-piece-addresses! store))
+                         (keys target-pieces))]
+        (when (seq shared)
+          (throw (ex-info "Shared pieces prevent complete object erasure"
+                          {:type :netz.replication/shared-piece-blocks-erasure
+                           :pieces (vec shared)})))
+        (doseq [piece-id (vals target-pieces)]
+          (durable-delete! store (piece-path store piece-id)))))
+    (delete-storage-receipts! store statement)
+    (durable-delete! store (deletion-work-path store manifest-id))
+    (let [deleted-at ((:clock store))]
+      (when-not (safe-uint? deleted-at)
+        (throw (ex-info "File-store clock returned an invalid timestamp"
+                        {:type :netz.replication/invalid-deleted-at
+                         :deleted-at deleted-at})))
+      {:result :ok :persistence (:persistence store)
+       :deleted-at deleted-at})))
+
 (defn- manifest-address! [^Path root ^Path target]
   (sharded-address! root target "installed-manifest"
                     :netz.replication/invalid-manifest-path))
@@ -557,7 +806,7 @@
 
 (defrecord FileBlobStore [root persistence fsync? clock max-receipts
                           max-inventory-records max-controller-intents
-                          max-erasure-records lock]
+                          max-erasure-records max-lifecycle-records lock]
   storage/PBlobTransferStore
 
   (-load-staging [store _session manifest-id manifest]
@@ -625,6 +874,32 @@
                         (erasure-storage/record->wire record)))
         :ok)))
 
+  lifecycle-storage/PBlobLifecycleStore
+
+  (-load-lifecycle-records [store]
+    (run-io #(locking lock (load-lifecycle-records! store))))
+
+  (-persist-lifecycle! [store key record]
+    (run-io
+     #(locking lock
+        (when-not (lifecycle-machine-key? key)
+          (throw (ex-info "Invalid lifecycle journal key"
+                          {:type :netz.replication/invalid-lifecycle-key})))
+        (let [object-key (second key)
+              value (lifecycle-storage/record->wire object-key record)
+              encoded (wire/encode-canonical value)]
+          (when (> (identity/buf-length encoded) max-lifecycle-record-bytes)
+            (throw (ex-info "Lifecycle record exceeds its storage bound"
+                            {:type :netz.replication/lifecycle-record-too-large
+                             :limit max-lifecycle-record-bytes})))
+          (atomic-write! store (lifecycle-path store object-key)
+                         encoded)
+          :ok))))
+
+  (-delete-object! [store key statement requested]
+    (run-io #(locking lock
+               (delete-object! store key statement requested))))
+
   inventory/PBlobInventoryStore
 
   (-inventory-page [store cursor limit]
@@ -659,6 +934,8 @@
   - `:max-controller-intents` bounds the cluster-scoped durable controller
     outbox scan (default 100,000);
   - `:max-erasure-records` bounds controller erasure campaigns (default
+    100,000);
+  - `:max-lifecycle-records` bounds replica lifecycle records (default
     100,000).
 
   Fsync mode forces every staged piece and each atomic install, receipt, or
@@ -678,7 +955,8 @@
          max-receipts (or (:max-receipts opts) 100000)
          max-inventory-records (or (:max-inventory-records opts) 1000000)
          max-controller-intents (or (:max-controller-intents opts) 100000)
-         max-erasure-records (or (:max-erasure-records opts) 100000)]
+         max-erasure-records (or (:max-erasure-records opts) 100000)
+         max-lifecycle-records (or (:max-lifecycle-records opts) 100000)]
      (when-not (and (contains? file-persistence-profiles persistence)
                     (ifn? clock)
                     (int? max-receipts)
@@ -688,7 +966,9 @@
                     (int? max-controller-intents)
                     (pos? max-controller-intents)
                     (int? max-erasure-records)
-                    (pos? max-erasure-records))
+                    (pos? max-erasure-records)
+                    (int? max-lifecycle-records)
+                    (pos? max-lifecycle-records))
        (throw (ex-info "Invalid file blob-store options"
                        {:type :netz.replication/invalid-file-store-options})))
      (let [barrier (when (= persistence "netz/store/fsync/1")
@@ -701,5 +981,6 @@
                                (= persistence "netz/store/fsync/1")
                                clock max-receipts max-inventory-records
                                max-controller-intents max-erasure-records
+                               max-lifecycle-records
                                (Object.))
               :directory-barrier barrier)))))

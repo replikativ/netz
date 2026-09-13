@@ -163,7 +163,10 @@ layout under an exclusively owned root:
 ```text
 pieces/<hash-prefix>/<hash-rest>.piece
 manifests/<hash-prefix>/<hash-rest>.cbor
+staging/<manifest-hash-prefix>/<manifest-hash-rest>.cbor
+deletion-work/<manifest-hash-prefix>/<manifest-hash-rest>.cbor
 receipts/<record-hash-prefix>/<record-hash-rest>.cbor
+lifecycle/<object-key-hash-prefix>/<object-key-hash-rest>.cbor
 ```
 
 Pieces are immutable and content addressed. Installation streams and verifies
@@ -173,6 +176,17 @@ markers, and their containing directories; unsupported atomic moves fail
 instead of silently downgrading the receipt. Receipt records are independently
 content addressed, bounded during restart scanning, and their Ed25519
 signatures are re-verified before replay to the quorum controller.
+
+The JVM file store also implements the lifecycle storage boundary. Before its
+first piece write it durably records the manifest in `staging`; installation
+removes that record only after the public marker is durable. Erasure first
+writes a private `deletion-work` descriptor, then removes the public marker and
+staging descriptor, scans the bounded remaining descriptor inventory, deletes
+unreferenced pieces and matching storage receipts, and removes the work record
+last. A restart can therefore resume an interrupted deletion after its public
+marker has disappeared. If another installed or staged manifest references an
+identical content-addressed piece, deletion fails closed and emits no receipt;
+the work record remains until those bytes can truthfully be erased.
 
 The dependency-free Python `netz_protocol.FileBlobStore` implements the same
 piece and manifest paths, closed marker schema, deterministic CBOR bytes,
@@ -185,9 +199,10 @@ the secure carrier, sender and a fsynced receipt file against the JVM receiver.
 
 Session cleanup deliberately does not delete addressed pieces. This is what
 allows a new attempt to resume after a process crash or lost ACK, and it avoids
-deleting a piece shared by several manifests. Lease-aware orphan collection
-remains a separate gate; until it lands the reference adapter can accumulate
-uninstalled staged pieces. Local paginated
+deleting a piece shared by several manifests. Attributable JVM staging is now
+removed by an explicit lifecycle deletion, but lease-aware orphan collection
+for abandoned transfers without a controller statement remains a separate
+gate. Local paginated
 installed-manifest inventory and full-object scrubbing now exist for the JVM
 file, Python file and portable Konserve adapters. The JVM runtime remains the
 complete reusable end-to-end reference. Both Python/JVM transfer directions now
@@ -673,15 +688,17 @@ three process IDs represent three independent failure domains.
    resurrection-prevention invariants.
 4. [done] Implement the bounded pure sender, including one-piece backpressure,
    receipt fencing and persist-before-quorum handoff.
-5. [JVM and Python file stores done, portable Konserve reference added]
+5. [JVM file lifecycle/erasure and JVM/Python transfer stores done, portable
+   Konserve reference added]
    Implement durable file
    staging/install, signed-receipt replay and the explicit capability-gated
    Kabel/Noise binding. The generic Konserve repository now passes JVM and Node
    memory-store restart/install tests and honestly exposes only volatile or
    best-effort completion. Python shares the JVM piece/marker format and real
    bidirectional conformance bindings, but not yet a reusable receipt/runtime
-   layer. The lifecycle-policy adapter now has JVM and
-   Node Konserve restart tests; add real Node/browser durable-backend tests.
+   layer. The JVM file repository now owns its durable lifecycle journal and
+   crash-resumable physical erasure; the lifecycle-policy adapter also has JVM
+   and Node Konserve restart tests. Add real Node/browser durable-backend tests.
 6. [known-missing scheduler done] The portable policy runtime reconstructs
    incomplete work from durable intents and receipts, with bounded issue rate,
    global controller-call concurrency, backoff and generation-fenced results.

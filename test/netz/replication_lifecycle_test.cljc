@@ -3,6 +3,7 @@
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
             [netz.replication.lifecycle :as lifecycle]
+            [netz.replication.lifecycle-storage :as lifecycle-storage]
             [netz.replication.wire :as replication-wire]
             [netz.sim :as sim]))
 
@@ -34,6 +35,19 @@
    "placement_minimum_domains" {"owner" 2}
    "ack_minimum_domains" {"owner" 2} "issued_at" 1000
    "retain_until" 2000 "signer" controller})
+
+(deftest lifecycle-storage-records-have-a-closed-portable-shape
+  (let [key (str (apply str (repeat 16 "10")) "/"
+                 (apply str (repeat 16 "20")) "/"
+                 (apply str (repeat 32 "30")))
+        record {:statement retention
+                :controller (identity/bytes->hex controller)
+                :revision 1 :fingerprint "fingerprint" :status :retained}
+        encoded (lifecycle-storage/record->wire key record)]
+    (is (= [key record] (lifecycle-storage/wire->record encoded)))
+    (is (thrown? #?(:clj Throwable :cljs js/Error)
+                 (lifecycle-storage/wire->record
+                  (assoc-in encoded ["record" "future_field"] true))))))
 
 (defn lease [revision retain-until]
   {"v" 1 "type" "blob/lease"
