@@ -494,13 +494,21 @@ network frame:
   "layout": signed_layout_envelope,
   "retention": signed_retention_envelope,
   "intent_revision": uint,
-  "attempts": [{"replica": bytes32, "attempt": uint}, ...]
+  "attempts": [{"replica": bytes32, "attempt": uint}, ...],
+  "holders": [replica_authority_bytes32, ...]
 }
 ~~~
 
 `attempts` is sorted by unsigned replica Authority bytes, contains no
-duplicates and names exactly the deterministic target set. The record itself
-is not a new authority statement: on every restore an implementation MUST
+duplicates and names exactly the deterministic target set. `holders` is also
+sorted and unique. It contains every current target and is
+the monotone union of all target sets selected by this intent's revisions. It
+MUST cross the same durability boundary before an offer can leave, so it is a
+conservative inventory even when a recipient stores the blob but its receipt
+is lost. This profile bounds one intent's holder history at 1,024 Authorities;
+an implementation MUST refuse a revision that would exceed that bound.
+The record itself is not a new authority statement: on every restore an
+implementation MUST
 re-verify both envelope signatures, configured controller authorization,
 cluster, object and manifest addresses, layout epoch, placement policy and
 target set. It MUST restore no more than its configured intent bound. Restored

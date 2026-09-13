@@ -105,6 +105,7 @@
                    :policy policy
                    :layout-epoch (:epoch layout)
                    :targets targets
+                   :holders targets
                    :attempts (zipmap targets (repeat 0))
                    :acks #{}
                    :receipts {}
@@ -236,12 +237,14 @@
     {:state state :actions []}))
 
 (defn- revise [state intent]
-  (let [{:keys [manifest layout policy attempts intent-revision]} intent
+  (let [{:keys [manifest layout policy attempts holders intent-revision]} intent
         object-id (:object-id manifest)]
     (if-let [existing (get-in state [:objects object-id])]
       (let [layout (placement/validate-layout layout)
             policy (placement/validate-policy layout policy)
-            targets (mapv :id (placement/place layout policy object-id))]
+            targets (mapv :id (placement/place layout policy object-id))
+            holders (vec (or holders
+                             (sort (into (set (:holders existing)) targets))))]
         (when-not (and (:intent-stored? existing)
                        (:manifest-id manifest)
                        (= (:manifest-id (:manifest existing))
@@ -250,6 +253,9 @@
                        (= intent-revision (inc (:intent-revision existing)))
                        (<= intent-revision 9007199254740991)
                        (= (set targets) (set (keys attempts)))
+                       (= (set holders)
+                          (into (set (:holders existing)) targets))
+                       (= holders (vec (sort (set holders))))
                        (every? (fn [target]
                                  (if-let [old-attempt
                                           (get (:attempts existing) target)]
@@ -264,6 +270,7 @@
                      :policy policy
                      :layout-epoch (:epoch layout)
                      :targets targets
+                     :holders holders
                      :attempts attempts
                      :acks #{}
                      :receipts {}
@@ -282,14 +289,17 @@
                        :object-id object-id})))))
 
 (defn- restored-entry
-  [{:keys [manifest layout policy attempts intent-revision]}]
+  [{:keys [manifest layout policy attempts holders intent-revision]}]
   (let [object-id (:object-id manifest)
         layout (placement/validate-layout layout)
         policy (placement/validate-policy layout policy)
-        targets (mapv :id (placement/place layout policy object-id))]
+        targets (mapv :id (placement/place layout policy object-id))
+        holders (vec (or holders (sort targets)))]
     (when-not (and object-id
                    (map? attempts)
                    (= (set targets) (set (keys attempts)))
+                   (every? (set holders) targets)
+                   (= holders (vec (sort (set holders))))
                    (every? #(and (integer? %) (<= 0 % 9007199254740991))
                            (vals attempts))
                    (integer? intent-revision)
@@ -303,6 +313,7 @@
       :policy policy
       :layout-epoch (:epoch layout)
       :targets targets
+      :holders holders
       :attempts attempts
       :acks #{}
       :receipts {}

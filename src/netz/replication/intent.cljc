@@ -2,9 +2,10 @@
   "Closed portable records for a controller's durable replication outbox.
 
   Records retain the exact signed layout and retention envelopes, transfer
-  manifest, per-target attempt counters and local intent revision needed to
-  reconstruct the pure controller after a crash. Signature verification is
-  asynchronous and remains separate from structural decoding."
+  manifest, per-target attempt counters, monotone holder history and local
+  intent revision needed to reconstruct the pure controller after a crash.
+  Signature verification is asynchronous and remains separate from structural
+  decoding."
   (:require [netz.identity :as identity]
             [netz.replication.blob :as blob]
             [netz.replication.layout :as layout]
@@ -16,9 +17,10 @@
                       :refer-macros [go]])))
 
 (def record-type "blob/replication-intent")
+(def max-holder-history 1024)
 (def ^:private record-fields
   #{"v" "type" "cluster" "object" "manifest" "layout" "retention"
-    "intent_revision" "attempts"})
+    "intent_revision" "attempts" "holders"})
 (def ^:private attempt-fields #{"replica" "attempt"})
 
 (defn- bytes-n? [n value]
@@ -69,6 +71,9 @@
                 (get entry "attempt")]))
         attempts))
 
+(defn- holder-ids [holders]
+  (mapv identity/bytes->hex holders))
+
 (defn valid-record?
   "Whether `record` is one closed, internally consistent intent record.
 
@@ -84,6 +89,8 @@
           manifest (blob/validate-manifest (get record "manifest"))
           attempts (get record "attempts")
           replica-hexes (mapv #(identity/bytes->hex (get % "replica")) attempts)
+          holders (get record "holders")
+          holder-hexes (holder-ids holders)
           expected-targets (target-ids layout-statement retention)]
       (and (exact-map? record-fields record)
            (= 1 (get record "v"))
@@ -99,6 +106,12 @@
            (= replica-hexes (vec (sort replica-hexes)))
            (= (count replica-hexes) (count (set replica-hexes)))
            (= (set expected-targets) (set replica-hexes))
+           (vector? holders)
+           (<= 1 (count holders) max-holder-history)
+           (every? #(bytes-n? 32 %) holders)
+           (= holder-hexes (vec (sort holder-hexes)))
+           (= (count holder-hexes) (count (set holder-hexes)))
+           (every? (set holder-hexes) replica-hexes)
            (same-bytes? (get record "cluster")
                         (get layout-statement "cluster"))
            (same-bytes? (get record "cluster") (get retention "cluster"))
@@ -119,26 +132,33 @@
 (defn make-record
   "Build a canonical durable intent record from signed envelopes and attempts.
 
-  `attempts` maps lowercase full-Authority hex IDs to safe unsigned counters."
-  [layout-envelope retention-envelope manifest attempts intent-revision]
-  (let [retention (statement retention-envelope "blob/retention")
-        attempt-records
-        (->> attempts
-             (map (fn [[replica attempt]]
-                    {"replica" (identity/hex->bytes replica)
-                     "attempt" attempt}))
-             (sort-by #(identity/bytes->hex (get % "replica")))
-             vec)]
-    (validate-record
-     {"v" 1
-      "type" record-type
-      "cluster" (get retention "cluster")
-      "object" (get retention "object")
-      "manifest" manifest
-      "layout" layout-envelope
-      "retention" retention-envelope
-      "intent_revision" intent-revision
-      "attempts" attempt-records})))
+  `attempts` maps lowercase full-Authority hex IDs to safe unsigned counters.
+  `holders` is the monotone history of every replica that may have received an
+  offer. The five-argument form initializes it to the current target set."
+  ([layout-envelope retention-envelope manifest attempts intent-revision]
+   (make-record layout-envelope retention-envelope manifest attempts
+                intent-revision (keys attempts)))
+  ([layout-envelope retention-envelope manifest attempts intent-revision holders]
+   (let [retention (statement retention-envelope "blob/retention")
+         attempt-records
+         (->> attempts
+              (map (fn [[replica attempt]]
+                     {"replica" (identity/hex->bytes replica)
+                      "attempt" attempt}))
+              (sort-by #(identity/bytes->hex (get % "replica")))
+              vec)
+         holder-records (->> holders set sort (mapv identity/hex->bytes))]
+     (validate-record
+      {"v" 1
+       "type" record-type
+       "cluster" (get retention "cluster")
+       "object" (get retention "object")
+       "manifest" manifest
+       "layout" layout-envelope
+       "retention" retention-envelope
+       "intent_revision" intent-revision
+       "attempts" attempt-records
+       "holders" holder-records}))))
 
 (defn make-initial-record
   "Build revision zero with attempt zero for every deterministic target."
@@ -171,6 +191,8 @@
           new-revision (get successor "intent_revision")
           old-attempts (attempts-map (get current "attempts"))
           new-attempts (attempts-map (get successor "attempts"))
+          old-holders (set (holder-ids (get current "holders")))
+          new-holders (set (holder-ids (get successor "holders")))
           expected-attempts
           (into {}
                 (map (fn [target]
@@ -195,6 +217,7 @@
                (get new-retention "retain_until"))
            (= new-revision (inc old-revision))
            (= expected-attempts new-attempts)
+           (= new-holders (into old-holders (keys new-attempts)))
            (<= (get old-layout "epoch") (get new-layout "epoch"))
            (or (< (get old-layout "epoch") (get new-layout "epoch"))
                (same-bytes? (layout/address old-layout)
@@ -214,6 +237,7 @@
         new-retention (statement retention-envelope "blob/retention")
         new-targets (target-ids new-layout new-retention)
         old-attempts (attempts-map (get current "attempts"))
+        holders (into (set (holder-ids (get current "holders"))) new-targets)
         attempts (into {}
                        (map (fn [target]
                               [target (if-let [attempt (get old-attempts target)]
@@ -221,7 +245,8 @@
                                         next-revision)]))
                        new-targets)
         successor (make-record layout-envelope retention-envelope
-                               (get current "manifest") attempts next-revision)]
+                               (get current "manifest") attempts next-revision
+                               holders)]
     (when-not (valid-successor-record? current successor)
       (throw (ex-info "Invalid durable intent successor"
                       {:type :netz.replication/invalid-intent-successor})))
@@ -244,6 +269,7 @@
      :layout (layout/placement-layout layout-statement)
      :policy (policy retention)
      :attempts (attempts-map (get record "attempts"))
+     :holders (holder-ids (get record "holders"))
      :intent-revision (get record "intent_revision")}))
 
 (defn- authority-hex [value]

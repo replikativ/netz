@@ -582,10 +582,14 @@ receipts. A campaign reports `:complete` only when every recorded holder has a
 matching receipt; transport acceptance, failure detection, current layout
 membership and a storage write quorum are not erasure evidence.
 
-The application/controller must seed that holder set from both the original
-placement targets and every accepted `blob/stored` receipt, including replicas
-removed by later layouts. Open caches containing erasable data therefore need
-registered holder receipts or finite leases. A provider can guarantee local
+The durable replication intent now captures that inventory automatically.
+`controller-runtime/known-holders` returns the monotone union of all target
+sets, including replicas removed by later layouts; each addition is persisted
+before its first offer can leave. Pass that set to `erasure-runtime/begin!`.
+Every accepted `blob/stored` receipt is necessarily from one of those already
+recorded targets, so losing a receipt cannot lose a deletion obligation. Open
+caches outside controlled placement still need registered holder receipts or
+finite leases. A provider can guarantee local
 erasure on infrastructure it controls and can report verifiable compliance by
 cooperating peers, but cannot compel an offline or adversarial independent
 machine. Such peers remain visible in the campaign's `:pending` collection.

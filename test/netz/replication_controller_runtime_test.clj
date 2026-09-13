@@ -329,6 +329,10 @@
       (is (= authority-hex (get-in @offers [0 :replica-id])))
       (is (= 0 (get-in (first (vals @(:records store)))
                        ["intent_revision"])))
+      (is (= #{authority-hex}
+             (controller-runtime/known-holders controller
+                                               (identity/bytes->hex
+                                                (:object-id split)))))
       (is (= :exists
              (await (controller-runtime/begin!
                      controller layout-envelope retention-envelope
@@ -578,6 +582,8 @@
         (reset! current (:state accepted)))
       (is (= :ok (await (controller-runtime/revise!
                          controller (sign next-layout) (sign next-retention)))))
+      (is (= (set (map #(identity/bytes->hex (nth ids %)) [0 1 2 3]))
+             (controller-runtime/known-holders controller object-id)))
       (is (= (set (map #(identity/bytes->hex (nth ids %)) [1 2 3]))
              (set (map #(identity/bytes->hex (:authority %)) @offers))))
       (is (= :under-replicated
@@ -587,6 +593,8 @@
           restarted (runtime store current replayed-offers {})]
       (try
         (is (true? (await (controller-runtime/ready restarted))))
+        (is (= (set (map #(identity/bytes->hex (nth ids %)) [0 1 2 3]))
+               (controller-runtime/known-holders restarted object-id)))
         (is (empty? (:acknowledged (controller-runtime/durability-status restarted object-id))))
         (is (empty? @replayed-offers))
         ;; Receipt journals can retain old evidence. Even a newly signed event

@@ -74,6 +74,7 @@
            (mapv #(identity/bytes->hex (get % "replica"))
                  (get record "attempts"))))
     (is (= attempts (:attempts restored)))
+    (is (= (set targets) (set (:holders restored))))
     (is (= 7 (:intent-revision restored)))
     (is (= (set (map #(identity/bytes->hex (get % "authority")) members))
            (set (map :id (get-in restored [:layout :members])))))
@@ -103,12 +104,20 @@
         successor (intent/make-successor-record
                    current fake-layout (fake-envelope renewal))
         next-attempts (:attempts (intent/record->intent successor))
+        next-holders (:holders (intent/record->intent successor))
         added-target (first (remove (set targets) (keys next-attempts)))]
     (is (intent/valid-successor-record? current successor))
     (is (= 8 (get successor "intent_revision")))
     (is (= (inc (get attempts (first targets)))
            (get next-attempts (first targets))))
     (is (= 8 (get next-attempts added-target)))
+    (is (= (set (keys next-attempts)) (set next-holders)))
+    (is (not (intent/valid-successor-record?
+              current (assoc successor "holders"
+                             (vec (rest (get successor "holders")))))))
+    (is (not (intent/valid-successor-record?
+              current (update successor "holders" conj
+                              (identity/hex->bytes (apply str (repeat 32 "ff")))))))
     (is (not (intent/valid-successor-record?
               current
               (intent/make-record
