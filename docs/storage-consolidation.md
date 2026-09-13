@@ -182,8 +182,11 @@ checkpoint or halted transition releases none. Restored checkpoints reproduce
 the same attempts. This API does not send data or grant authority. The runtime
 still needs signed-layout and controller-fence validation, bounded transfer
 scheduling, receipt verification followed by checkpoint persistence, and an
-atomic protection recheck before any retirement. Advisory retirement candidates
-must never be wired directly to deletion.
+atomic protection recheck before any retirement. Retirement plans now cross
+distinct durable planned/deleting/retired generations and are replay-safe, but
+their final output remains advisory until a runtime serializes protection
+mutation and idempotent physical deletion. It must never be wired directly to
+an unfenced delete callback.
 
 ### Reuse the existing controller for migration execution
 

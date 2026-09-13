@@ -92,9 +92,12 @@ tests writer-process loss, not independent-device or power-loss durability.
 The fixture supplies the authorized layout chain as local configuration; it
 does not test layout-distribution recovery.
 
-Remaining work includes retirement/protection safety, target connection
-management and independent-device qualification. The current tests do not
-establish safe automatic retirement.
+Placement-target connection demand is implemented and live-tested over the
+authenticated Noise carrier. Retirement now has durable planned, deleting and
+retired generations with conservative replay, but the final protection-atomic
+physical-delete runtime and authenticated remote command remain unfinished.
+Independent-device qualification also remains. The current tests therefore do
+not yet establish safe automatic retirement.
 
 The live process fixture gives each simulated independent owner a distinct
 discovery group and waits for the exact selected Authorities, not merely a

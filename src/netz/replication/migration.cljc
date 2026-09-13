@@ -28,7 +28,8 @@
     {:binding (assoc binding :policy policy)
      :targets targets :old-holders old-holders :retire-after retire-after
      :attempts (zipmap (map :id targets) (repeat 0))
-     :receipts {} :revision 0 :persisted -1 :halted? false}))
+     :receipts {} :retirements {}
+     :revision 0 :persisted -1 :halted? false}))
 
 (defn checkpoint
   "Local checkpoint payload. Persist this exact value before acknowledging it.
@@ -85,14 +86,45 @@
            (number? now) (>= now (:retire-after state))
            (set? protected-holders) (covered? state now))
     (set/difference (:old-holders state)
-                    (set (map :id (:targets state))) protected-holders)
+                    (set (map :id (:targets state)))
+                    protected-holders
+                    (set (keys (:retirements state))))
     #{}))
+
+(defn retirement-delete-candidates
+  "Persisted deletion work that is still eligible under a fresh context.
+
+  The returned generation is a one-shot fence for `:retired`. Callers must not
+  cache this result: obtain it while serialized with protection changes and
+  pass that exact generation to idempotent local deletion."
+  [state {:keys [binding now protected-holders] :as context}]
+  (if (and (ready? state) (not (:halted? state))
+           (= binding (:binding state))
+           (number? now) (>= now (:retire-after state))
+           (set? protected-holders) (covered? state now))
+    (->> (:retirements state)
+         (keep (fn [[replica {:keys [phase generation]}]]
+                 (when (and (= :deleting phase)
+                            (contains? (:old-holders state) replica)
+                            (not (contains? (set (map :id (:targets state))) replica))
+                            (not (contains? protected-holders replica)))
+                   {:binding binding :replica replica :generation generation})))
+         (sort-by :replica)
+         vec)
+    []))
+
+(defn- retirement-token-matches? [state {:keys [binding replica generation]} phase]
+  (and (= binding (:binding state))
+       (= {:phase phase :generation generation}
+          (get-in state [:retirements replica]))))
 
 (defn step
   "Apply trusted local events. :persisted must contain the exact :checkpoint
   written; :receipt/:lost bind replica+attempt and exact transition binding.
   :halt fences this transition permanently, including while persistence is pending."
-  [state {:keys [type binding replica attempt expires checkpoint] :as event}]
+  [state {:keys [type binding replica attempt expires checkpoint generation
+                 now protected-holders deleted-at]
+          :as event}]
   (cond
     (= type :halt)
     {:state (-> state (assoc :halted? true) (update :revision inc)) :status :persist}
@@ -102,8 +134,55 @@
       {:state (assoc state :persisted (:revision state)) :status :persisted}
       {:state state :status :stale})
 
-    (:halted? state) {:state state :status :halted}
     (not (ready? state)) {:state state :status :busy}
+
+    ;; A successful physical deletion is a fact that must remain recordable
+    ;; after a concurrent halt. Halting prevents new effects; it cannot undo an
+    ;; effect which already crossed the storage boundary.
+    (= type :retired)
+    (if (and (retirement-token-matches? state event :deleting)
+             (integer? deleted-at) (<= 0 deleted-at 9007199254740991))
+      {:state (-> state
+                  (assoc-in [:retirements replica]
+                            {:phase :retired :generation generation
+                             :deleted-at deleted-at})
+                  (update :revision inc))
+       :status :persist}
+      {:state state :status :stale})
+
+    (:halted? state) {:state state :status :halted}
+
+    (= type :plan-retirement)
+    (cond
+      (contains? (:retirements state) replica)
+      {:state state :status :duplicate}
+
+      (contains? (retirement-candidates state
+                                        {:binding binding :now now
+                                         :protected-holders protected-holders})
+                 replica)
+      (let [generation (inc (:revision state))]
+        {:state (-> state
+                    (assoc-in [:retirements replica]
+                              {:phase :planned :generation generation})
+                    (update :revision inc))
+         :status :persist})
+
+      :else {:state state :status :ineligible})
+
+    (= type :begin-retirement)
+    (if (and (retirement-token-matches? state event :planned)
+             (number? now)
+             (set? protected-holders)
+             (not (contains? protected-holders replica))
+             (covered? state now)
+             (>= now (:retire-after state)))
+      {:state (-> state
+                  (assoc-in [:retirements replica :phase] :deleting)
+                  (update :revision inc))
+       :status :persist}
+      {:state state :status :ineligible})
+
     (not= binding (:binding state)) {:state state :status :stale}
     (not (contains? (:attempts state) replica)) {:state state :status :rejected}
     (not= attempt (get-in state [:attempts replica])) {:state state :status :stale}
