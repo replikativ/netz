@@ -11,7 +11,7 @@ dependency-free Python CBOR/session core—including strict signed dissemination
 and repair frames—plus a durable filesystem blob repository and transfer
 machines define the path to implementations outside the Clojure ecosystem.
 
-> **Pre-release target: `0.1.0-alpha.1` (Apache-2.0).** JVM, CLJS and Python
+> **Alpha series: `0.1.<commit-count>` (Apache-2.0).** JVM, CLJS and Python
 > share protocol fixtures and live interoperability tests. The experimental
 > blob backend also has signed placement, repair and writer-process recovery
 > tests; it is not yet a production distributed storage service. See
@@ -139,7 +139,7 @@ clojure -M:blob-demo
 - [Release readiness](RELEASE.md), [security policy](SECURITY.md), and
   [changelog](CHANGELOG.md)
 - [Maintainer release procedure](docs/releasing.md) — synchronized JVM/Python
-  versions and the explicitly triggered publication pipeline
+  commit-count versions and automatic publication from green `main`
 
 ## License
 

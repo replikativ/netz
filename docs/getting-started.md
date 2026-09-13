@@ -1,8 +1,8 @@
 # Getting started
 
-Netz `0.1.0-alpha.1` targets controlled peer groups. Do not expose it to
-untrusted Internet peers until the public-network items in
-[`RELEASE.md`](../RELEASE.md) are complete.
+Netz's `0.1.<commit-count>` alpha series targets controlled peer groups. Public
+dials are currently restricted to exact operator-configured `wss` peers; see
+[`RELEASE.md`](../RELEASE.md) for the remaining interoperability work.
 
 ## Dependency
 
@@ -15,8 +15,11 @@ clojure -T:build install
 Then add the following coordinate to a Clojure project:
 
 ```clojure
-org.replikativ/netz {:mvn/version "0.1.0-alpha.1"}
+org.replikativ/netz {:mvn/version "0.1.<commit-count>"}
 ```
+
+Replace `<commit-count>` with the latest published `0.1` version on Clojars.
+JVM and Python artifacts built from one commit use the same numeric version.
 
 The artifact contains the shared JVM/ClojureScript sources. JavaScript builds
 also need the normal ClojureScript toolchain used by the host application.

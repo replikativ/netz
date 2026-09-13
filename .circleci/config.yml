@@ -1,10 +1,5 @@
 version: 2.1
 
-parameters:
-  release:
-    type: boolean
-    default: false
-
 orbs:
   tools: replikativ/clj-tools@0
 
@@ -161,6 +156,11 @@ jobs:
     steps:
       - checkout
       - run:
+          name: Verify shared commit-count version
+          command: |
+            test "$(python build_version.py)" = "0.1.$(git rev-list --count HEAD)"
+            test "$(python setup.py --version)" = "$(python build_version.py)"
+      - run:
           name: Install optional secure-client dependencies
           command: python -m pip install '.[secure-client]'
       - run:
@@ -191,8 +191,8 @@ jobs:
           name: Verify and build JVM artifact
           command: clojure -T:build verify
       - store_artifacts:
-          path: target/netz-0.1.0-alpha.1.jar
-          destination: netz-0.1.0-alpha.1.jar
+          path: target/netz.jar
+          destination: netz.jar
 
   deploy-python:
     executor: python
@@ -219,40 +219,6 @@ jobs:
 
 workflows:
   build-test:
-    jobs:
-      - setup:
-          context: docker-deploy
-      - format-check:
-          context: docker-deploy
-          requires: [setup]
-      - test-clj:
-          context: docker-deploy
-          requires: [setup]
-      - test-konserve:
-          context: docker-deploy
-          requires: [setup]
-      - test-replica:
-          context: docker-deploy
-          requires: [setup]
-      - test-secure:
-          context: docker-deploy
-          requires: [setup]
-      - test-mixed:
-          context: docker-deploy
-          requires: [setup]
-      - test-checkpoint:
-          context: docker-deploy
-          requires: [setup]
-      - test-cljs:
-          context: docker-deploy
-          requires: [setup]
-      - test-python
-      - build:
-          context: docker-deploy
-          requires: [setup]
-
-  release:
-    when: << pipeline.parameters.release >>
     jobs:
       - setup:
           context: docker-deploy
