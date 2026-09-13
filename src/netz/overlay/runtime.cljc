@@ -54,6 +54,7 @@
             [netz.dissemination-adapter :as dissemination-adapter]
             [netz.dissemination-wire :as dissemination-wire]
             [netz.identity :as id]
+            [netz.membership :as membership]
             [netz.publication :as publication]
             [netz.ratelimit :as rl]
             [netz.overlay :as overlay]
@@ -451,6 +452,17 @@
   "Peer ids we currently hold a connection to."
   [peer]
   (set (keys (:by-id @(registry peer)))))
+
+(defn max-connection-demand
+  "Configured bound for the local aggregate demand snapshot."
+  [ctx]
+  (get-in @(:state ctx) [:membership :opts :max-demand]))
+
+(defn connection-demand-status
+  "Current local routing status for every demanded Authority."
+  [ctx]
+  (membership/connection-demand-status
+   (:membership @(:state ctx)) ((:now-fn ctx))))
 
 (defn connection-out
   "The channel that reaches `peer-id`, or nil if we hold no connection to it.

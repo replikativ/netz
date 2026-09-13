@@ -536,6 +536,26 @@
 
 (defn state [ctx] @(:state ctx))
 
+(defn connection-targets
+  "Full Authority hex IDs still needed by current durable intents.
+
+  A connectivity coordinator may aggregate these across controllers. This is
+  advisory demand only: dispatch rechecks the accepted layout and retention.
+  Stopped controllers, pending intents and stale/expired records produce no
+  demand. Existing receipts are not evidence of current reachability."
+  [ctx]
+  (if @(:stopped? ctx)
+    #{}
+    (let [records @(:records ctx)]
+      (reduce-kv
+       (fn [targets object-id entry]
+         (if (and (:intent-stored? entry)
+                  (when-let [record (get records object-id)]
+                    (current-record? ctx record)))
+           (into targets (remove (set (:acks entry)) (:targets entry)))
+           targets))
+       #{} (:objects @(:state ctx))))))
+
 (defn durability-status
   "Current receipt evidence, not a promise of present reachability.
 

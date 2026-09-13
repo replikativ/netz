@@ -69,6 +69,8 @@
    :max-per-group 2
    ;; Hard ceiling on address-book entries.
    :max-book 256
+   ;; Local aggregate demand, never populated by peer exchange.
+   :max-demand 32
    ;; Backoff after 1, 2, 3, 4+ consecutive failures.
    :backoff-ms [1000 5000 15000 600000]
    ;; A connection lasting this long is "proven" and resets the failure count.
@@ -166,6 +168,7 @@
                                :last-success nil :backoff-until 0}]))
     :connections {}
     :dialing {}
+    :connection-demand {}
     :stats {:dials 0 :dial-ok 0 :dial-failed 0 :dial-refused 0
             :inbound 0 :duplicates-resolved 0 :learned 0}}))
 
@@ -228,7 +231,32 @@
          ;; group. There is no exemption: an entry without a supplied group is
          ;; given one derived from its address (`host-group`), so "unknown"
          ;; cannot be used to opt out of the cap.
-         (< (get (group-counts state) (:group entry) 0) max-per-group))))
+         (< (+ (get (group-counts state) (:group entry) 0)
+               (count (filter #(and (not (contains? (:connections state) %))
+                                    (= (:group entry) (get-in state [:book % :group])))
+                              (keys (:dialing state)))))
+            max-per-group))))
+
+(defn set-connection-demand
+  "Replace the local aggregate demand map, routing id -> full Authority hex.
+
+  One local coordinator owns this snapshot; callers must aggregate their work
+  before replacing it. This grants dial priority, not trust, extra capacity,
+  or transfer admission. Unknown routes remain dormant until learned with the
+  matching Authority. Invalid snapshots leave the prior demand unchanged."
+  [state demand]
+  (if (and (map? demand)
+           (<= (count demand) (get-in state [:opts :max-demand]))
+           (every? (fn [[pid authority]] (authority-matches-route? pid authority)) demand))
+    (assoc state :connection-demand
+           (into {} (map (fn [[pid authority]] [pid (str/lower-case authority)]) demand)))
+    state))
+
+(defn demanded?
+  "Demand only applies to an address-book entry with the exact Authority."
+  [state pid]
+  (let [authority (get-in state [:connection-demand pid])]
+    (and (some? authority) (= authority (get-in state [:book pid :authority-id])))))
 
 (defn candidates
   "Peers worth dialing now, best first.
@@ -249,7 +277,9 @@
                              (topics/overlaps? (get-in state [:book pid :carries]) wanted))
                       0 1))]
     [(assoc state :rng rng')
-     (sort-by (juxt relevance #(priority (get-in state [:book %]))) shuffled)]))
+     (sort-by (juxt #(if (and (< now (:demand-until state ##Inf))
+                              (demanded? state %)) 0 1)
+                    relevance #(priority (get-in state [:book %]))) shuffled)]))
 
 (defn want-dials
   "How many new outbound dials to start now."
@@ -260,6 +290,25 @@
     (max 0 (min (- max-parallel pending)
                 (- max-peers live pending)
                 (- max-connections live pending)))))
+
+(defn connection-demand-status
+  "Local routing diagnostics, not authenticated transport or receipt evidence.
+  Status is recomputed from the current snapshot; no unbounded status history."
+  [state now]
+  (into {}
+        (for [[pid authority] (:connection-demand state)
+              :let [entry (get-in state [:book pid])]]
+          [pid (cond
+                 (>= now (:demand-until state ##Inf)) :expired
+                 (nil? entry) :unknown-route
+                 (not= authority (:authority-id entry)) :authority-mismatch
+                 (contains? (:connections state) pid) :connected
+                 (contains? (:dialing state) pid) :dialing
+                 (empty? (:addresses entry)) :no-address
+                 (< now (:backoff-until entry 0)) :backoff
+                 (not (dialable? state now pid)) :group-limit
+                 (zero? (want-dials state)) :capacity
+                 :else :ready)])))
 
 (defn keep-new?
   "Tie-break deciding whose dial wins when two peers dial each other at once.
@@ -451,10 +500,17 @@
     (if (zero? n)
       [state []]
       (let [[state cands] (candidates state now)
-            chosen (take n cands)
+            ;; Reserve each dial before considering the next candidate. The
+            ;; original candidate list was ranked against the same snapshot;
+            ;; taking n directly could exceed a group's cap in one batch.
+            [state chosen] (reduce (fn [[s chosen] pid]
+                                     (if (and (< (count chosen) n)
+                                              (dialable? s now pid))
+                                       [(assoc-in s [:dialing pid] now) (conj chosen pid)]
+                                       [s chosen]))
+                                   [state []] cands)
             {:keys [dial-timeout-ms]} (:opts state)]
-        [(-> (reduce (fn [s pid] (assoc-in s [:dialing pid] now)) state chosen)
-             (update-in [:stats :dials] + (count chosen)))
+        [(update-in state [:stats :dials] + (count chosen))
          (vec (concat
                (for [pid chosen]
                  [:connect pid (dial-address state pid)
@@ -469,6 +525,17 @@
   "Membership state machine. See the namespace docstring for the contract."
   [state event {:keys [now] :as _ctx}]
   (case (:type event)
+
+    ;; Local event only. A wire message with this payload still goes through
+    ;; the :message branch and cannot install demand.
+    :connection-demand
+    (let [until (:until event)]
+      (if (and (number? until) (< now until) (<= until (+ now 60000)))
+        (let [next-state (set-connection-demand state (:demand event))]
+          {:state (if (identical? state next-state)
+                    state
+                    (assoc next-state :demand-until until)) :actions []})
+        {:state state :actions []}))
 
     :init
     {:state state
