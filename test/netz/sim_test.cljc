@@ -341,6 +341,60 @@
               :actions []}
     {:state state :actions []}))
 
+(defn fanout-handler [state event _ctx]
+  (case (:type event)
+    :init {:state state
+           :actions (mapv (fn [target] [:send target (:payload state)])
+                          (:targets state))}
+    :message {:state (update state :received (fnil conj []) (:payload event))
+              :actions []}
+    {:state state :actions []}))
+
+(deftest directed-link-topology-shapes-time-without-changing-delivery
+  (let [payload {:blob (apply str (repeat 30 "x"))}
+        bytes (sim/estimate-size payload)
+        topology {[:source :near] {:latency-min 2 :latency-max 2}
+                  [:source :far] {:latency-min 50 :latency-max 50}}
+        delivered (-> (sim/make-sim {:links topology})
+                      (sim/add-node :source fanout-handler
+                                    {:targets [:near :far] :payload payload})
+                      (sim/add-node :near fanout-handler
+                                    {:targets [] :payload nil})
+                      (sim/add-node :far fanout-handler
+                                    {:targets [] :payload nil})
+                      (sim/run-until 100))
+        arrivals (->> (:trace delivered)
+                      (filter #(= :message (:kind %)))
+                      (map (juxt :to :at))
+                      (into {}))]
+    (is (= {:near 2 :far 50} arrivals))
+    (is (= {[:source :near] bytes [:source :far] bytes}
+           (sim/link-bytes delivered)))
+    (is (= [payload] (:received (sim/node-state delivered :near))))
+    (is (= [payload] (:received (sim/node-state delivered :far))))
+
+    (testing "throughput serializes a directed link instead of dropping frames"
+      (let [shaped (-> (sim/make-sim
+                        {:links {[:source :sink]
+                                 {:latency-min 10 :latency-max 10
+                                  :throughput-bytes-per-ms bytes}}})
+                       (sim/add-node :source burst-handler
+                                     {:count 3 :payload payload})
+                       (sim/add-node :sink burst-handler
+                                     {:count 0 :payload nil})
+                       (sim/run-until 100))
+            arrivals (->> (:trace shaped)
+                          (filter #(= :message (:kind %)))
+                          (mapv :at))]
+        (is (= [11 12 13] arrivals))
+        (is (= 3 (count (:received (sim/node-state shaped :sink)))))
+        (is (zero? (get-in shaped [:stats :dropped-bandwidth])))))
+
+    (testing "malformed topology fails before the simulation starts"
+      (is (thrown? #?(:clj Exception :cljs js/Error)
+                   (sim/make-sim
+                    {:links {[:a :b] {:throughput-bytes-per-ms 0}}}))))))
+
 (deftest inflight-and-bandwidth-bounds-are-visible
   (testing "the global in-flight ceiling drops excess queued frames"
     (let [s (-> (sim/make-sim {:max-inflight 2 :latency-min 100 :latency-max 100})

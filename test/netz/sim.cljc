@@ -92,6 +92,10 @@
    ;; later frame overtake an earlier one on the same directed link. Tests for
    ;; unordered transports can disable it explicitly.
    :link-fifo? true
+   ;; Optional directed-link overrides. A profile may set an inclusive
+   ;; latency range and a shaping throughput. Throughput serializes frames;
+   ;; unlike the global burst ceiling below, it does not drop them.
+   :links {}
    ;; Resource ceilings. nil bandwidth means unlimited.
    :max-inflight 100000
    :bandwidth-bytes-per-ms nil
@@ -106,11 +110,30 @@
    ;; it off and assert on node state instead.
    :trace? true})
 
+(def ^:private link-profile-fields
+  #{:latency-min :latency-max :throughput-bytes-per-ms})
+
+(defn- valid-link-profile? [opts [link profile]]
+  (let [latency-min (get profile :latency-min (:latency-min opts))
+        latency-max (get profile :latency-max (:latency-max opts))
+        throughput (:throughput-bytes-per-ms profile)]
+    (and (vector? link) (= 2 (count link))
+         (map? profile)
+         (every? link-profile-fields (keys profile))
+         (integer? latency-min) (<= 0 latency-min)
+         (integer? latency-max) (<= latency-min latency-max)
+         (or (nil? throughput)
+             (and (integer? throughput) (pos? throughput))))))
+
 (defn make-sim
   "Create a simulation. See `default-opts` for the options."
   ([] (make-sim {}))
   ([opts]
    (let [opts (merge default-opts opts)]
+     (when-not (and (map? (:links opts))
+                    (every? #(valid-link-profile? opts %) (:links opts)))
+       (throw (ex-info "Invalid simulated directed-link profiles"
+                       {:type :netz.sim/invalid-link-profiles})))
      {:now 0
       :seq 0
       :steps 0
@@ -125,8 +148,10 @@
       ;; Directed link -> delivery time of the last enqueued frame. Event
       ;; insertion sequence breaks ties, so equal timestamps remain FIFO.
       :link-next-at {}
+      :link-ready-at {}
       :storage {}
       :bytes-sent {}
+      :link-bytes {}
       :time-bytes {}
       :peak-time-bytes {}
       :opts opts
@@ -374,8 +399,15 @@
   [sim from to payload]
   (enqueue sim {:at (:now sim) :kind :message :from from :to to :payload payload}))
 
-(defn- draw-latency [sim]
-  (let [{:keys [latency-min latency-max]} (:opts sim)
+(defn- link-profile [sim from to]
+  (get-in sim [:opts :links [from to]] {}))
+
+(defn- draw-latency [sim from to]
+  (let [profile (link-profile sim from to)
+        latency-min (get profile :latency-min
+                         (get-in sim [:opts :latency-min]))
+        latency-max (get profile :latency-max
+                         (get-in sim [:opts :latency-max]))
         [rng' ms] (rng/rand-range (:rng sim) latency-min latency-max)]
     [(assoc sim :rng rng') ms]))
 
@@ -393,12 +425,13 @@
       (let [[rng' duplicate?] (rng/rand-bool (:rng sim) p)]
         [(assoc sim :rng rng') duplicate?]))))
 
-(defn- charge-bytes [sim from bytes]
+(defn- charge-bytes [sim from to bytes]
   (let [{last-at :at current :bytes} (get-in sim [:time-bytes from])
         current (if (= last-at (:now sim)) (or current 0) 0)
         total (+ current bytes)]
     (-> sim
         (update-in [:bytes-sent from] (fnil + 0) bytes)
+        (update-in [:link-bytes [from to]] (fnil + 0) bytes)
         (assoc-in [:time-bytes from] {:at (:now sim) :bytes total})
         (update-in [:peak-time-bytes from] (fnil max 0) total))))
 
@@ -431,22 +464,33 @@
 
       (over-bandwidth? sim from bytes)
       (-> sim
-          (charge-bytes from bytes)
+          (charge-bytes from to bytes)
           (update-in [:stats :dropped-bandwidth] inc))
 
       :else
-      (let [sim (charge-bytes sim from bytes)
+      (let [sim (charge-bytes sim from to bytes)
             [sim dropped?] (drop-message? sim)]
         (if dropped?
           (update-in sim [:stats :dropped-loss] inc)
-          (let [[sim ms] (draw-latency sim)
-                candidate (+ (:now sim) ms)
-                link [from to]
+          (let [link [from to]
+                profile (link-profile sim from to)
+                throughput (:throughput-bytes-per-ms profile)
+                transmission-ms (if throughput
+                                  (max 1 (quot (+ bytes throughput -1)
+                                               throughput))
+                                  0)
+                transmission-start (max (:now sim)
+                                        (get-in sim [:link-ready-at link]
+                                                (:now sim)))
+                transmission-end (+ transmission-start transmission-ms)
+                [sim ms] (draw-latency sim from to)
+                candidate (+ transmission-end ms)
                 at (if (get-in sim [:opts :link-fifo?])
                      (max candidate (get-in sim [:link-next-at link] candidate))
                      candidate)
                 event {:at at :kind :message :from from :to to :payload payload}
                 sim (-> sim
+                        (assoc-in [:link-ready-at link] transmission-end)
                         (assoc-in [:link-next-at link] at)
                         (enqueue-network event))
                 [sim duplicate?] (duplicate-message? sim)]
@@ -687,6 +731,14 @@
   "Notional bytes attempted by each sender."
   [sim]
   (:bytes-sent sim))
+
+(defn link-bytes
+  "Notional bytes charged to each reachable directed link.
+
+  Includes modeled loss and burst rejection after reachability, but excludes
+  sends rejected because the destination is down or partitioned."
+  [sim]
+  (:link-bytes sim))
 
 (defn messages-to
   "Traced messages delivered to `id`."

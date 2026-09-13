@@ -6,7 +6,20 @@ same membership, dissemination, repair, and content handlers as production.
 
 The default transport model matches the Kabel WebSocket binding: directed links
 are FIFO. Tests may set `:link-fifo? false` to exercise a future unordered
-binding. Seeded latency, loss, and duplication remain reproducible.
+binding. Seeded latency, loss, and duplication remain reproducible. A
+`:links` map can override either direction independently:
+
+```clojure
+{:links {[:controller :home-pi]
+         {:latency-min 40 :latency-max 60
+          :throughput-bytes-per-ms 12500}}}
+```
+
+Per-link throughput serializes frames and exposes completion delay without
+inventing packet loss. The existing global `:bandwidth-bytes-per-ms` remains a
+deliberate per-sender burst ceiling which drops excess frames. `link-bytes`
+reports notional traffic charged to each reachable directed pair, including
+modeled loss and burst rejection but excluding down or partitioned links.
 
 ## Fault schedules
 
@@ -32,11 +45,19 @@ duplication; shrinking a numeric seed would produce an unrelated execution.
 - `forget` removes the peer and its durable storage;
 - partitions and directed link failures model reachability;
 - `:max-inflight` and `:bandwidth-bytes-per-ms` expose queue and burst failures;
+- directed link profiles expose asymmetric latency, shaped throughput and
+  traffic by path;
 - deterministic structural byte estimates agree between JVM and JavaScript;
 - a pinned whole-simulation fingerprint detects platform drift.
 
 The 10/100/1,000-peer scale matrix disables traces and asserts delivery,
 traffic amplification, and peak in-flight bounds.
+
+The blob topology workload additionally separates W-quorum time from all-N
+convergence under asymmetric site links. Its concurrent-object scenario
+computes p50/p95/p99 for both boundaries, accounts directed-link bytes, and
+checks queue maxima. These are deterministic regression measurements, not
+production SLA claims.
 
 Portable content-provider routing has a smaller pure resource model alongside
 the network simulator. It drives thousands of hostile CID/Authority hints into

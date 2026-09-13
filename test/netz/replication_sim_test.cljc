@@ -138,27 +138,30 @@
 
     {:state state :actions []}))
 
-(defn- cluster []
-  (reduce (fn [s id]
-            (sim/add-node s id replica-handler {:installed {} :failures []}))
-          (sim/add-node
-           (sim/make-sim {:seed 22 :latency-min 1 :latency-max 4
-                          :persist-latency-ms 3})
-           "controller" controller-handler
-           {:controller (replication/make-state layout policy)
-            :records []}
-           {:restore
-            (fn [initial durable]
-              (reduce-kv
-               (fn [state key entry]
-                 (if (and (vector? key) (= :replication/intent (first key)))
-                   (-> state
-                       (assoc-in [:controller :objects (second key)]
-                                 (assoc entry :intent-stored? true))
-                       (update-in [:controller :stats :intents-stored] inc))
-                   state))
-               initial durable))})
-          (map :id (:members layout))))
+(defn- cluster
+  ([] (cluster {}))
+  ([opts]
+   (reduce (fn [s id]
+             (sim/add-node s id replica-handler {:installed {} :failures []}))
+           (sim/add-node
+            (sim/make-sim (merge {:seed 22 :latency-min 1 :latency-max 4
+                                  :persist-latency-ms 3}
+                                 opts))
+            "controller" controller-handler
+            {:controller (replication/make-state layout policy)
+             :records []}
+            {:restore
+             (fn [initial durable]
+               (reduce-kv
+                (fn [state key entry]
+                  (if (and (vector? key) (= :replication/intent (first key)))
+                    (-> state
+                        (assoc-in [:controller :objects (second key)]
+                                  (assoc entry :intent-stored? true))
+                        (update-in [:controller :stats :intents-stored] inc))
+                    state))
+                initial durable))})
+           (map :id (:members layout)))))
 
 (defn- controller-state [simulation]
   (get-in (sim/node-state simulation "controller") [:controller]))
@@ -172,11 +175,15 @@
 (defn- recording-controller [state event context]
   (let [{:keys [state actions]} (controller-handler state event context)
         records (filterv #(= :record (first %)) actions)]
-    {:state (update state :records into (map second records))
+    {:state (update state :records into
+                    (map #(conj (second %) (:now context)) records))
      :actions (filterv #(not= :record (first %)) actions)}))
 
-(defn- recording-cluster []
-  (assoc-in (cluster) [:nodes "controller" :handler] recording-controller))
+(defn- recording-cluster
+  ([] (recording-cluster {}))
+  ([opts]
+   (assoc-in (cluster opts) [:nodes "controller" :handler]
+             recording-controller)))
 
 (deftest three-private-devices-reach-quorum-and-repair-disk-loss
   (let [manifest {:object-id "encrypted-photo" :length 4096}
@@ -224,6 +231,82 @@
         (is (= manifest (get (sim/durable-state healed isolated)
                              [:blob "ledger"])))
         (is (= [:durable :complete] (mapv first (records healed))))))))
+
+(deftest cross-site-policy-makes-remote-durability-latency-visible
+  (let [links (into {}
+                    (mapcat (fn [[replica latency]]
+                              [[["controller" replica]
+                                {:latency-min latency :latency-max latency}]
+                               [[replica "controller"]
+                                {:latency-min latency :latency-max latency}]])
+                            [[alice-id 2] [bob-id 40] [carol-id 80]]))
+        manifest {:object-id "cross-site-ledger" :length 1024}
+        completed (-> (recording-cluster {:links links})
+                      (sim/send-message "client" "controller"
+                                        {:op :begin :manifest manifest})
+                      (sim/run-until 300))
+        by-status (into {} (map (juxt first #(nth % 2))) (records completed))]
+    ;; Intent persistence takes 3 ms. Alice lands first, but the owner/site
+    ;; minima require Bob's remote receipt before W=2 can complete.
+    (is (= 86 (:durable by-status)))
+    (is (= 166 (:complete by-status)))
+    (is (< (:durable by-status) (:complete by-status)))
+    (is (= 6 (count (sim/link-bytes completed))))))
+
+(defn- nearest-rank [values percentile]
+  (let [ordered (vec (sort values))
+        rank #?(:clj (long (Math/ceil (* percentile (count ordered))))
+                :cljs (long (js/Math.ceil (* percentile (count ordered)))))]
+    (nth ordered (dec (max 1 rank)))))
+
+(deftest shaped-cross-site-load-reports-tail-latency-and-traffic
+  (let [links (into {}
+                    (mapcat
+                     (fn [[replica latency throughput]]
+                       [[["controller" replica]
+                         {:latency-min latency :latency-max latency
+                          :throughput-bytes-per-ms throughput}]
+                        [[replica "controller"]
+                         {:latency-min latency :latency-max latency
+                          :throughput-bytes-per-ms throughput}]])
+                     [[alice-id 2 500] [bob-id 40 80] [carol-id 80 40]]))
+        object-count 50
+        loaded (reduce (fn [simulation index]
+                         (sim/send-message
+                          simulation "client" "controller"
+                          {:op :begin
+                           :manifest {:object-id (str "object-" index)
+                                      :length 4096}}))
+                       (recording-cluster {:links links :max-inflight 1000})
+                       (range object-count))
+        completed (sim/run-until loaded 10000)
+        completion-times (fn [status]
+                           (map #(nth % 2)
+                                (filter (comp #{status} first)
+                                        (records completed))))
+        durable (completion-times :durable)
+        full (completion-times :complete)
+        report {:durable {:p50 (nearest-rank durable 0.50)
+                          :p95 (nearest-rank durable 0.95)
+                          :p99 (nearest-rank durable 0.99)}
+                :complete {:p50 (nearest-rank full 0.50)
+                           :p95 (nearest-rank full 0.95)
+                           :p99 (nearest-rank full 0.99)}
+                :link-bytes (reduce + (vals (sim/link-bytes completed)))
+                :peak-inflight (:peak-inflight completed)}]
+    (is (= object-count (count durable) (count full)))
+    (is (<= (get-in report [:durable :p50])
+            (get-in report [:durable :p95])
+            (get-in report [:durable :p99])))
+    (is (<= (get-in report [:complete :p50])
+            (get-in report [:complete :p95])
+            (get-in report [:complete :p99])))
+    (is (< (get-in report [:durable :p99])
+           (get-in report [:complete :p99])))
+    (is (pos? (:link-bytes report)))
+    (is (<= (:peak-inflight report) 1000))
+    (is (zero? (get-in completed [:stats :dropped-overflow])))
+    (is (zero? (get-in completed [:stats :dropped-bandwidth])))))
 
 (deftest failed-disks-cannot-manufacture-a-quorum-receipt
   (let [failed (-> (recording-cluster)

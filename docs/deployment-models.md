@@ -72,9 +72,11 @@ current per-object bounded selection algorithm is a global placement planner.
 
 ## Validation campaign
 
-Extend deterministic simulation with sites/operators, directed link latency and
-bandwidth, partitions, intermittent devices, capacity and foreground load. Keep
-logical time and a fixed seed; verify invariants before optimizing performance.
+The deterministic simulator now models asymmetric directed-link latency,
+throughput shaping and traffic accounting in addition to partitions,
+intermittent devices and disk capacity. Keep logical time and a fixed seed;
+verify invariants before optimizing performance. Explicit foreground load and
+capacity-aware production placement remain later increments.
 
 * A fast single site cannot satisfy a two-site acknowledgement policy.
 * Loss of a site permits reads when a verified reachable copy exists; it does not
@@ -87,6 +89,13 @@ logical time and a fixed seed; verify invariants before optimizing performance.
 * Measure p50/p95/p99 completion latency, inter-site bytes, movement per layout,
   time below W/N, repair convergence and queue maxima. Compare against a simple
   non-adaptive baseline; simulated results are not production SLA evidence.
+
+The current topology scenario records separate quorum and all-N completion
+times for 50 concurrent objects, derives p50/p95/p99, accounts bytes per
+directed path and asserts the in-flight ceiling. It also pins a simple
+three-site example where local storage completes first but cannot satisfy the
+two-owner/two-site acknowledgement policy. Time below W/N, capacity-aware
+movement and a scheduling baseline still need dedicated workload models.
 
 Implementation order remains: qualify local durability, integrate authorized
 migration and retention, run the three-peer failure/replacement demo, then add

@@ -236,6 +236,24 @@ This extension is not part of the alpha interoperability claim yet.
       with a grace interval, globally bounds outstanding controller repair
       calls, backs off retries, and fences late results by the exact intent
       generation. Transfer-runtime session bounds remain independently active.
+- [x] Derive bounded connection demand from current persisted controller
+      intents so exact placement targets receive full-Authority dial priority.
+      Demand leases expire, shutdown releases them, and they do not bypass
+      capacity, backoff, address policy, authentication, or diversity rules.
+- [x] Persist surplus-holder migration through distinct planned, deleting and
+      retired generations. Eligibility requires all N current receipts,
+      placement/domain coverage, grace, exact transition binding and a fresh
+      protection set; crash replay deliberately requires idempotent deletion.
+- [x] Define a portable signed `blob/retirement` command and independent
+      Clojure/ClojureScript and Python verification. A retiring replica checks
+      its exact current layout/controller set, current retention, every one of
+      the N selected non-volatile receipts, expiry and domain coverage. The
+      result is advisory evidence; no unfenced physical-delete runtime is
+      enabled.
+- [x] Extend deterministic JVM/JavaScript simulation with asymmetric directed
+      latency, throughput shaping and per-link byte accounting. Three-site and
+      concurrent-object workloads distinguish W-quorum from all-N completion
+      and measure deterministic p50/p95/p99 plus queue bounds.
 - [ ] Implement Node/browser durable storage, backend erasure, and operational
       offline-peer reconciliation.
 - [ ] Implement and validate any later transparent Konserve wrapper semantics

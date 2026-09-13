@@ -151,6 +151,18 @@ may make incompatible protocol changes.
   its local commit fails and delivers thrown replication errors to callers.
   Privacy deletion fails closed unless a backend provides complete erasure.
   The remaining storage and network bindings stay gated in `RELEASE.md`.
+- Added placement-driven connectivity demand for current durable intents,
+  without allowing placement to bypass normal dial safety or resource limits.
+  Surplus migration now has replay-safe planned/deleting/retired checkpoint
+  generations, and a portable signed retirement command independently proves
+  the exact successor layout plus all N current replacement receipts in
+  Clojure/ClojureScript and Python. This evidence intentionally cannot invoke
+  physical deletion by itself.
+- Extended the deterministic simulator with asymmetric directed-link latency,
+  throughput shaping and per-link traffic accounting. Three-site and
+  50-object workloads now separate W-quorum latency from all-N convergence and
+  derive reproducible p50/p95/p99 and queue measurements without presenting
+  them as production SLA evidence.
 - Added a negotiated portable extension carrier with a deterministic closed
   text-key envelope, exact capability binding, fail-closed dispatch, shared
   JVM/JavaScript/Python fixture bytes, Python encode/decode APIs, and an
