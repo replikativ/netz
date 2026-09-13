@@ -16,6 +16,7 @@
             [netz.replication.blob :as blob]
             [netz.replication.controller-storage :as controller-storage]
             [netz.replication.directory-barrier :as directory-barrier]
+            [netz.replication.erasure-storage :as erasure-storage]
             [netz.replication.inventory :as inventory]
             [netz.replication.intent :as intent]
             [netz.replication.storage :as storage]
@@ -43,6 +44,7 @@
 (def ^:private max-marker-bytes (* 2 1024 1024))
 (def ^:private max-receipt-bytes (* 64 1024))
 (def ^:private max-controller-intent-bytes (* 5 1024 1024))
+(def ^:private max-erasure-record-bytes (* 16 1024 1024))
 
 (defn- byte-array? [value]
   (wire/byte-buffer? value))
@@ -100,6 +102,15 @@
 (defn- controller-intent-path [store cluster object-id]
   (let [hex (hex-address object-id)]
     (path (controller-intent-root store cluster)
+          (subs hex 0 2) (str (subs hex 2) ".cbor"))))
+
+(defn- erasure-root [store cluster]
+  (path (:root store) "erasure-campaigns" (cluster-hex cluster)))
+
+(defn- erasure-path [store cluster key]
+  (let [hex (identity/bytes->hex
+             (identity/sha256 (identity/utf8-bytes key)))]
+    (path (erasure-root store cluster)
           (subs hex 0 2) (str (subs hex 2) ".cbor"))))
 
 (defn- exists? [^Path value]
@@ -465,6 +476,37 @@
          (sort-by first)
          (mapv second))))
 
+(defn- load-erasure-records! [store cluster]
+  (let [root (erasure-root store cluster)]
+    (->> (regular-cbor-files
+          root (:max-erasure-records store)
+          :netz.replication/too-many-erasure-records
+          "Erasure campaign journal")
+         (map (fn [^Path target]
+                (let [record-hex
+                      (sharded-address!
+                       root target "erasure-campaign"
+                       :netz.replication/invalid-erasure-path)
+                      record (erasure-storage/wire->record
+                              (wire/decode
+                               (read-bounded target max-erasure-record-bytes)))]
+                  (when-not (and (map? record)
+                                 (= record-hex
+                                    (identity/bytes->hex
+                                     (identity/sha256
+                                      (identity/utf8-bytes (:key record))))))
+                    (throw (ex-info "Invalid durable erasure record"
+                                    {:type :netz.replication/invalid-erasure-record
+                                     :path (str target)})))
+                  [(:key record) record])))
+         (reduce (fn [result [key record]]
+                   (when (contains? result key)
+                     (throw (ex-info "Duplicate durable erasure record"
+                                     {:type :netz.replication/invalid-erasure-record
+                                      :key key})))
+                   (assoc result key record))
+                 (sorted-map)))))
+
 (defn- manifest-address! [^Path root ^Path target]
   (sharded-address! root target "installed-manifest"
                     :netz.replication/invalid-manifest-path))
@@ -514,7 +556,8 @@
       (catch Throwable cause cause))))
 
 (defrecord FileBlobStore [root persistence fsync? clock max-receipts
-                          max-inventory-records max-controller-intents lock]
+                          max-inventory-records max-controller-intents
+                          max-erasure-records lock]
   storage/PBlobTransferStore
 
   (-load-staging [store _session manifest-id manifest]
@@ -563,6 +606,25 @@
                        (wire/encode-canonical record))
         :ok)))
 
+  erasure-storage/PBlobErasureStore
+
+  (-load-erasure-records [store cluster]
+    (run-io #(locking lock (load-erasure-records! store cluster))))
+
+  (-persist-erasure-record! [store cluster key record]
+    (run-io
+     #(locking lock
+        (when-not (and (map? record) (= key (:key record))
+                       (same-bytes? cluster
+                                    (get-in record [:statement "cluster"])))
+          (throw (ex-info "Invalid durable erasure record"
+                          {:type :netz.replication/invalid-erasure-record})))
+        (atomic-write! store
+                       (erasure-path store cluster key)
+                       (wire/encode-canonical
+                        (erasure-storage/record->wire record)))
+        :ok)))
+
   inventory/PBlobInventoryStore
 
   (-inventory-page [store cursor limit]
@@ -595,10 +657,13 @@
   - `:max-inventory-records` bounds local manifest scanning (default
     1,000,000); returned pages remain bounded to 1,024 addresses;
   - `:max-controller-intents` bounds the cluster-scoped durable controller
-    outbox scan (default 100,000).
+    outbox scan (default 100,000);
+  - `:max-erasure-records` bounds controller erasure campaigns (default
+    100,000).
 
   Fsync mode forces every staged piece and each atomic install, receipt, or
-  controller-intent record plus its containing directory. An unsupported
+  controller-intent or erasure-campaign record plus its containing directory.
+  An unsupported
   atomic move fails rather than silently weakening the advertised persistence
   profile."
   ([root] (new-file-store root {}))
@@ -612,7 +677,8 @@
          clock (or (:clock opts) #(System/currentTimeMillis))
          max-receipts (or (:max-receipts opts) 100000)
          max-inventory-records (or (:max-inventory-records opts) 1000000)
-         max-controller-intents (or (:max-controller-intents opts) 100000)]
+         max-controller-intents (or (:max-controller-intents opts) 100000)
+         max-erasure-records (or (:max-erasure-records opts) 100000)]
      (when-not (and (contains? file-persistence-profiles persistence)
                     (ifn? clock)
                     (int? max-receipts)
@@ -620,7 +686,9 @@
                     (int? max-inventory-records)
                     (pos? max-inventory-records)
                     (int? max-controller-intents)
-                    (pos? max-controller-intents))
+                    (pos? max-controller-intents)
+                    (int? max-erasure-records)
+                    (pos? max-erasure-records))
        (throw (ex-info "Invalid file blob-store options"
                        {:type :netz.replication/invalid-file-store-options})))
      (let [barrier (when (= persistence "netz/store/fsync/1")
@@ -632,5 +700,6 @@
        (assoc (->FileBlobStore root persistence
                                (= persistence "netz/store/fsync/1")
                                clock max-receipts max-inventory-records
-                               max-controller-intents (Object.))
+                               max-controller-intents max-erasure-records
+                               (Object.))
               :directory-barrier barrier)))))

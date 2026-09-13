@@ -16,6 +16,7 @@
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
             [netz.replication.controller-storage :as controller-storage]
+            [netz.replication.erasure-storage :as erasure-storage]
             [netz.replication.inventory :as inventory]
             [netz.replication.intent :as intent]
             [netz.replication.layout-storage :as layout-storage]
@@ -99,6 +100,12 @@
 (defn- controller-intent-key [store cluster object-id]
   [(:prefix store) ::controller-intent
    (cluster-hex cluster) (address-hex object-id)])
+
+(defn- erasure-key [store cluster statement]
+  [(:prefix store) ::erasure
+   (cluster-hex cluster)
+   (cluster-hex (get statement "privacy_domain"))
+   (address-hex (get statement "object"))])
 
 (defn- immutable-assoc! [store key value]
   (k/assoc (:store store) key value {:immutable? true} {:sync? false}))
@@ -506,10 +513,57 @@
            (recur (next remaining) (conj result record)))
          result)))))
 
+(defn- erasure-entry? [store cluster-hex-value entry]
+  (let [key (:key entry)]
+    (and (vector? key) (= 5 (count key))
+         (= (:prefix store) (nth key 0))
+         (= ::erasure (nth key 1))
+         (= cluster-hex-value (nth key 2))
+         (string? (nth key 3))
+         (re-matches #"[0-9a-f]{2,128}" (nth key 3))
+         (even? (count (nth key 3)))
+         (string? (nth key 4))
+         (re-matches #"[0-9a-f]{64}" (nth key 4)))))
+
+(defn- load-erasure-records! [store cluster]
+  (go-try-
+   (let [cluster-hex-value (cluster-hex cluster)
+         entries (<?- (k/keys (:store store) {:sync? false}))
+         keys (->> entries
+                   (filter #(erasure-entry? store cluster-hex-value %))
+                   (map :key) sort vec)]
+     (when (> (count keys) (:max-erasure-records store))
+       (throw (ex-info "Erasure journal exceeds its configured bound"
+                       {:type :netz.replication/too-many-erasure-records
+                        :limit (:max-erasure-records store)})))
+     (loop [remaining (seq keys) result (sorted-map)]
+       (if-let [storage-key (first remaining)]
+         (let [record (erasure-storage/wire->record
+                       (<?- (k/get (:store store) storage-key nil
+                                   {:sync? false})))]
+           (when-not (and (map? record)
+                          (= (nth storage-key 3)
+                             (identity/bytes->hex
+                              (get-in record [:statement "privacy_domain"])))
+                          (= (nth storage-key 4)
+                             (identity/bytes->hex
+                              (get-in record [:statement "object"])))
+                          (same-bytes? cluster
+                                       (get-in record [:statement "cluster"])))
+             (throw (ex-info "Invalid durable erasure record"
+                             {:type :netz.replication/invalid-erasure-record
+                              :key storage-key})))
+           (when (contains? result (:key record))
+             (throw (ex-info "Duplicate durable erasure record"
+                             {:type :netz.replication/invalid-erasure-record
+                              :key (:key record)})))
+           (recur (next remaining) (assoc result (:key record) record)))
+         result)))))
+
 (defrecord KonserveBlobStore [store prefix persistence clock max-receipts
                               max-lifecycle-records max-layout-records
                               max-inventory-records max-controller-intents
-                              delete-object!]
+                              max-erasure-records delete-object!]
   storage/PBlobTransferStore
 
   (-load-staging [this _session manifest-id manifest]
@@ -624,6 +678,29 @@
        :ok
        (catch #?(:clj Throwable :cljs js/Error) cause cause))))
 
+  erasure-storage/PBlobErasureStore
+
+  (-load-erasure-records [this cluster]
+    (go-try-
+     (try
+       (<?- (load-erasure-records! this cluster))
+       (catch #?(:clj Throwable :cljs js/Error) cause cause))))
+
+  (-persist-erasure-record! [this cluster key record]
+    (go-try-
+     (try
+       (when-not (and (map? record) (= key (:key record))
+                      (same-bytes? cluster
+                                   (get-in record [:statement "cluster"])))
+         (throw (ex-info "Invalid durable erasure record"
+                         {:type :netz.replication/invalid-erasure-record})))
+       (<?- (k/assoc store
+                     (erasure-key this cluster (:statement record))
+                     (erasure-storage/record->wire record)
+                     nil {:sync? false}))
+       :ok
+       (catch #?(:clj Throwable :cljs js/Error) cause cause))))
+
   inventory/PBlobInventoryStore
 
   (-inventory-page [this cursor limit]
@@ -663,6 +740,8 @@
   implementation's local marker scan (default 1,000,000); returned pages stay
   bounded to 1,024 addresses. `:max-controller-intents` bounds restoration of
   the controller's portable durable outbox (default 100,000).
+  `:max-erasure-records` independently bounds controller deletion campaigns
+  (default 100,000).
 
   Privacy deletion is intentionally fail-closed. Supply `:delete-object!` as a
   function from `{key statement persistence}` to a result channel only when it
@@ -672,7 +751,8 @@
   issued."
   [store {:keys [prefix persistence clock max-receipts
                  max-lifecycle-records max-layout-records
-                 max-inventory-records max-controller-intents delete-object!]
+                 max-inventory-records max-controller-intents
+                 max-erasure-records delete-object!]
           :or {prefix :netz.blob
                clock #?(:clj #(System/currentTimeMillis)
                         :cljs #(.now js/Date))
@@ -680,7 +760,8 @@
                max-lifecycle-records 100000
                max-layout-records 256
                max-inventory-records 1000000
-               max-controller-intents 100000}}]
+               max-controller-intents 100000
+               max-erasure-records 100000}}]
   (when-not (and store
                  (some? prefix)
                  (contains? persistence-profiles persistence)
@@ -695,6 +776,8 @@
                  (pos? max-inventory-records)
                  (int? max-controller-intents)
                  (pos? max-controller-intents)
+                 (int? max-erasure-records)
+                 (pos? max-erasure-records)
                  (or (nil? delete-object!) (ifn? delete-object!)))
     (throw (ex-info "Invalid Konserve blob-store options"
                     {:type :netz.replication/invalid-konserve-store-options
@@ -703,8 +786,9 @@
                      :max-lifecycle-records max-lifecycle-records
                      :max-layout-records max-layout-records
                      :max-inventory-records max-inventory-records
-                     :max-controller-intents max-controller-intents})))
+                     :max-controller-intents max-controller-intents
+                     :max-erasure-records max-erasure-records})))
   (->KonserveBlobStore store prefix persistence clock max-receipts
                        max-lifecycle-records max-layout-records
                        max-inventory-records max-controller-intents
-                       delete-object!))
+                       max-erasure-records delete-object!))

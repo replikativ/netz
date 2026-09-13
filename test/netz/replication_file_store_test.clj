@@ -7,6 +7,7 @@
             [netz.replication.blob :as blob]
             [netz.replication.controller-storage :as controller-storage]
             [netz.replication.directory-barrier :as directory-barrier]
+            [netz.replication.erasure-storage :as erasure-storage]
             [netz.replication-test-store :as file-store]
             [netz.replication.inventory :as inventory]
             [netz.replication.intent :as intent]
@@ -98,6 +99,38 @@
   (await (storage/-stage-piece!
           store session (:manifest-id split) (:manifest split)
           (:index piece) (:id piece) (:data piece))))
+
+(deftest erasure-campaigns-cross-the-file-durability-boundary
+  (with-store-root [root (temporary-directory)]
+    (let [store (file-store/new-file-store root)
+          cluster (identity/hex->bytes (apply str (repeat 16 "10")))
+          privacy-domain (identity/hex->bytes (apply str (repeat 16 "20")))
+          other-domain (identity/hex->bytes (apply str (repeat 16 "21")))
+          object-id (:object-id split)
+          key (str (identity/bytes->hex cluster) "/scope/"
+                   (identity/bytes->hex object-id))
+          record {:key key
+                  :statement {"cluster" cluster
+                              "privacy_domain" privacy-domain
+                              "object" object-id}
+                  :holders [] :receipts {}}
+          other-key (str (identity/bytes->hex cluster) "/other/"
+                         (identity/bytes->hex object-id))
+          other-record (assoc record :key other-key
+                              :statement {"cluster" cluster
+                                          "privacy_domain" other-domain
+                                          "object" object-id})]
+      (is (= :ok (await (erasure-storage/-persist-erasure-record!
+                         store cluster key record))))
+      (is (= :ok (await (erasure-storage/-persist-erasure-record!
+                         store cluster other-key other-record))))
+      (let [restored (await (erasure-storage/-load-erasure-records
+                             (file-store/new-file-store root) cluster))]
+        (is (= #{key other-key} (set (keys restored))))
+        (is (identity/bufs=
+             (wire/encode-canonical (erasure-storage/record->wire record))
+             (wire/encode-canonical
+              (erasure-storage/record->wire (get restored key)))))))))
 
 (defn install! [store persistence]
   (await (storage/-install-object!
