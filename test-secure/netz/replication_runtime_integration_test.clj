@@ -18,7 +18,6 @@
             [netz.replication.inventory :as inventory]
             [netz.replication.layout :as layout]
             [netz.replication.lifecycle-runtime :as lifecycle-runtime]
-            [netz.replication.lifecycle-storage :as lifecycle-storage]
             [netz.replication.read-repair :as read-repair]
             [netz.replication.runtime :as replication-runtime]
             [netz.replication.storage :as storage]
@@ -134,6 +133,11 @@
           store session (:manifest-id split) (:manifest split) {}
           "netz/store/fsync/1")))
 
+(defn- piece-file-path [^Path root piece-id]
+  (let [hex (identity/bytes->hex piece-id)]
+    (.resolve (.resolve (.resolve root "pieces") (subs hex 0 2))
+              (str (subs hex 2) ".piece"))))
+
 (defn- signed-offer [identity replica session split]
   (let [authority (identity/authority-id-bytes (:genesis identity))
         retention
@@ -158,18 +162,6 @@
      "replica" replica
      "retention" (await (replication-wire/sign-statement identity retention))
      "manifest" (:manifest split)}))
-
-(defrecord MemoryLifecycleStore [records deletes]
-  lifecycle-storage/PBlobLifecycleStore
-  (-load-lifecycle-records [_] (storage/chan-of @records))
-  (-persist-lifecycle! [_ key value]
-    (when (= :blob/lifecycle (first key))
-      (swap! records assoc (second key) value))
-    (storage/chan-of :ok))
-  (-delete-object! [_ key _statement persistence]
-    (swap! deletes conj key)
-    (storage/chan-of {:result :ok :persistence persistence
-                      :deleted-at 2100})))
 
 (deftest placement-demand-selects-the-authenticated-target
   (with-store-roots [source-root (temporary-directory)
@@ -744,11 +736,12 @@
           replica-id (identity/bytes->hex replica-authority)
           cluster (identity/seq->bytes (range 16))
           privacy-domain (identity/seq->bytes (range 16 32))
-          manifest (identity/seq->bytes (repeat 32 3))
-          object (identity/seq->bytes (repeat 32 4))
+          split (blob/split (identity/seq->bytes (range 40))
+                            {:piece-size 8})
           deletion {"v" 1 "type" "blob/deletion" "cluster" cluster
                     "privacy_domain" privacy-domain "revision" 2
-                    "manifest" manifest "object" object "layout_epoch" 1
+                    "manifest" (:manifest-id split)
+                    "object" (:object-id split) "layout_epoch" 1
                     "issued_at" 2000 "delete_after" 2000
                     "signer" controller-authority}
           deletion-envelope
@@ -757,10 +750,9 @@
                                                       {:clock (constantly 2100)})
           replica-store (file-store/new-file-store replica-root
                                                    {:clock (constantly 2100)})
-          lifecycle-store (->MemoryLifecycleStore (atom {}) (atom []))
           lifecycle
           (lifecycle-runtime/start!
-           {:identity replica-identity :store lifecycle-store
+           {:identity replica-identity :store replica-store
             :controllers [controller-authority] :now-fn (constantly 2100)})
           replica-runtime
           (replication-runtime/start!
@@ -788,6 +780,11 @@
                   replica-runtime))
       (reset! coordinator-ref coordinator)
       (try
+        (install-source! replica-store
+                         (identity/seq->bytes (range 32 48)) split)
+        (is (= :healthy
+               (:status (await (inventory/scrub-object!
+                                replica-store (:manifest-id split))))))
         (is (true? (await (lifecycle-runtime/ready lifecycle))))
         (is (true? (await (erasure-runtime/ready coordinator))))
         (is (wait-for 10000
@@ -812,7 +809,13 @@
              #(= :complete
                  (:status (first (erasure/statuses
                                   (erasure-runtime/state coordinator)))))))
-        (is (= 1 (count @(:deletes lifecycle-store))))
+        (is (= :missing
+               (:status (await (inventory/scrub-object!
+                                replica-store (:manifest-id split))))))
+        (doseq [piece (:pieces split)]
+          (is (not (Files/exists
+                    (piece-file-path replica-root (:id piece))
+                    (make-array java.nio.file.LinkOption 0)))))
         (is (= 1 (:deletions-accepted
                   (replication-runtime/stats replica-runtime))))
         (is (= 1 (:deletion-receipts

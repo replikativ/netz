@@ -622,9 +622,13 @@ cooperating peers, but cannot compel an offline or adversarial independent
 machine. Such peers remain visible in the campaign's `:pending` collection.
 
 The file and Konserve controller stores persist campaigns through
-`PBlobErasureStore`. Delivery itself remains an injected targeted transport
-callback: a deployment may carry the signed deletion over a reconciled Netz
-control stream, and may use pub/sub only as an additional wake-up hint.
+`PBlobErasureStore`. Delivery remains an injected targeted transport callback;
+the production binding supplies authenticated portable deletion and receipt
+dispatchers that require one unambiguous capability-negotiated connection for
+the full Authority. A real Kabel/Noise test deletes an installed fsynced file
+object and completes the controller campaign only after all piece files have
+gone and the signed receipt has returned. Pub/sub remains only an additional
+wake-up hint, never deletion evidence.
 
 ### Application responsibility
 
