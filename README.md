@@ -133,6 +133,8 @@ clojure -M:blob-demo
   reconnecting dissemination, and durable-blob APIs
 - [Release readiness](RELEASE.md), [security policy](SECURITY.md), and
   [changelog](CHANGELOG.md)
+- [Maintainer release procedure](docs/releasing.md) — synchronized JVM/Python
+  versions and the explicitly triggered publication pipeline
 
 ## License
 
