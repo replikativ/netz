@@ -2,7 +2,7 @@
 
 Netz publishes two distributions from the same commit:
 
-- `io.replikativ/netz` on Clojars;
+- `org.replikativ/netz` on Clojars;
 - `netz-protocol` on PyPI.
 
 The JVM and Python versions are intentionally written using their ecosystems'

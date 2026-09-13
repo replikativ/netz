@@ -15,7 +15,7 @@ clojure -T:build install
 Then add the following coordinate to a Clojure project:
 
 ```clojure
-io.replikativ/netz {:mvn/version "0.1.0-alpha.1"}
+org.replikativ/netz {:mvn/version "0.1.0-alpha.1"}
 ```
 
 The artifact contains the shared JVM/ClojureScript sources. JavaScript builds

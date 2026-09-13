@@ -1,6 +1,6 @@
 # Release readiness
 
-Target: `io.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
+Target: `org.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
 
 ## Completed in the alpha hardening pass
 

@@ -4,7 +4,7 @@
             [clojure.tools.build.api :as b]
             [deps-deploy.deps-deploy :as dd]))
 
-(def lib 'io.replikativ/netz)
+(def lib 'org.replikativ/netz)
 (def version "0.1.0-alpha.1")
 (def class-dir "target/classes")
 (def basis (delay (b/create-basis {:project "deps.edn"})))
@@ -62,12 +62,12 @@
     (require-text! "CHANGELOG.md" (str "## " version " —"))
     (with-open [artifact (java.util.jar.JarFile. (io/file (jar-file)))]
       (doseq [entry ["META-INF/LICENSE"
-                     "META-INF/maven/io.replikativ/netz/pom.xml"
+                     "META-INF/maven/org.replikativ/netz/pom.xml"
                      "netz/core.cljc"
                      "netz/wire.cljc"]]
         (require-entry! artifact entry))
       (let [pom-entry (.getJarEntry artifact
-                                    "META-INF/maven/io.replikativ/netz/pom.xml")
+                                    "META-INF/maven/org.replikativ/netz/pom.xml")
             pom (slurp (.getInputStream artifact pom-entry))]
         (when-not (and (str/includes? pom (str "<version>" version "</version>"))
                        (str/includes? pom "Apache License, Version 2.0"))
