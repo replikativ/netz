@@ -88,7 +88,10 @@
                 result))
             policy {:replicas (get retention "replicas")
                     :write-acks (get retention "write_acks")
-                    :minimum-domains (get retention "minimum_domains")}
+                    :placement-minimum-domains
+                    (get retention "placement_minimum_domains")
+                    :ack-minimum-domains
+                    (get retention "ack_minimum_domains")}
             selected (placement/place (layout/placement-layout current)
                                       policy (get command "object"))
             targets (set (map :id selected))
@@ -128,7 +131,8 @@
                                           accepted-persistence now %)
                       receipts)
               (placement/satisfies-domains? selected
-                                            (get retention "minimum_domains")))
+                                            (get retention
+                                                 "placement_minimum_domains")))
           (throw (ex-info "Retirement evidence is not currently sufficient"
                           {:type ::ineligible})))
         {:statement command :retention retention

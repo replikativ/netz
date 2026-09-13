@@ -31,11 +31,11 @@ copy counts, and the copies remaining after any one selected site disappears.
 It deliberately does not model query execution or bulk-transfer time. The
 numbers are planning evidence, not an SLA or benchmark.
 
-## Policy gap exposed by the model
+## Policy distinction exercised by the model
 
-The current experimental placement profile has one `minimum-domains` map. It
-constrains both the selected `N` targets and the `W` receipts needed for
-confirmation. Those are related but different requirements. For example:
+The experimental placement profile keeps the selected `N` targets distinct
+from the `W` receipts needed for confirmation. Those are related but different
+requirements. For example:
 
 ```clojure
 {:replicas 3
@@ -45,12 +45,12 @@ confirmation. Those are related but different requirements. For example:
 ```
 
 This layout survives any one selected site disappearing while still allowing
-the writer to return after two independently placed receipts. It cannot be
-expressed by the current single map because the validator correctly refuses a
-domain minimum larger than `W`.
+the writer to return after two independently placed receipts. Deterministic
+placement additionally proves that at least one exactly-W subset of the chosen
+N targets can meet all acknowledgement minima.
 
-Before making locality part of the signed standard, split the hard target and
-acknowledgement constraints. Then evaluate three producer-side options:
+Before making locality part of the signed standard, evaluate three
+producer-side options:
 
 - restrict each database to a statically curated replica pool and retain
   ordinary rendezvous hashing;

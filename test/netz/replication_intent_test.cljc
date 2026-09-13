@@ -45,7 +45,8 @@
    "privacy_domain" privacy-domain "revision" 1
    "manifest" (:manifest-id split) "object" (:object-id split)
    "layout_epoch" 0 "replicas" 2 "write_acks" 2
-   "minimum_domains" {"owner" 2} "issued_at" 1000
+   "placement_minimum_domains" {"owner" 2}
+   "ack_minimum_domains" {"owner" 2} "issued_at" 1000
    "retain_until" 5000 "signer" controller})
 
 (defn fake-envelope [statement]
@@ -59,7 +60,8 @@
   (mapv :id
         (placement/place (layout/placement-layout layout-statement)
                          {:replicas 2 :write-acks 2
-                          :minimum-domains {"owner" 2}}
+                          :placement-minimum-domains {"owner" 2}
+                          :ack-minimum-domains {"owner" 2}}
                          (:object-id split))))
 (def attempts (zipmap targets [3 5]))
 

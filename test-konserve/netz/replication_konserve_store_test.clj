@@ -95,7 +95,8 @@
    "privacy_domain" (identity/hex->bytes (apply str (repeat 16 "20")))
    "revision" 1 "manifest" (:manifest-id split)
    "object" (:object-id split) "layout_epoch" 7
-   "replicas" 1 "write_acks" 1 "minimum_domains" {}
+   "replicas" 1 "write_acks" 1
+   "placement_minimum_domains" {} "ack_minimum_domains" {}
    "issued_at" 1000 "retain_until" 5000 "signer" authority})
 
 (def layout0

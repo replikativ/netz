@@ -164,15 +164,17 @@ The policy contains:
 {
   "replicas": N,
   "write_acks": W,
-  "minimum_domains": {<dimension>: <distinct values required>, ...}
+  "placement_minimum_domains": {<dimension>: <distinct values in N>, ...},
+  "ack_minimum_domains": {<dimension>: <distinct values in W>, ...}
 }
 ~~~
 
-Draft-00 permits `1 <= W <= N <= 5`. Each domain minimum MUST be no greater
-than `W`, so a configured write threshold has one unambiguous meaning. Missing
-domain declarations do not count as distinct values. The complete set of
-constraints MUST be satisfiable in `N` slots; an implementation MUST fail
-closed rather than silently weaken it.
+Draft-00 permits `1 <= W <= N <= 5`. Each placement domain minimum MUST be no
+greater than `N`; each acknowledgement domain minimum MUST be no greater than
+`W`. Missing domain declarations do not count as distinct values. The selected
+N-set MUST satisfy the placement minima and contain at least one exactly-W
+subset satisfying all acknowledgement minima. An implementation MUST fail
+closed rather than silently weaken either requirement or make W misleading.
 
 `owner` describes an administrative/party boundary and `site` a physical
 failure boundary. Three process IDs on one host are not three sites. A private
@@ -342,7 +344,8 @@ The initial controller statement is:
   "manifest": bytes32, "object": bytes32,
   "layout_epoch": uint,
   "replicas": N, "write_acks": W,
-  "minimum_domains": {text: positive_uint, ...},
+  "placement_minimum_domains": {text: positive_uint, ...},
+  "ack_minimum_domains": {text: positive_uint, ...},
   "issued_at": uint, "retain_until": uint,
   "signer": controller_authority_bytes32
 }

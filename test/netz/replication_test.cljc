@@ -12,7 +12,9 @@
    {:id (authority "cc") :domains {"party" "three" "region" "west"}}])
 
 (def layout {:placement "netz/blob-placement/2" :seed (apply str (repeat 64 "a")) :epoch 7 :members members})
-(def policy {:replicas 3 :write-acks 2 :minimum-domains {"party" 2}})
+(def policy {:replicas 3 :write-acks 2
+             :placement-minimum-domains {"party" 2}
+             :ack-minimum-domains {"party" 2}})
 
 (deftest main-placement-is-stable-and-requires-explicit-configuration
   (doseq [object (map #(str "object-" %) (range 200))]
@@ -73,7 +75,8 @@
                  (placement/place
                   fixture-layout
                   {:replicas 3 :write-acks 2
-                   :minimum-domains {"owner" 2 "site" 2}}
+                   :placement-minimum-domains {"owner" 2 "site" 2}
+                   :ack-minimum-domains {"owner" 2 "site" 2}}
                   object-id))))))
 
 (deftest disabled-members-are-not-placed
@@ -101,7 +104,8 @@
                                  ms)))
         selected (placement/place adjusted
                                   {:replicas 2 :write-acks 2
-                                   :minimum-domains {"party" 2}}
+                                   :placement-minimum-domains {"party" 2}
+                                   :ack-minimum-domains {"party" 2}}
                                   "constrained")]
     (is (= 2 (get (placement/domain-counts selected {"party" 2}) "party")))
     (is (not= #{first-id second-id} (set (map :id selected))))))
@@ -116,7 +120,8 @@
                         #"Invalid replica policy"
                         (placement/place layout
                                          {:replicas 3 :write-acks 1
-                                          :minimum-domains {"party" 2}}
+                                          :placement-minimum-domains {"party" 2}
+                                          :ack-minimum-domains {"party" 2}}
                                          "x")))
   (is (thrown-with-msg? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
                         #"cannot satisfy"
@@ -127,7 +132,8 @@
                                     {:id (authority "bb")
                                      :domains {"party" "one"}}]}
                          {:replicas 2 :write-acks 2
-                          :minimum-domains {"party" 2}}
+                          :placement-minimum-domains {"party" 2}
+                          :ack-minimum-domains {"party" 2}}
                          "x"))))
 
 (deftest receipts-follow-durable-storage-events
@@ -283,7 +289,8 @@
 
 (deftest placement-policy-is-bound-per-intent
   (let [two-copy-policy {:replicas 2 :write-acks 1
-                         :minimum-domains {"party" 1}}
+                         :placement-minimum-domains {"party" 1}
+                         :ack-minimum-domains {"party" 1}}
         {begun :state}
         (step (replication/make-state layout policy)
               {:type :replication/begin

@@ -51,7 +51,8 @@
                    "privacy_domain" (identity/seq->bytes (range 16 32))
                    "revision" 1 "manifest" (:manifest-id split) "object" (:object-id split)
                    "layout_epoch" 0 "replicas" 3 "write_acks" 2
-                   "minimum_domains" {"owner" 2} "issued_at" 1000
+                   "placement_minimum_domains" {"owner" 3}
+                   "ack_minimum_domains" {"owner" 2} "issued_at" 1000
                    "retain_until" 5000 "signer" authority}]
     {:signer signer :authority authority :cluster cluster :split split
      :initial initial :successor successor :retention retention}))

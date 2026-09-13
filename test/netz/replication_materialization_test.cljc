@@ -28,7 +28,8 @@
    "privacy_domain" (identity/seq->bytes (range 16 32))
    "revision" 1 "manifest" (:manifest-id split)
    "object" (:object-id split) "layout_epoch" 1
-   "replicas" 1 "write_acks" 1 "minimum_domains" {}
+   "replicas" 1 "write_acks" 1
+   "placement_minimum_domains" {} "ack_minimum_domains" {}
    "issued_at" 1000 "retain_until" 5000 "signer" authority})
 (def retention-envelope
   (replication-wire/envelope

@@ -72,10 +72,10 @@
     (keep by-id (:acks entry))))
 
 (defn- durable? [entry]
-  (let [{:keys [write-acks minimum-domains]} (:policy entry)]
+  (let [{:keys [write-acks ack-minimum-domains]} (:policy entry)]
     (and (>= (count (:acks entry)) write-acks)
          (placement/satisfies-domains? (ack-members entry)
-                                       minimum-domains))))
+                                       ack-minimum-domains))))
 
 (defn- complete? [entry]
   (= (set (:targets entry)) (:acks entry)))

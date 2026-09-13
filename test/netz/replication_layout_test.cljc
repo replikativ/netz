@@ -117,11 +117,13 @@
         retention {"type" "blob/retention" "cluster" cluster
                    "layout_epoch" 0 "object" object
                    "replicas" 2 "write_acks" 2
-                   "minimum_domains" {"owner" 2}}
+                   "placement_minimum_domains" {"owner" 2}
+                   "ack_minimum_domains" {"owner" 2}}
         placement (placement/place
                    (layout/placement-layout genesis-layout)
                    {:replicas 2 :write-acks 2
-                    :minimum-domains {"owner" 2}}
+                    :placement-minimum-domains {"owner" 2}
+                    :ack-minimum-domains {"owner" 2}}
                    object)
         selected (identity/hex->bytes (:id (first placement)))
         all (set (map #(identity/bytes->hex (get % "authority")) members))

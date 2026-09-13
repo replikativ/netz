@@ -106,11 +106,21 @@ class ReplicationPlacementTest(unittest.TestCase):
         self.assertNotIn("ff" * 32,
                          [member["id"] for member in rank(disabled, object_id)])
 
-    def test_policy_cannot_promise_more_domain_independence_than_w(self):
+    def test_placement_and_acknowledgement_domain_limits_are_independent(self):
         _, layout, _, object_id = self.fixture()
+        selected = place(
+            layout,
+            {"replicas": 3, "write_acks": 2,
+             "placement_minimum_domains": {"owner": 3},
+             "ack_minimum_domains": {"owner": 2}},
+            object_id,
+        )
+        self.assertEqual(3, len({member["domains"]["owner"]
+                                 for member in selected}))
         with self.assertRaises(ReplicationError):
             place(layout, {"replicas": 3, "write_acks": 1,
-                           "minimum_domains": {"owner": 2}}, object_id)
+                           "placement_minimum_domains": {"owner": 2},
+                           "ack_minimum_domains": {"owner": 2}}, object_id)
 
 
 class SignedLayoutTest(unittest.TestCase):
@@ -226,12 +236,14 @@ class SignedLayoutTest(unittest.TestCase):
             "object": object_id,
             "replicas": 2,
             "write_acks": 2,
-            "minimum_domains": {"owner": 2},
+            "placement_minimum_domains": {"owner": 2},
+            "ack_minimum_domains": {"owner": 2},
         }
         targets = place(
             placement_layout(genesis_layout),
             {"replicas": 2, "write_acks": 2,
-             "minimum_domains": {"owner": 2}}, object_id)
+             "placement_minimum_domains": {"owner": 2},
+             "ack_minimum_domains": {"owner": 2}}, object_id)
         selected = bytes.fromhex(targets[0]["id"])
         unselected = next(
             member["authority"] for member in genesis_layout["members"]
@@ -333,7 +345,8 @@ class SignedBlobProtocolTest(unittest.TestCase):
             "layout_epoch": 7,
             "replicas": 3,
             "write_acks": 2,
-            "minimum_domains": {"owner": 2, "site": 2},
+            "placement_minimum_domains": {"owner": 2, "site": 2},
+            "ack_minimum_domains": {"owner": 2, "site": 2},
             "issued_at": 1000,
             "retain_until": 2000,
             "signer": authority_id(identity_genesis),
@@ -458,7 +471,8 @@ class SignedRetirementCommandTest(unittest.TestCase):
             "privacy_domain": bytes(range(16, 32)), "revision": 2,
             "manifest": split["manifest_id"], "object": split["object_id"],
             "layout_epoch": 1, "replicas": 3, "write_acks": 2,
-            "minimum_domains": {"site": 2}, "issued_at": 1000,
+            "placement_minimum_domains": {"site": 2},
+            "ack_minimum_domains": {"site": 2}, "issued_at": 1000,
             "retain_until": 5000, "signer": controller_id,
         }
         retention_envelope = sign_statement(

@@ -110,7 +110,7 @@
                  :main-opts ["-m" "netz.datahike-locality-model"]}
 
   :replica-demo
-  {:extra-paths ["examples" "test-replica"]
+  {:extra-paths ["examples" "test-replica" "test-secure"]
    :extra-deps {org.replikativ/datahike {:mvn/version "0.8.1877"}
                 org.replikativ/yggdrasil {:mvn/version "0.3.43"}
                 org.replikativ/konserve-sync {:mvn/version "0.1.40"}}

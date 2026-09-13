@@ -49,7 +49,8 @@
    "privacy_domain" privacy-domain "revision" 1
    "manifest" (:manifest-id split) "object" (:object-id split)
    "layout_epoch" 0 "replicas" 1 "write_acks" 1
-   "minimum_domains" {"owner" 1} "issued_at" 1000
+   "placement_minimum_domains" {"owner" 1}
+   "ack_minimum_domains" {"owner" 1} "issued_at" 1000
    "retain_until" 5000 "signer" authority})
 
 (defn await [channel]
@@ -548,7 +549,8 @@
                            "previous" (layout/address initial-layout)
                            "members" (members-for [1 2 3]))
         initial-retention (assoc retention "replicas" 3 "write_acks" 2
-                                 "minimum_domains" {"owner" 2})
+                                 "placement_minimum_domains" {"owner" 2}
+                                 "ack_minimum_domains" {"owner" 2})
         next-retention (assoc initial-retention "revision" 2 "layout_epoch" 1)
         object-id (identity/bytes->hex (:object-id split))
         event-for

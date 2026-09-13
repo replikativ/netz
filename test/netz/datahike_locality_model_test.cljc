@@ -7,8 +7,9 @@
         (model/compare-plans model/example-scenario
                              "datahike/catalog/example")]
     (testing "hard producer policy survives one complete site loss at W"
-      (is (not (:placement-domains-satisfied? hash-only)))
+      (is (:placement-domains-satisfied? hash-only))
       (is (:placement-domains-satisfied? producer-planned))
+      (is (= 3 (count (:target-sites hash-only))))
       (is (= 3 (count (:target-sites producer-planned))))
       (is (:write-threshold-survives-one-site-loss? producer-planned)))
     (testing "static locality planning improves the configured cold-read mix"

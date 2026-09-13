@@ -74,7 +74,8 @@
                         (< now (:expires receipt)))))
                (:attempts state))
        (placement/satisfies-domains?
-        (:targets state) (get-in state [:binding :policy :minimum-domains]))))
+        (:targets state)
+        (get-in state [:binding :policy :placement-minimum-domains]))))
 
 (defn retirement-candidates
   "Advisory only, never delete authority. Requires current exact binding, no

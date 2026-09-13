@@ -44,7 +44,9 @@
    "privacy_domain" (identity/hex->bytes (apply str (repeat 16 "20")))
    "revision" 1 "manifest" (:manifest-id split)
    "object" (:object-id split) "layout_epoch" 7
-   "replicas" 3 "write_acks" 2 "minimum_domains" {"owner" 2}
+   "replicas" 3 "write_acks" 2
+   "placement_minimum_domains" {"owner" 2}
+   "ack_minimum_domains" {"owner" 2}
    "issued_at" 1000 "retain_until" 5000 "signer" controller})
 
 (defn await [channel]

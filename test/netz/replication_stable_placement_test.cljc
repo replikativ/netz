@@ -41,7 +41,9 @@
                                              (assoc m :domains {"site" "same"})
                                              m)) %))
         selected (placement/place constrained
-                                  (assoc policy :minimum-domains {"site" 2})
+                                  (assoc policy
+                                         :placement-minimum-domains {"site" 2}
+                                         :ack-minimum-domains {"site" 2})
                                   "domains")]
     (is (placement/satisfies-domains? selected {"site" 2}))
     (is (= (mapv #(apply str (repeat 64 %)) ["5" "6" "1"])
@@ -51,6 +53,31 @@
                       (:id (first members)))))
   (is (try (placement/rank (assoc layout :seed "bad-seed") "x") false
            (catch #?(:clj Exception :cljs :default) _ true))))
+
+(deftest placement-and-acknowledgement-diversity-are-independent
+  (let [ranked [{:id (apply str (repeat 64 "1"))
+                 :domains {"site" "a" "owner" "x"}}
+                {:id (apply str (repeat 64 "2"))
+                 :domains {"site" "b" "owner" "x"}}
+                {:id (apply str (repeat 64 "3"))
+                 :domains {"site" "c" "owner" "x"}}
+                {:id (apply str (repeat 64 "4"))
+                 :domains {"site" "c" "owner" "y"}}]
+        policy {:replicas 3 :write-acks 2
+                :placement-minimum-domains {"site" 3}
+                :ack-minimum-domains {"owner" 2}}
+        normalized (placement/validate-policy
+                    (assoc layout :members ranked) policy)
+        selected (placement/select-ranked ranked normalized)]
+    ;; The first three ranked peers span three sites, but no W=2 subset spans
+    ;; two owners. Selection must move to the first set satisfying both rules.
+    (is (= [(apply str (repeat 64 "1"))
+            (apply str (repeat 64 "2"))
+            (apply str (repeat 64 "4"))]
+           (mapv :id selected)))
+    (is (placement/satisfies-domains?
+         selected (:placement-minimum-domains normalized)))
+    (is (placement/ack-feasible? selected normalized))))
 
 (deftest portable-score-vector
   (is (= "93aee44dcdbfc81b052c2c17a3e396ccb76bfa2ff62b52b8ee0691269cf1ac65"

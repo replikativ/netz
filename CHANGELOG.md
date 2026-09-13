@@ -6,11 +6,20 @@ may make incompatible protocol changes.
 
 ## 0.1.0-alpha.1 — 2026-09-13
 
+- Split signed durable-blob policy into full-placement and acknowledgement
+  failure-domain minima. Deterministic placement now proves that its selected
+  `N` targets both satisfy placement diversity and contain an exactly `W`-sized
+  subset capable of satisfying acknowledgement diversity; ClojureScript and
+  Python share the changed closed schema and vectors. Added a multi-process
+  Datahike experiment which reaches `W=2` and `N=3` across three sites, kills a
+  replica, repairs into a signed successor layout and queries the reconstructed
+  snapshot after deleting the writer database. Its static EDN bootstrap carries
+  a bounded signed layout chain so fresh nodes do not trust an unverified epoch.
+
 - Added a developer-only Datahike locality model which keeps producer-planned
   durable replicas separate from consumer-populated caches. It compares current
-  hash placement with static regional planning and exposes the need for distinct
-  full-placement and write-acknowledgement failure-domain constraints before a
-  later placement profile standardizes locality.
+  hash placement with static regional planning using distinct full-placement
+  and write-acknowledgement failure-domain constraints.
 
 - Added a release-artifact verifier that keeps the Maven and Python versions,
   public documentation, generated POM, Apache-2.0 license and required jar

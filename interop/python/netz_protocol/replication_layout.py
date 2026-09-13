@@ -191,7 +191,9 @@ def retention_authorized(state: dict[str, Any], local_authority: bytes | str,
             {
                 "replicas": retention["replicas"],
                 "write_acks": retention["write_acks"],
-                "minimum_domains": retention["minimum_domains"],
+                "placement_minimum_domains":
+                    retention["placement_minimum_domains"],
+                "ack_minimum_domains": retention["ack_minimum_domains"],
             },
             retention["object"],
         )

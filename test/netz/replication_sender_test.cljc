@@ -34,7 +34,7 @@
    "layout_epoch" 7
    "replicas" 1
    "write_acks" 1
-   "minimum_domains" {}
+   "placement_minimum_domains" {} "ack_minimum_domains" {}
    "issued_at" 1000
    "retain_until" 5000
    "signer" authority})
@@ -221,7 +221,8 @@
 (deftest signed-receipt-crosses-persistence-before-quorum
   (let [layout {:placement "netz/blob-placement/2" :seed (apply str (repeat 64 "a")) :epoch 7
                 :members [{:id authority-hex :domains {"party" "remote"}}]}
-        policy {:replicas 1 :write-acks 1 :minimum-domains {}}
+        policy {:replicas 1 :write-acks 1
+                :placement-minimum-domains {} :ack-minimum-domains {}}
         manifest {:object-id (identity/bytes->hex (:object-id split))
                   :manifest-id (identity/bytes->hex (:manifest-id split))}
         controller-0 (replication/make-state layout policy)

@@ -28,7 +28,8 @@ STATEMENT_FIELDS = {
     "blob/retention": {
         "v", "type", "cluster", "privacy_domain", "revision", "manifest",
         "object", "layout_epoch", "replicas", "write_acks",
-        "minimum_domains", "issued_at", "retain_until", "signer",
+        "placement_minimum_domains", "ack_minimum_domains",
+        "issued_at", "retain_until", "signer",
     },
     "blob/lease": {
         "v", "type", "cluster", "privacy_domain", "revision", "manifest",
@@ -116,15 +117,20 @@ def validate_statement(statement: dict[str, Any]) -> dict[str, Any]:
     if kind == "blob/retention":
         replicas = statement["replicas"]
         write_acks = statement["write_acks"]
-        minima = statement["minimum_domains"]
+        placement_minima = statement["placement_minimum_domains"]
+        ack_minima = statement["ack_minimum_domains"]
         valid = (
             _positive_uint(statement["revision"])
             and _positive_uint(replicas) and replicas <= 5
             and _positive_uint(write_acks) and write_acks <= replicas
-            and isinstance(minima, dict)
-            and all(_text(key) for key in minima)
+            and isinstance(placement_minima, dict)
+            and all(_text(key) for key in placement_minima)
+            and all(_positive_uint(value) and value <= replicas
+                    for value in placement_minima.values())
+            and isinstance(ack_minima, dict)
+            and all(_text(key) for key in ack_minima)
             and all(_positive_uint(value) and value <= write_acks
-                    for value in minima.values())
+                    for value in ack_minima.values())
             and _uint(statement["issued_at"])
             and _uint(statement["retain_until"])
             and statement["issued_at"] <= statement["retain_until"]
