@@ -10,7 +10,7 @@
   A checkpoint is not permitted to define its own expected transition."
   [template record minimum-revision]
   (let [base (migration/checkpoint template)
-        dynamic #{:attempts :receipts :revision :halted?}
+        dynamic #{:attempts :receipts :retirements :revision :halted?}
         attempts (:attempts record)]
     (when-not
      (and (map? record) (= (set (keys base)) (set (keys record)))
@@ -26,6 +26,24 @@
                          (= #{:attempt :expires} (set (keys receipt)))
                          (= (get attempts replica) (:attempt receipt))
                          (uint? (:expires receipt)) (pos? (:expires receipt))))
-                  (:receipts record)))
+                  (:receipts record))
+          (map? (:retirements record))
+          (every? (fn [[replica retirement]]
+                    (and (contains? (:old-holders base) replica)
+                         (not (contains? attempts replica))
+                         (map? retirement)
+                         (contains? #{:planned :deleting :retired}
+                                    (:phase retirement))
+                         (uint? (:generation retirement))
+                         (<= (:generation retirement) (:revision record))
+                         (if (= :retired (:phase retirement))
+                           (and (= #{:phase :generation :deleted-at}
+                                   (set (keys retirement)))
+                                (uint? (:deleted-at retirement)))
+                           (= #{:phase :generation}
+                              (set (keys retirement))))))
+                  (:retirements record))
+          (= (count (:retirements record))
+             (count (set (map :generation (vals (:retirements record)))))))
       (throw (ex-info "Invalid migration checkpoint" {:type ::invalid})))
     record))

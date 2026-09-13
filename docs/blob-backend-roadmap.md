@@ -105,17 +105,26 @@ delivery). `checkpoint`/`restore` let the test harness model crash boundaries.
 The tests explore all six three-replica receipt orders, duplicates, each target's
 loss and re-acknowledgement, and crashes around each receipt's checkpoint write.
 
+The model now also persists each surplus holder through `:planned`, `:deleting`
+and `:retired` phases. Planning and arming are separate durable generations;
+only a persisted `:deleting` generation can produce deletion work, and that
+query repeats full N coverage, grace, binding and protection checks. Crash after
+physical deletion but before its result is durable deliberately reissues the
+same generation, so storage deletion must be idempotent. A halt prevents new
+work while still allowing an already-completed deletion fact to be journaled.
+
 The model itself is **not a disk-backed runtime or authenticated wire schema**.
 It assumes trusted, verified inputs and intact local checkpoint reads. Receipt
 authentication, binding layout addresses to actual signed layouts, controller
 authority refresh after restart, durable adapter IO, bounded counters, wire
 encoding, retention renewal, and serialized deletion are still activation gates.
-The only output concerning removal is an advisory set of retirement candidates;
-it cannot authorize a physical delete. Grace, protected holders, fresh binding,
-unexpired N-target coverage and completed persistence are checked when querying
-that set. Authority changes must invalidate outstanding advisory results; never
-cache them as delete capabilities. The caller must provide pins and active lease
-protections, and refresh current authority even when restoring an old checkpoint.
+Its retirement output remains local advisory work, not network authorization or
+a physical-delete implementation. Grace, protected holders, fresh binding,
+unexpired N-target coverage and completed persistence are checked again when
+querying armed work. Authority changes must invalidate outstanding results;
+never cache them as delete capabilities. The eventual runtime must serialize
+that final query with pin/lease mutation and idempotent deletion. The caller must
+refresh current authority even when restoring an old checkpoint.
 
 Use a pure state machine first, with a durable runtime interpreting its effects.
 Persist the authorized transition identity (exact old/new layout addresses and
