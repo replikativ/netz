@@ -66,7 +66,8 @@
      (:retention-envelope manifest)
      (:wire-manifest manifest)
      (:attempts entry)
-     (:intent-revision entry))))
+     (:intent-revision entry)
+     (:holders entry))))
 
 (defn- receipt-matches? [ctx event]
   (try
@@ -621,6 +622,18 @@
          (finally (swap! (:waiters ctx) dec)))))))
 
 (defn records [ctx] @(:records ctx))
+
+(defn known-holders
+  "Durably recorded Authorities that may hold `object-id`.
+
+  This history is persisted before the first offer and remains monotone across
+  retention and layout revisions. It is the conservative input to an erasure
+  campaign: a selected replica may be included even when no storage receipt
+  was returned. Returns nil for an unknown or not-yet-durable intent."
+  [ctx object-id]
+  (when-let [record (get @(:records ctx) object-id)]
+    (into #{} (map identity/bytes->hex) (get record "holders"))))
+
 (defn stats [ctx] @(:stats ctx))
 
 (defn stop! [ctx]
