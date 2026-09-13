@@ -136,6 +136,62 @@
       (is (m/dialable? state 0 :u2))
       (is (m/dialable? state 0 :u3)))))
 
+(deftest parallel-dials-respect-group-cap
+  (let [base (m/make-state :me
+                           [{:peer-id :a :addresses ["ws://a"] :group "same"}
+                            {:peer-id :b :addresses ["ws://b"] :group "same"}
+                            {:peer-id :c :addresses ["ws://c"] :group "same"}
+                            {:peer-id :d :addresses ["ws://d"] :group "other"}]
+                           {:max-per-group 2 :max-parallel 4})
+        tick #(m/handler % {:type :timer :payload :dial-tick} {:now 0})
+        {state :state actions :actions} (tick base)]
+    (is (= 3 (count (:dialing state))))
+    (is (= 3 (count (filter #(= :connect (first %)) actions))))
+    (is (= 2 (count (filter #{:a :b :c} (keys (:dialing state))))))
+    (is (contains? (:dialing state) :d))
+    (is (empty? (filter #(= :connect (first %)) (:actions (tick state)))))
+    (testing "existing pending dials reserve capacity across batches"
+      (let [pending (assoc base :dialing {:a 0 :b 0})]
+        (is (not (m/dialable? pending 0 :c)))
+        (is (m/dialable? pending 0 :d))))
+    (testing "a live connection overlapping a pending dial counts only once"
+      (is (m/dialable? (assoc base :connections {:a {:since 0}} :dialing {:a 0})
+                       0 :b)))))
+
+(deftest local-authority-bound-connection-demand
+  (let [a "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        authority (apply str (repeat 64 "a"))
+        base (m/make-state :me
+                           [{:peer-id a :authority-id authority :addresses ["ws://a"]}
+                            {:peer-id :ordinary :addresses ["ws://ordinary"]}]
+                           {:max-demand 1 :max-parallel 1})
+        demand {a authority}
+        requested (:state (m/handler base {:type :connection-demand :demand demand :until 1000} {:now 0}))]
+    (is (= a (first (second (m/candidates requested 0)))))
+    (is (= {a :ready} (m/connection-demand-status requested 0)))
+    (is (= {a :expired} (m/connection-demand-status requested 1000)))
+    (is (= base (:state (m/handler base {:type :connection-demand :demand demand :until 1}
+                                   {:now 2}))))
+    (is (= {a :capacity}
+           (m/connection-demand-status (assoc-in requested [:opts :max-connections] 0) 0)))
+    (is (= {a :backoff}
+           (m/connection-demand-status (assoc-in requested [:book a :backoff-until] 1) 0)))
+    (is (= {a :unknown-route}
+           (m/connection-demand-status (update requested :book dissoc a) 0)))
+    (is (= #{a} (set (keys (:dialing (:state (m/handler requested
+                                                        {:type :timer :payload :dial-tick}
+                                                        {:now 0})))))))
+    (is (= requested (m/set-connection-demand requested {:ordinary authority})))
+    (is (= requested (m/set-connection-demand requested (assoc demand :other authority))))
+    (is (empty? (:connection-demand (m/set-connection-demand requested {}))))
+    (is (not (m/demanded? (assoc-in requested [:book a :authority-id] nil) a)))
+    (is (not (m/dialable? (assoc-in requested [:book a :backoff-until] 1000) 0 a)))
+    (is (zero? (m/want-dials (assoc-in requested [:opts :max-connections] 0))))
+    (is (empty? (:connection-demand
+                 (:state (m/handler base {:type :message :from :ordinary
+                                          :payload {:type :connection-demand :demand demand}}
+                                    {:now 0})))))))
+
 (deftest addresses-are-required-to-dial
   (testing "knowing a peer is not the same as being able to reach it"
     ;; A peer learned by inbound connection has no address until it announces

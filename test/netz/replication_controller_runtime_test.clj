@@ -7,6 +7,7 @@
             [netz.replication.audit :as audit]
             [netz.replication.audit-runtime :as audit-runtime]
             [netz.replication.controller-runtime :as controller-runtime]
+            [netz.replication.connectivity-runtime :as connectivity-runtime]
             [netz.replication.controller-storage :as controller-storage]
             [netz.replication.intent :as intent]
             [netz.replication.layout :as layout]
@@ -128,6 +129,62 @@
       :persistence "netz/store/best-effort/1" :receipt receipt
       :manifest-id (identity/bytes->hex (:manifest-id split))})))
 
+(deftest connectivity-coordinator-refreshes-and-releases-current-targets
+  (let [store (memory-store)
+        state (atom (layout-state layout0))
+        controller (runtime store state (atom []) {})
+        overlay {:events (async/chan 4) :stopped? (atom false)
+                 :state (atom {:membership {:opts {:max-demand 32}}})}]
+    (try
+      (await (controller-runtime/ready controller))
+      (await (controller-runtime/begin! controller (sign layout0) (sign retention) (:manifest split)))
+      (let [coordinator (connectivity-runtime/start!
+                         {:overlay overlay :controllers [controller] :now-fn (constantly 1000)})]
+        (try
+          (let [event (await (:events overlay))]
+            (is (= :connection-demand (:type event)))
+            (is (= {(identity/authority-routing-id authority-hex) authority-hex} (:demand event)))
+            (is (= 6000 (:until event))))
+          (is (true? (await (connectivity-runtime/stop! coordinator))))
+          (is (= {} (:demand (await (:events overlay)))))
+          (finally (await (connectivity-runtime/stop! coordinator)))))
+      (testing "a full overlay queue neither blocks refresh nor shutdown"
+        (dotimes [_ 4] (is (async/offer! (:events overlay) :occupied)))
+        (let [coordinator (connectivity-runtime/start!
+                           {:overlay overlay :controllers [controller] :now-fn (constantly 1000)})]
+          (try
+            (is (wait-for 1000 #(pos? (:refused (connectivity-runtime/stats coordinator)))))
+            (is (true? (await (connectivity-runtime/stop! coordinator))))
+            (is (= 0 (:submitted (connectivity-runtime/stats coordinator))))
+            (is (= (repeat 4 :occupied) (repeatedly 4 #(async/poll! (:events overlay)))))
+            (is (nil? (async/poll! (:events overlay))))
+            (finally (await (connectivity-runtime/stop! coordinator))))))
+      (finally (controller-runtime/stop! controller) (async/close! (:events overlay))))))
+
+(deftest connection-targets-drop-ineligible-intents
+  (let [state (atom (layout-state layout0))
+        now (atom 1100)
+        controller (runtime (memory-store) state (atom []) {:now-fn #(deref now)})]
+    (try
+      (await (controller-runtime/ready controller))
+      (await (controller-runtime/begin! controller (sign layout0) (sign retention) (:manifest split)))
+      (is (= #{authority-hex} (controller-runtime/connection-targets controller)))
+      (reset! now (get retention "retain_until"))
+      (is (empty? (controller-runtime/connection-targets controller)))
+      (reset! now 1100)
+      (swap! state assoc :conflicts [{:epoch 0}])
+      (is (empty? (controller-runtime/connection-targets controller)))
+      (reset! state (layout-state layout0))
+      (let [successor (assoc layout0 "epoch" 1 "previous" (layout/address layout0)
+                             "issued_at" 1100)]
+        (reset! state (:state (layout/reconcile @state successor)))
+        (is (= 1 (get-in @state [:current :statement "epoch"])))
+        (is (empty? (controller-runtime/connection-targets controller))))
+      (reset! state (layout-state layout0))
+      (controller-runtime/stop! controller)
+      (is (empty? (controller-runtime/connection-targets controller)))
+      (finally (controller-runtime/stop! controller)))))
+
 (deftest active-revalidation-is-durable-fenced-and-awaitable
   (let [store (memory-store)
         state (atom (layout-state layout0))
@@ -136,9 +193,12 @@
         object-id (identity/bytes->hex (:object-id split))]
     (try
       (await (controller-runtime/ready controller))
+      (is (empty? (controller-runtime/connection-targets controller)))
       (await (controller-runtime/begin! controller (sign layout0) (sign retention) (:manifest split)))
+      (is (= #{authority-hex} (controller-runtime/connection-targets controller)))
       (controller-runtime/notify-stored! controller (stored-event 0))
       (is (= :confirmed (:status (await (controller-runtime/await-durable! controller object-id)))))
+      (is (empty? (controller-runtime/connection-targets controller)))
       (let [observation (first (audit/observations (controller-runtime/state controller)))
             gate (async/chan)]
         (reset! (:gate store) gate)

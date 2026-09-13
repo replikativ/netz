@@ -11,6 +11,7 @@
             [netz.replication.blob :as blob]
             [netz.replication.audit-runtime :as audit-runtime]
             [netz.replication.controller-runtime :as controller-runtime]
+            [netz.replication.connectivity-runtime :as connectivity-runtime]
             [netz.replication-test-store :as file-store]
             [netz.replication.inventory :as inventory]
             [netz.replication.layout :as layout]
@@ -105,8 +106,9 @@
                                    :addresses [url]
                                    :group "seed"}])
                       :overlay-opts
-                      {:membership {:require-authority? true
-                                    :dial-interval-ms 20}}}))]
+                      {:membership (merge {:require-authority? true
+                                           :dial-interval-ms 20}
+                                          (:membership server))}}))]
     (install! (:middleware node))
     {:id id :peer socket :node node}))
 
@@ -152,6 +154,84 @@
      "replica" replica
      "retention" (await (replication-wire/sign-statement identity retention))
      "manifest" (:manifest split)}))
+
+(deftest placement-demand-selects-the-authenticated-target
+  (with-store-roots [source-root (temporary-directory)
+                     unused-root (temporary-directory)]
+    (let [target-url (str "ws://localhost:" (swap! port-counter inc))
+          ordinary-url (str "ws://localhost:" (swap! port-counter inc))
+          capabilities (conj noise/default-capabilities
+                             replication-wire/capability
+                             overlay-runtime/extension-carrier-capability
+                             wire/profile-capability)
+          target-identity (<?? S (identity/generate-identity))
+          ordinary-identity (<?? S (identity/generate-identity))
+          client-identity (<?? S (identity/generate-identity))
+          target (assoc (start-server target-url target-identity capabilities)
+                        :identity target-identity)
+          ordinary (assoc (start-server ordinary-url ordinary-identity capabilities)
+                          :identity ordinary-identity)
+          target-authority (identity/authority-id-bytes (:genesis target-identity))
+          client-authority (identity/authority-id-bytes (:genesis client-identity))
+          cluster (identity/seq->bytes (range 16))
+          split (blob/split (identity/utf8-bytes "connection demand") {:piece-size 8})
+          statement {"v" 1 "type" "blob/layout" "cluster" cluster "epoch" 0
+                     "placement" "netz/blob-placement/2"
+                     "seed" (identity/seq->bytes (repeat 32 7))
+                     "previous" (identity/seq->bytes (repeat 32 0))
+                     "members" [{"authority" target-authority
+                                 "domains" {"site" "target"} "enabled" true}]
+                     "issued_at" 900 "signer" client-authority}
+          retention {"v" 1 "type" "blob/retention" "cluster" cluster
+                     "privacy_domain" (identity/seq->bytes (range 16 32))
+                     "revision" 1 "manifest" (:manifest-id split)
+                     "object" (:object-id split) "layout_epoch" 0
+                     "replicas" 1 "write_acks" 1 "minimum_domains" {"site" 1}
+                     "issued_at" 1000 "retain_until" 5000 "signer" client-authority}
+          layout-envelope (await (replication-wire/sign-statement client-identity statement))
+          retention-envelope (await (replication-wire/sign-statement client-identity retention))
+          current-layout (atom (:state (layout/reconcile
+                                        (layout/make-state cluster [client-authority]) statement)))
+          source (file-store/new-file-store source-root {:clock (constantly 1100)})
+          controller (controller-runtime/start!
+                      {:store source :cluster cluster :controllers [client-authority]
+                       :layout-state-fn #(deref current-layout)
+                       :now-fn (constantly 1100) :dispatch-offer! (constantly false)})]
+      (try
+        (is (true? (await (controller-runtime/ready controller))))
+        (is (= :ok (await (controller-runtime/begin!
+                           controller layout-envelope retention-envelope (:manifest split)))))
+        (let [seeds [{:peer-id (:id ordinary)
+                      :authority-id (identity/authority-id (:genesis ordinary-identity))
+                      :addresses [ordinary-url] :group "ordinary"}
+                     {:peer-id (:id target)
+                      :authority-id (identity/authority-id (:genesis target-identity))
+                      :addresses [target-url] :group "target"}]
+              client (assoc (start-client target-url client-identity
+                                          {:seeds seeds
+                                           :membership {:max-peers 1 :max-parallel 1
+                                                        :dial-interval-ms 1000}}
+                                          capabilities)
+                            :identity client-identity)
+              coordinator (connectivity-runtime/start!
+                           {:overlay (get-in client [:node :ctx])
+                            :controllers [controller]})]
+          (try
+            (is (wait-for 10000
+                          #(= #{(:id target)}
+                              (overlay-runtime/connections (:peer client))))
+                "the placement-selected Authority did not win the one outbound slot")
+            (is (not (contains? (overlay-runtime/connections (:peer client)) (:id ordinary))))
+            (is (= (identity/authority-id (:genesis target-identity))
+                   (:authority-id
+                    (overlay-runtime/connection-info (:peer client) (:id target)))))
+            (finally
+              (await (connectivity-runtime/stop! coordinator))
+              (stop-node! client))))
+        (finally
+          (controller-runtime/stop! controller)
+          (stop-node! ordinary)
+          (stop-node! target))))))
 
 (deftest durable-controller-drives-a-real-authenticated-transfer
   (with-store-roots [source-root (temporary-directory)

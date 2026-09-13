@@ -121,6 +121,8 @@ clojure -M:blob-demo
   [extension draft](spec/blob-replication-draft-00.md) — optional private replicas
 - [Blob backend roadmap](docs/blob-backend-roadmap.md) — storage guarantees,
   stable-placement prototype, migration safety, and remaining release gates
+- [Replica connectivity](docs/replica-connectivity.md) — bounded placement-target
+  dial priority, lifecycle, diagnostics, and guarantee boundaries
 - [Storage GC](docs/storage-gc.md) — Datahike/Yggdrasil reachability versus
   pool retention and surplus-replica retirement
 - [Storage consolidation](docs/storage-consolidation.md) — Konserve checkpoint

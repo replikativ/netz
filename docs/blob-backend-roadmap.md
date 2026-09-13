@@ -7,6 +7,8 @@ production distributed Konserve backend is complete.
 See [deployment models and topology](deployment-models.md) for cloud, independent
 party and personal-device use cases, and the separation between durable placement,
 latency-aware source selection and overlay connectivity.
+The implemented placement-target bridge and its limits are described in
+[replica connectivity](replica-connectivity.md).
 
 ## Contract and scope
 
