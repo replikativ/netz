@@ -572,6 +572,29 @@ Profile 1 should initially expose explicit deletion and deletion receipts while
 remaining conservative about automatic garbage collection. Backups, staging
 files, logs and repair queues are part of the erasure inventory.
 
+`netz.replication.erasure-runtime` is the controller-side convergence adapter.
+It durably records a signed `blob/deletion` together with the explicit set of
+every replica known to have held the object before attempting delivery. The set
+is monotone: replaying the same deletion with holders discovered from older
+storage receipts adds obligations and can never remove an unacknowledged peer.
+It retries targeted delivery and durably records verified `blob/deleted`
+receipts. A campaign reports `:complete` only when every recorded holder has a
+matching receipt; transport acceptance, failure detection, current layout
+membership and a storage write quorum are not erasure evidence.
+
+The application/controller must seed that holder set from both the original
+placement targets and every accepted `blob/stored` receipt, including replicas
+removed by later layouts. Open caches containing erasable data therefore need
+registered holder receipts or finite leases. A provider can guarantee local
+erasure on infrastructure it controls and can report verifiable compliance by
+cooperating peers, but cannot compel an offline or adversarial independent
+machine. Such peers remain visible in the campaign's `:pending` collection.
+
+The file and Konserve controller stores persist campaigns through
+`PBlobErasureStore`. Delivery itself remains an injected targeted transport
+callback: a deployment may carry the signed deletion over a reconciled Netz
+control stream, and may use pub/sub only as an additional wake-up hint.
+
 ### Application responsibility
 
 An opaque object store cannot discover which objects concern a data subject.

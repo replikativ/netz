@@ -7,6 +7,7 @@
             [netz.identity :as identity]
             [netz.replication.blob :as blob]
             [netz.replication.controller-storage :as controller-storage]
+            [netz.replication.erasure-storage :as erasure-storage]
             [netz.replication.inventory :as inventory]
             [netz.replication.intent :as intent]
             [netz.replication.konserve-store :as konserve-store]
@@ -247,6 +248,39 @@
                    store (get retention "cluster")
                    (identity/hex->bytes (apply str (repeat 32 "ff")))
                    retry-record)))))))
+
+(deftest erasure-campaigns-survive-konserve-wrapper-restart
+  (let [underlying (<!! (new-mem-store))
+        store (fresh-store underlying)
+        cluster (get retention "cluster")
+        privacy-domain (get retention "privacy_domain")
+        other-domain (identity/hex->bytes (apply str (repeat 16 "21")))
+        object-id (:object-id split)
+        key (str (identity/bytes->hex cluster) "/scope/"
+                 (identity/bytes->hex object-id))
+        record {:key key
+                :statement {"cluster" cluster
+                            "privacy_domain" privacy-domain
+                            "object" object-id}
+                :holders [] :receipts {}}
+        other-key (str (identity/bytes->hex cluster) "/other/"
+                       (identity/bytes->hex object-id))
+        other-record (assoc record :key other-key
+                            :statement {"cluster" cluster
+                                        "privacy_domain" other-domain
+                                        "object" object-id})]
+    (is (= :ok (await (erasure-storage/-persist-erasure-record!
+                       store cluster key record))))
+    (is (= :ok (await (erasure-storage/-persist-erasure-record!
+                       store cluster other-key other-record))))
+    (let [records (await (erasure-storage/-load-erasure-records
+                          (fresh-store underlying) cluster))
+          loaded (get records key)]
+      (is (= #{key other-key} (set (keys records))))
+      (is (identity/bufs=
+           (wire/encode-canonical (erasure-storage/record->wire record))
+           (wire/encode-canonical
+            (erasure-storage/record->wire loaded)))))))
 
 (deftest namespaces-and-durability-claims-are-explicit
   (let [underlying (<!! (new-mem-store))

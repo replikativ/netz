@@ -717,6 +717,17 @@ fail closed for serving and renewal rather than silently extending retention.
 Deletion markers and their highest accepted revision survive object deletion;
 otherwise an offline replica could resurrect bytes from a stale offer.
 
+A controller claiming coordinated erasure MUST durably retain the set of all
+known holders, including former placement members and replicas learned from
+valid storage receipts. That holder set is monotone for one deletion statement.
+It MUST NOT declare the operation complete until it has durably accepted one
+matching `blob/deleted` receipt from every holder. Carrier delivery, current
+membership, failure-detector output, `W` storage receipts, and administrative
+removal are not deletion receipts. A newly discovered holder MUST reopen an
+otherwise complete campaign until its receipt arrives. Controllers SHOULD
+retry the signed deletion through an authenticated targeted control stream;
+pub/sub MAY additionally announce it but is not durable delivery evidence.
+
 ## 9. Required conformance work
 
 Before advertising a durable-blob capability, implementations must additionally

@@ -178,6 +178,11 @@ This extension is not part of the alpha interoperability claim yet.
       transfer, verifies reconciled lease/deletion envelopes, and fails closed
       when backend erasure is not explicitly implemented. JVM and Node
       Konserve memory backends cover restart ordering.
+- [x] Implement controller-side erasure convergence with an explicit monotone
+      holder set, persist-before-dispatch retries, verified persist-before-count
+      deletion receipts, late-holder reopening, and fail-closed restart. File
+      and Konserve repositories share a text-keyed portable campaign record;
+      two live lifecycle runtimes exercise automatic erase-and-receipt flow.
 - [x] Implement bounded, sorted local installed-manifest inventory and
       full-object scrubbing for the JVM file and portable Konserve stores.
       JVM corruption tests and Node Konserve tests share the same API.
@@ -254,8 +259,8 @@ This extension is not part of the alpha interoperability claim yet.
       latency, throughput shaping and per-link byte accounting. Three-site and
       concurrent-object workloads distinguish W-quorum from all-N completion
       and measure deterministic p50/p95/p99 plus queue bounds.
-- [ ] Implement Node/browser durable storage, backend erasure, and operational
-      offline-peer reconciliation.
+- [ ] Implement Node/browser durable storage and backend erasure, then qualify
+      offline-peer reconciliation over a real authenticated carrier.
 - [ ] Implement and validate any later transparent Konserve wrapper semantics
       for binary streams, multi-key root-last batches, nested updates and read
       repair.
