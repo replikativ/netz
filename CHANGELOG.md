@@ -6,6 +6,12 @@ may make incompatible protocol changes.
 
 ## 0.1.0-alpha.1 — unreleased
 
+- Added a release-artifact verifier that keeps the Maven and Python versions,
+  public documentation, generated POM, Apache-2.0 license and required jar
+  namespaces aligned. CircleCI now has a separate opt-in `release=true`
+  workflow which repeats every conformance gate and publishes PyPI before
+  Clojars; ordinary pushes and pull requests remain publication-free.
+
 - Defined the portable `netz/dissemination/1` interests, anti-entropy and repair
   frames. Strict Clojure/ClojureScript and Python codecs share deterministic
   CBOR fixtures, use full Authority IDs for stream identity, retain payloads as

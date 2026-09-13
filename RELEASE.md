@@ -397,11 +397,14 @@ node target/node-tests.js
 python3 -m unittest discover -s interop/python -v
 python3 -m pip wheel . --no-deps --wheel-dir /tmp/netz-python-dist
 clojure -M:format
-clojure -T:build jar
+clojure -T:build verify
 ```
 
-Deployment is intentionally not part of CI. `clojure -T:build deploy` requires
-explicit Clojars credentials and a human-selected release tag.
+Deployment is never part of ordinary CI. The separately gated release workflow
+requires an explicit `release=true` pipeline parameter on `main`, repeats all
+conformance jobs, publishes PyPI before Clojars, and requires separately scoped
+registry contexts. Tagging and the GitHub pre-release remain deliberate
+maintainer actions; see `docs/releasing.md`.
 
 ## CircleCI setup
 
@@ -416,9 +419,9 @@ The repository must be enabled in CircleCI and allowed to use `docker-deploy`.
 Configuring YAML alone does not install the project integration or make checks
 appear on GitHub. A successful local YAML parse is not CircleCI execution proof.
 
-The build jobs retain the JVM JAR and Python wheel as CI artifacts. They do not
-publish either package. Unlike projects with automatically generated versions,
-Netz currently declares fixed alpha versions in `build.clj` and `pyproject.toml`;
-unconditional deployment on every main commit would attempt version reuse.
-Public deployment must therefore be a separately gated release operation after
-the protocol and backend qualification work, not a side effect of these tests.
+The build jobs retain the JVM JAR and Python wheel as CI artifacts. Unlike
+projects with automatically generated versions, Netz currently declares fixed
+alpha versions in `build.clj` and `pyproject.toml`; `build/verify` rejects drift
+between them and the release documentation. Unconditional deployment on every
+main commit would attempt version reuse, so publication is possible only in the
+explicit release workflow.
