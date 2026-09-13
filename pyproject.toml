@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netz-protocol"
-version = "0.1.0a1"
+dynamic = ["version"]
 description = "Dependency-free CBOR, sync, content, and durable-blob core for Netz"
 readme = "interop/python/README.md"
 requires-python = ">=3.10"

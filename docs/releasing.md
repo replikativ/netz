@@ -1,14 +1,24 @@
 # Releasing Netz
 
-Netz publishes two distributions from the same commit:
+Netz publishes two distributions from every green `main` commit:
 
 - `org.replikativ/netz` on Clojars;
 - `netz-protocol` on PyPI.
 
-The JVM and Python versions are intentionally written using their ecosystems'
-normal syntax (`0.1.0-alpha.1` and `0.1.0a1`). `clojure -T:build verify` checks
-that both declarations, the user-facing documentation, the changelog, the
-generated POM, the Apache-2.0 license, and required jar namespaces agree.
+Both use `0.1.<commit-count>`, where the final component is Git's total
+reachable revision count. Alpha describes the maturity of the `0.1` series; it
+is not a manually incremented version suffix. A larger release line is started
+by changing the single `VERSION_PREFIX` file, for example from `0.1` to `0.2`.
+We intentionally do not create a tag or GitHub release for every alpha build.
+
+`build.clj` and `build_version.py` independently derive the same version from
+the same checkout. The JVM verifier validates the generated POM, license and
+required JAR entries; the Python CI job compares both derivations. Python
+source-tree builds derive the count from Git; an sdist carries its derived package
+metadata into the wheel build. For any other exported source tree, pass the
+exact already-derived value as `NETZ_BUILD_VERSION=0.1.N`; the override is
+validated against `VERSION_PREFIX` and must never be used to reuse a registry
+version.
 
 ## One-time CircleCI setup
 
@@ -17,48 +27,32 @@ additional contexts:
 
 - `pypi-deploy`, containing `TWINE_USERNAME=__token__` and `TWINE_PASSWORD`.
   The first upload needs a short-lived account-scoped PyPI token because the
-  project does not exist yet; replace it with a project-scoped token
-  immediately after that bootstrap release;
-- `clojars-deploy`, containing the Clojars credentials already used by the
-  other replikativ projects.
+  project does not exist yet; replace it with a project-scoped token after the
+  bootstrap release;
+- `clojars-deploy`, containing the Clojars credentials used by the other
+  replikativ projects.
 
-Restrict both publication contexts to the maintainer group. The pipeline
-parameter is an intentional trigger, not an authorization boundary; context
-access is what prevents an ordinary contributor from using registry secrets.
+Restrict both publication contexts to the maintainer group. Branch filters and
+unique versions prevent pull requests from publishing, while context access is
+the actual secret boundary.
 
-Ordinary pushes and pull requests never publish. The release workflow exists
-only when a maintainer explicitly triggers a pipeline with the boolean
-pipeline parameter `release` set to `true`, and its publishing jobs run only
-for `main`.
+## Publication flow
 
-## Release procedure
+1. Merge a reviewed change to `main`.
+2. CircleCI runs the full JVM, JavaScript, Python, secure transport, mixed
+   runtime, checkpoint, Konserve and Datahike-replica gates.
+3. A green pipeline publishes the Python wheel first and the JVM artifact
+   second. Each registry receives the identical `0.1.<commit-count>` version.
+4. Verify the new coordinates from clean consumer environments when making a
+   significant release-line change.
 
-1. Replace `unreleased` in the `CHANGELOG.md` version heading with the release
-   date, confirm that it describes the release, and confirm that both intended
-   versions are still unused on Clojars and PyPI.
-2. Make the GitHub repository public and re-check every metadata/documentation
-   link from a logged-out browser.
-3. Merge the release commit to `main` and record its full commit SHA.
-4. In CircleCI, choose **Run Pipeline**, select `main`, add the boolean
-   parameter `release=true`, and run it. This repeats every conformance gate.
-5. Python is published first and Clojars second. If Clojars fails after PyPI
-   succeeds, use CircleCI's **Rerun failed tests** operation; do not start a new
-   pipeline that would try to upload the immutable PyPI version again.
-6. Verify both registry artifacts from clean consumer environments.
-7. Create the immutable tag and pre-release from the exact published source
-   commit:
+If PyPI succeeds and Clojars fails, rerun only the failed CircleCI jobs so the
+successful immutable Python version is not uploaded again. Never reuse a
+version after either registry has accepted it. A failed `main` pipeline can be
+fixed by another commit: the new commit receives a new count and therefore a
+new version.
 
-   ```sh
-   git tag -s v0.1.0-alpha.1 <published-commit-sha>
-   git push origin v0.1.0-alpha.1
-   gh release create v0.1.0-alpha.1 --verify-tag --prerelease \
-     --title "Netz 0.1.0-alpha.1" --generate-notes
-   ```
-
-Do not reuse a version after either registry accepted it. A partial registry
-release is completed at the same commit; it is not overwritten.
-
-The repository must be public before presenting the packages as a public
-standard implementation. Repository visibility, registry credentials, and the
-signed release tag are deliberate maintainer actions rather than CI side
-effects.
+The repository must be public before the packages are presented as a public
+standard implementation. Repository visibility and registry credentials are
+maintainer operations; routine alpha publication and version calculation are
+automatic.

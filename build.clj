@@ -5,17 +5,11 @@
             [deps-deploy.deps-deploy :as dd]))
 
 (def lib 'org.replikativ/netz)
-(def version "0.1.0-alpha.1")
+(def version-prefix (str/trim (slurp "VERSION_PREFIX")))
+(def version (format "%s.%s" version-prefix (b/git-count-revs nil)))
 (def class-dir "target/classes")
 (def basis (delay (b/create-basis {:project "deps.edn"})))
 (defn jar-file [] (format "target/%s-%s.jar" (name lib) version))
-
-(defn- python-version [v]
-  (or (some->> (re-matches #"(\d+)\.(\d+)\.(\d+)-alpha\.(\d+)" v)
-               rest
-               (apply format "%s.%s.%sa%s"))
-      (throw (ex-info "No Python version mapping for JVM version"
-                      {:version v}))))
 
 (defn- require-text! [path expected]
   (let [contents (slurp path)]
@@ -51,15 +45,17 @@
   (b/copy-dir {:src-dirs ["src"] :target-dir class-dir})
   (b/copy-file {:src "LICENSE" :target (str class-dir "/META-INF/LICENSE")})
   (b/jar {:class-dir class-dir :jar-file (jar-file)})
+  (b/copy-file {:src (jar-file) :target "target/netz.jar"})
   {:lib lib :version version :jar-file (jar-file)})
 
 (defn verify [_]
   (jar nil)
-  (let [py-version (python-version version)]
-    (require-text! "pyproject.toml" (str "version = \"" py-version "\""))
-    (require-text! "README.md" (str "`" version "`"))
-    (require-text! "docs/getting-started.md" (str "\"" version "\""))
-    (require-text! "CHANGELOG.md" (str "## " version " —"))
+  (let [py-version version]
+    (require-text! "pyproject.toml" "dynamic = [\"version\"]")
+    (require-text! "setup.py" "from build_version import build_version")
+    (require-text! "README.md" "0.1.<commit-count>")
+    (require-text! "docs/getting-started.md" "0.1.<commit-count>")
+    (require-text! "CHANGELOG.md" "## 0.1 series — alpha")
     (with-open [artifact (java.util.jar.JarFile. (io/file (jar-file)))]
       (doseq [entry ["META-INF/LICENSE"
                      "META-INF/maven/org.replikativ/netz/pom.xml"
@@ -73,7 +69,7 @@
                        (str/includes? pom "Apache License, Version 2.0"))
           (throw (ex-info "Generated POM has incorrect release metadata"
                           {:version version})))))
-    (println "Verified JVM" version "and Python" py-version "release metadata")
+    (println "Verified JVM" version "and shared Python release metadata")
     {:lib lib :version version :python-version py-version
      :jar-file (jar-file)}))
 

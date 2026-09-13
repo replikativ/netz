@@ -1,6 +1,7 @@
 # Release readiness
 
-Target: `org.replikativ/netz` `0.1.0-alpha.1` under Apache-2.0.
+Target: the Apache-2.0 `0.1.<commit-count>` alpha series for
+`org.replikativ/netz` and `netz-protocol`.
 
 ## Completed in the alpha hardening pass
 
@@ -421,11 +422,11 @@ clojure -M:format
 clojure -T:build verify
 ```
 
-Deployment is never part of ordinary CI. The separately gated release workflow
-requires an explicit `release=true` pipeline parameter on `main`, repeats all
-conformance jobs, publishes PyPI before Clojars, and requires separately scoped
-registry contexts. Tagging and the GitHub pre-release remain deliberate
-maintainer actions; see `docs/releasing.md`.
+Pull requests never deploy. Every green `main` pipeline publishes its unique
+Git commit-count version to PyPI and then Clojars through separately scoped
+registry contexts. Alpha is the maturity status; it is not encoded as a
+manually advanced suffix. Tags and GitHub releases are intentionally omitted
+for now; see `docs/releasing.md`.
 
 ## CircleCI setup
 
@@ -440,9 +441,9 @@ The repository must be enabled in CircleCI and allowed to use `docker-deploy`.
 Configuring YAML alone does not install the project integration or make checks
 appear on GitHub. A successful local YAML parse is not CircleCI execution proof.
 
-The build jobs retain the JVM JAR and Python wheel as CI artifacts. Unlike
-projects with automatically generated versions, Netz currently declares fixed
-alpha versions in `build.clj` and `pyproject.toml`; `build/verify` rejects drift
-between them and the release documentation. Unconditional deployment on every
-main commit would attempt version reuse, so publication is possible only in the
-explicit release workflow.
+The build jobs retain the JVM JAR and Python wheel as CI artifacts. Both builds
+derive `0.1.<commit-count>` from the same Git checkout. `build/verify` validates
+the JVM metadata, and the Python CI gate rejects a cross-builder disagreement.
+Advancing the release family is the deliberate edit
+of `VERSION_PREFIX` from `0.1` to `0.2`, and does not require tagging every
+published commit.
