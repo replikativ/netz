@@ -33,6 +33,11 @@
    #{"v" "type" "cluster" "privacy_domain" "revision" "manifest"
      "object" "layout_epoch" "issued_at" "delete_after" "signer"}
 
+   "blob/retirement"
+   #{"v" "type" "cluster" "privacy_domain" "revision" "manifest"
+     "object" "layout_epoch" "layout" "previous_layout" "replica"
+     "retention" "receipts" "issued_at" "retire_after" "signer"}
+
    "blob/stored"
    #{"v" "type" "cluster" "privacy_domain" "retention_revision"
      "manifest" "object" "layout_epoch" "replica" "attempt"
@@ -74,6 +79,14 @@
   (and (string? value)
        (pos? (count value))
        (<= (identity/buf-length (identity/utf8-bytes value)) limit)))
+
+(declare parse-envelope)
+
+(defn- nested-statement [envelope expected-type]
+  (try
+    (let [statement (:statement (parse-envelope envelope))]
+      (when (= expected-type (get statement "type")) statement))
+    (catch #?(:clj Throwable :cljs :default) _ nil)))
 
 (defn- common-statement? [statement]
   (and (= 1 (get statement "v"))
@@ -126,6 +139,33 @@
                   (safe-uint? (get statement "delete_after"))
                   (<= (get statement "issued_at")
                       (get statement "delete_after")))
+
+             "blob/retirement"
+             (let [retention (nested-statement (get statement "retention")
+                                               "blob/retention")
+                   receipts (get statement "receipts")
+                   receipt-statements (when (and (vector? receipts)
+                                                 (<= 1 (count receipts) 5))
+                                        (mapv #(nested-statement % "blob/stored")
+                                              receipts))
+                   receipt-replicas (when (every? some? receipt-statements)
+                                      (mapv #(identity/bytes->hex
+                                              (get % "replica"))
+                                            receipt-statements))]
+               (and (positive-uint? (get statement "revision"))
+                    (bytes-n? 32 (get statement "layout"))
+                    (bytes-n? 32 (get statement "previous_layout"))
+                    (not= (identity/bytes->hex (get statement "layout"))
+                          (identity/bytes->hex (get statement "previous_layout")))
+                    (bytes-n? 32 (get statement "replica"))
+                    retention
+                    receipt-replicas
+                    (= receipt-replicas (vec (sort receipt-replicas)))
+                    (= (count receipt-replicas) (count (set receipt-replicas)))
+                    (safe-uint? (get statement "issued_at"))
+                    (safe-uint? (get statement "retire_after"))
+                    (<= (get statement "issued_at")
+                        (get statement "retire_after"))))
 
              "blob/stored"
              (and (positive-uint? (get statement "retention_revision"))

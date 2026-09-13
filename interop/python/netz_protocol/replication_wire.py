@@ -38,6 +38,11 @@ STATEMENT_FIELDS = {
         "v", "type", "cluster", "privacy_domain", "revision", "manifest",
         "object", "layout_epoch", "issued_at", "delete_after", "signer",
     },
+    "blob/retirement": {
+        "v", "type", "cluster", "privacy_domain", "revision", "manifest",
+        "object", "layout_epoch", "layout", "previous_layout", "replica",
+        "retention", "receipts", "issued_at", "retire_after", "signer",
+    },
     "blob/stored": {
         "v", "type", "cluster", "privacy_domain", "retention_revision",
         "manifest", "object", "layout_epoch", "replica", "attempt",
@@ -134,6 +139,35 @@ def validate_statement(statement: dict[str, Any]) -> dict[str, Any]:
                  and _uint(statement["issued_at"])
                  and _uint(statement["delete_after"])
                  and statement["issued_at"] <= statement["delete_after"])
+    elif kind == "blob/retirement":
+        try:
+            retention = parse_envelope(statement["retention"])["statement"]
+            receipts = statement["receipts"]
+            receipt_statements = [parse_envelope(value)["statement"]
+                                  for value in receipts]
+            receipt_replicas = [value["replica"].hex()
+                                for value in receipt_statements]
+            nested_valid = (
+                retention["type"] == "blob/retention"
+                and type(receipts) is list and 1 <= len(receipts) <= 5
+                and all(value["type"] == "blob/stored"
+                        for value in receipt_statements)
+                and receipt_replicas == sorted(receipt_replicas)
+                and len(receipt_replicas) == len(set(receipt_replicas))
+            )
+        except Exception:
+            nested_valid = False
+        valid = (
+            nested_valid
+            and _positive_uint(statement["revision"])
+            and _bytes_n(statement["layout"], 32)
+            and _bytes_n(statement["previous_layout"], 32)
+            and statement["layout"] != statement["previous_layout"]
+            and _bytes_n(statement["replica"], 32)
+            and _uint(statement["issued_at"])
+            and _uint(statement["retire_after"])
+            and statement["issued_at"] <= statement["retire_after"]
+        )
     elif kind == "blob/stored":
         valid = (_positive_uint(statement["retention_revision"])
                  and _bytes_n(statement["replica"], 32)
