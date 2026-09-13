@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=83"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -28,10 +28,10 @@ classifiers = [
 
 [project.optional-dependencies]
 crypto = [
-  "cryptography>=43",
+  "cryptography>=50.0.1",
 ]
 secure-client = [
-  "cryptography>=43",
+  "cryptography>=50.0.1",
   # The adapter relies on the 0.3.1 state-machine API and pins it until the
   # upstream project publishes a maintained release with remote-static access.
   "noiseprotocol==0.3.1",

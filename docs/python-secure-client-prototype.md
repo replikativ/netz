@@ -107,7 +107,7 @@ a separately transcribed copy.
 
 | Package | Proposed range | License | Role | Risk |
 |---|---|---|---|---|
-| `cryptography` | `>=43` | Apache-2.0 OR BSD-3-Clause | Ed25519, X25519, AES-GCM backend | Mature; native wheels are an expected Python dependency |
+| `cryptography` | `>=50.0.1` | Apache-2.0 OR BSD-3-Clause | Ed25519, X25519, AES-GCM backend | Mature; floor excludes the vulnerable bundled-OpenSSL and verifier releases found in the release audit |
 | `noiseprotocol` | `==0.3.1` | MIT | Noise revision 32/33 state machine | Correct shared vector, but 2020 alpha and inactive API |
 | `websockets` | `>=14,<16` | BSD-3-Clause | Optional asyncio carrier | Mature; major versions intentionally bounded for the prototype API |
 
