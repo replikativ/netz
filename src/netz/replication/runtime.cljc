@@ -49,6 +49,11 @@
   (identity/bufs= (wire/encode-canonical a)
                   (wire/encode-canonical b)))
 
+(defn- same-authority? [authority value]
+  (and (wire/byte-buffer? value)
+       (= 32 (identity/buf-length value))
+       (identity/bufs= authority value)))
+
 (defn- session-hex [session]
   (when (and (wire/byte-buffer? session)
              (= 16 (identity/buf-length session)))
@@ -283,6 +288,48 @@
                       (send-rejection! ctx from (get frame "session")
                                        "fetch-unavailable"))))))))))))
 
+(defn- process-deletion! [ctx from from-authority frame]
+  (go
+    (let [envelope (get frame "deletion")
+          verified? (try
+                      (true? (<! (replication-wire/verify-envelope envelope)))
+                      (catch #?(:clj Throwable :cljs :default) _ false))
+          statement (when verified?
+                      (:statement (replication-wire/parse-envelope envelope)))]
+      (if-not (and statement
+                   (same-authority? from-authority (get statement "signer")))
+        (do
+          (swap! (:stats ctx) update :invalid-lifecycle-frames inc)
+          (overlay-runtime/disconnect-peer! (:node ctx) from))
+        (let [accepted?
+              (try
+                (true? (<! ((:apply-deletion! ctx)
+                            {:from from :from-authority from-authority
+                             :frame frame :envelope envelope
+                             :statement statement})))
+                (catch #?(:clj Throwable :cljs :default) _ false))]
+          (swap! (:stats ctx) update
+                 (if accepted? :deletions-accepted :deletions-rejected) inc))))))
+
+(defn- process-deletion-receipt! [ctx from from-authority frame]
+  (go
+    (let [envelope (get frame "receipt")
+          verified? (try
+                      (true? (<! (replication-wire/verify-envelope envelope)))
+                      (catch #?(:clj Throwable :cljs :default) _ false))
+          statement (when verified?
+                      (:statement (replication-wire/parse-envelope envelope)))]
+      (if-not (and statement
+                   (same-authority? from-authority (get statement "replica"))
+                   (same-authority? from-authority (get statement "signer")))
+        (do
+          (swap! (:stats ctx) update :invalid-lifecycle-frames inc)
+          (overlay-runtime/disconnect-peer! (:node ctx) from))
+        (callback! ctx (:on-deletion-receipt! ctx)
+                   {:from from :from-authority from-authority
+                    :frame frame :envelope envelope :statement statement}
+                   :deletion-receipts)))))
+
 (defn- session-side [ctx session]
   (let [key (identity/bytes->hex session)
         sender? (contains? (:sessions @(:sender-state ctx)) key)
@@ -298,6 +345,12 @@
     (let [from-authority (authority-bytes facts)]
       (swap! (:stats ctx) update :inbound inc)
       (case (get frame "type")
+        "blob/delete"
+        (<! (process-deletion! ctx from from-authority frame))
+
+        "blob/deleted"
+        (<! (process-deletion-receipt! ctx from from-authority frame))
+
         "blob/fetch"
         (<! (process-fetch! ctx from from-authority frame))
 
@@ -395,6 +448,10 @@
   - `:on-installed!` receives locally installed replica events;
   - `:on-failed!` receives sender failure records;
   - `:on-fetch-failed!` receives requester-side fetch failures;
+  - `:apply-deletion!` durably applies a verified, carrier-bound deletion and
+    returns a channel yielding true (default rejects);
+  - `:on-deletion-receipt!` receives verified receipts whose replica signer is
+    the immediate authenticated remote Authority;
   - `:replay-receipts?` defaults true; set false when a controller runtime owns
     ordered intent-first receipt restoration from the same store;
   - `:sender-opts`, `:receiver-opts`, and `:now-fn` configure pure machines.
@@ -403,8 +460,9 @@
   capability set on both peers. The capability is intentionally not in the
   default set."
   [{:keys [identity] :as node}
-   {:keys [store authorize-offer! authorize-fetch!
+   {:keys [store authorize-offer! authorize-fetch! apply-deletion!
            on-stored! on-installed! on-failed! on-fetch-failed!
+           on-deletion-receipt!
            sender-opts receiver-opts now-fn max-fetches fetch-timeout-ms
            replay-receipts?]
     :or {max-fetches 64 fetch-timeout-ms 30000 replay-receipts? true}}]
@@ -425,10 +483,14 @@
                                    (fn [_] (storage/chan-of false)))
              :authorize-fetch! (or authorize-fetch!
                                    (fn [_] (storage/chan-of false)))
+             :apply-deletion! (or apply-deletion!
+                                  (fn [_] (storage/chan-of false)))
              :on-stored! on-stored!
              :on-installed! on-installed!
              :on-failed! on-failed!
              :on-fetch-failed! on-fetch-failed!
+             :on-deletion-receipt! on-deletion-receipt!
+             :authority authority
              :fetches (atom {})
              :max-fetches max-fetches
              :fetch-timeout-ms fetch-timeout-ms
@@ -443,6 +505,8 @@
                            :unauthorized-fetches 0
                            :invalid-signatures 0 :unauthorized-offers 0
                            :authorization-errors 0
+                           :deletions-accepted 0 :deletions-rejected 0
+                           :deletion-receipts 0 :invalid-lifecycle-frames 0
                            :send-refused 0 :storage-errors 0
                            :callback-errors 0 :dropped 0})}
         cleanup
@@ -556,6 +620,68 @@
                        :event {:type :transfer/start
                                :peer peer :authority authority :frame offer}}))
     (catch #?(:clj Throwable :cljs :default) _ false)))
+
+(defn- unique-authority-peer [ctx authority-id]
+  (when (and (string? authority-id)
+             (re-matches #"[0-9a-f]{64}" authority-id))
+    (let [peer (get-in ctx [:node :peer])
+          matches (filterv
+                   #(and (= authority-id
+                            (:authority-id
+                             (overlay-runtime/connection-info peer %)))
+                         (overlay-runtime/portable-extension-connection?
+                          peer % replication-wire/capability))
+                   (overlay-runtime/connections peer))]
+      (when (= 1 (count matches)) (first matches)))))
+
+(defn- send-lifecycle-frame! [ctx remote-authority envelope
+                              expected-type frame-type field]
+  (try
+    (let [statement (:statement (replication-wire/parse-envelope envelope))
+          local (:authority ctx)
+          peer (unique-authority-peer ctx remote-authority)
+          frame {"v" 1 "type" frame-type field envelope}]
+      (boolean
+       (and peer
+            (= expected-type (get statement "type"))
+            (same-authority? local (get statement "signer"))
+            (or (not= expected-type "blob/deleted")
+                (same-authority? local (get statement "replica")))
+            (replication-wire/valid-frame? frame)
+            (overlay-runtime/send-extension!
+             (:node ctx) peer replication-wire/capability frame))))
+    (catch #?(:clj Throwable :cljs :default) _ false)))
+
+(defn send-deletion!
+  "Send a controller-signed deletion to exactly one connected replica.
+
+  The envelope signer must be this node's Authority. `replica-id` is resolved
+  to one authenticated portable carrier; zero or duplicate connections fail
+  closed. The return value is transport acceptance, never erasure evidence."
+  [ctx replica-id deletion-envelope]
+  (send-lifecycle-frame! ctx replica-id deletion-envelope
+                         "blob/deletion" "blob/delete" "deletion"))
+
+(defn deletion-dispatcher
+  "Return the callback shape consumed by `erasure-runtime/start!`."
+  [ctx]
+  (fn [{:keys [replica-id envelope]}]
+    (send-deletion! ctx replica-id envelope)))
+
+(defn send-deletion-receipt!
+  "Return a locally signed deletion receipt to one authenticated controller."
+  [ctx controller-id receipt-envelope]
+  (send-lifecycle-frame! ctx controller-id receipt-envelope
+                         "blob/deleted" "blob/deleted" "receipt"))
+
+(defn deletion-receipt-dispatcher
+  "Return the callback shape emitted by `lifecycle-runtime`.
+
+  The controller Authority is recovered from the durable deletion record, not
+  from mutable connection state."
+  [ctx]
+  (fn [{:keys [controller-id envelope]}]
+    (send-deletion-receipt! ctx controller-id envelope)))
 
 (defn states [ctx]
   {:sender @(:sender-state ctx)

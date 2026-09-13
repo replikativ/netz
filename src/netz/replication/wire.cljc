@@ -58,7 +58,9 @@
    "blob/ack" #{"v" "type" "session" "manifest" "through"}
    "blob/commit" #{"v" "type" "session" "manifest" "count"}
    "blob/stored" #{"v" "type" "session" "receipt"}
-   "blob/abort" #{"v" "type" "session" "code"}})
+   "blob/abort" #{"v" "type" "session" "code"}
+   "blob/delete" #{"v" "type" "deletion"}
+   "blob/deleted" #{"v" "type" "receipt"}})
 
 (defn- safe-uint? [value]
   (and (integer? value) (<= 0 value wire/max-safe-integer)))
@@ -338,28 +340,46 @@
     (and fields
          (exact-map? fields frame)
          (= 1 (get frame "v"))
-         (bytes-n? 16 (get frame "session"))
          (case type
-           "blob/offer" (valid-offer? frame)
-           "blob/fetch" (valid-fetch? frame)
-           "blob/need" (and (bytes-n? 32 (get frame "manifest"))
+           "blob/offer" (and (bytes-n? 16 (get frame "session"))
+                             (valid-offer? frame))
+           "blob/fetch" (and (bytes-n? 16 (get frame "session"))
+                             (valid-fetch? frame))
+           "blob/need" (and (bytes-n? 16 (get frame "session"))
+                            (bytes-n? 32 (get frame "manifest"))
                             (wire/byte-buffer? (get frame "need"))
                             (<= (identity/buf-length (get frame "need")) 2048))
-           "blob/piece" (and (bytes-n? 32 (get frame "manifest"))
+           "blob/piece" (and (bytes-n? 16 (get frame "session"))
+                             (bytes-n? 32 (get frame "manifest"))
                              (safe-uint? (get frame "index"))
                              (wire/byte-buffer? (get frame "data"))
                              (<= (identity/buf-length (get frame "data"))
                                  blob/max-piece-size))
-           "blob/ack" (and (bytes-n? 32 (get frame "manifest"))
+           "blob/ack" (and (bytes-n? 16 (get frame "session"))
+                           (bytes-n? 32 (get frame "manifest"))
                            (safe-uint? (get frame "through")))
-           "blob/commit" (and (bytes-n? 32 (get frame "manifest"))
+           "blob/commit" (and (bytes-n? 16 (get frame "session"))
+                              (bytes-n? 32 (get frame "manifest"))
                               (safe-uint? (get frame "count")))
-           "blob/stored" (try
-                           (= "blob/stored"
-                              (get-in (parse-envelope (get frame "receipt"))
+           "blob/stored" (and
+                          (bytes-n? 16 (get frame "session"))
+                          (try
+                            (= "blob/stored"
+                               (get-in (parse-envelope (get frame "receipt"))
+                                       [:statement "type"]))
+                            (catch #?(:clj Throwable :cljs :default) _ false)))
+           "blob/abort" (and (bytes-n? 16 (get frame "session"))
+                             (bounded-text? 128 (get frame "code")))
+           "blob/delete" (try
+                           (= "blob/deletion"
+                              (get-in (parse-envelope (get frame "deletion"))
                                       [:statement "type"]))
                            (catch #?(:clj Throwable :cljs :default) _ false))
-           "blob/abort" (bounded-text? 128 (get frame "code"))
+           "blob/deleted" (try
+                            (= "blob/deleted"
+                               (get-in (parse-envelope (get frame "receipt"))
+                                       [:statement "type"]))
+                            (catch #?(:clj Throwable :cljs :default) _ false))
            false))))
 
 (defn validate-frame [frame]

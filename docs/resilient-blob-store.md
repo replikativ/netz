@@ -209,6 +209,18 @@ supported-capability set before connecting. Installing the runtime alone does
 not advertise it, and `replicate!` refuses before creating a sender session when
 the current connection did not negotiate the exact capability.
 
+The same runtime now carries erasure without adding a second transport.
+`deletion-dispatcher` resolves the erasure coordinator's selected full replica
+Authority to exactly one portable authenticated connection and sends a closed
+`blob/delete` frame. The receiver's opt-in `:apply-deletion!` callback normally
+delegates to `lifecycle-runtime/apply-envelope!`; the default rejects. A
+lifecycle receipt callback uses `deletion-receipt-dispatcher` to return the
+signed result to its configured controller, whose `:on-deletion-receipt!`
+callback submits it to the erasure coordinator. Both directions bind the
+statement signer to the immediate Noise Authority. The coordinator still
+persists and retries independently, so successful carrier send is never
+reported as erasure.
+
 The receiver must supply `:authorize-offer!`. This asynchronous callback sees
 the verified retention statement, its frame, routing peer and authenticated
 full Authority ID. It may yield true only after checking the controller and

@@ -285,6 +285,8 @@
            (lifecycle/status (lifecycle-runtime/state runtime) deletion)))
     (is (= 1 (count @(:deletes store))))
     (is (= 1 (count @emitted)))
+    (is (= (identity/bytes->hex controller)
+           (:controller-id (first @emitted))))
     (is (true? (await (replication-wire/verify-envelope
                        (:envelope (first @emitted))))))
     (lifecycle-runtime/stop! runtime)

@@ -187,6 +187,10 @@ This extension is not part of the alpha interoperability claim yet.
       Every selected target is recorded before its first offer, former layout
       members survive revisions and restart, and the controller exposes the
       conservative set directly to erasure campaigns.
+- [x] Carry deletion commands and receipts over the real authenticated Netz
+      extension carrier. Both directions pin signed replica/controller
+      Authorities to one negotiated portable connection; a secure integration
+      test drives a durable campaign through lifecycle erasure to completion.
 - [x] Implement bounded, sorted local installed-manifest inventory and
       full-object scrubbing for the JVM file and portable Konserve stores.
       JVM corruption tests and Node Konserve tests share the same API.

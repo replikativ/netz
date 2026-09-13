@@ -402,6 +402,39 @@ class SignedBlobProtocolTest(unittest.TestCase):
                 "retention": envelope, "manifest": bad_manifest,
             })
 
+    def test_deletion_carrier_frames_are_sessionless_and_closed(self):
+        fixture, _, identity_genesis, public_key, _, retention = self.values()
+        common = {
+            "v": 1, "cluster": retention["cluster"],
+            "privacy_domain": retention["privacy_domain"],
+            "manifest": retention["manifest"], "object": retention["object"],
+            "layout_epoch": 7, "signer": retention["signer"],
+        }
+        deletion = {
+            **common, "type": "blob/deletion", "revision": 2,
+            "issued_at": 2000, "delete_after": 2100,
+        }
+        deleted = {
+            **common, "type": "blob/deleted", "deletion_revision": 2,
+            "replica": retention["signer"],
+            "persistence": "netz/store/fsync/1", "deleted_at": 2200,
+        }
+        signature = bytes.fromhex(fixture["signature_hex"])
+        deletion_envelope = make_envelope(
+            identity_genesis, public_key, deletion, signature)
+        deleted_envelope = make_envelope(
+            identity_genesis, public_key, deleted, signature)
+        self.assertIsNotNone(validate_frame({
+            "v": 1, "type": "blob/delete", "deletion": deletion_envelope,
+        }))
+        self.assertIsNotNone(validate_frame({
+            "v": 1, "type": "blob/deleted", "receipt": deleted_envelope,
+        }))
+        with self.assertRaises(ReplicationWireError):
+            validate_frame({
+                "v": 1, "type": "blob/delete", "deletion": deleted_envelope,
+            })
+
     @unittest.skipUnless(find_spec("cryptography"),
                          "optional crypto dependency is not installed")
     def test_shared_signature_and_tamper_rejection(self):
