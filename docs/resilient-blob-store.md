@@ -459,8 +459,10 @@ An acknowledgement policy can require counts across domains, not merely hosts:
 ```clojure
 {:replicas 3
  :write-acks 2
- :minimum-domains {"owner" 2
-                   "site" 2}}
+ :placement-minimum-domains {"owner" 3
+                             "site" 3}
+ :ack-minimum-domains {"owner" 2
+                       "site" 2}}
 ```
 
 Requiring distinct devices only protects against hardware loss. Requiring

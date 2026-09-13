@@ -228,7 +228,10 @@
           local (authority-hex local-authority)
           policy {:replicas (get retention "replicas")
                   :write-acks (get retention "write_acks")
-                  :minimum-domains (get retention "minimum_domains")}
+                  :placement-minimum-domains
+                  (get retention "placement_minimum_domains")
+                  :ack-minimum-domains
+                  (get retention "ack_minimum_domains")}
           targets (placement/place (placement-layout statement)
                                    policy
                                    (get retention "object"))]

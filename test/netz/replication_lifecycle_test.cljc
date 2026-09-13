@@ -31,7 +31,8 @@
    "cluster" cluster "privacy_domain" privacy-domain
    "revision" 1 "manifest" (:manifest-id split) "object" (:object-id split)
    "layout_epoch" 7 "replicas" 3 "write_acks" 2
-   "minimum_domains" {"owner" 2} "issued_at" 1000
+   "placement_minimum_domains" {"owner" 2}
+   "ack_minimum_domains" {"owner" 2} "issued_at" 1000
    "retain_until" 2000 "signer" controller})
 
 (defn lease [revision retain-until]

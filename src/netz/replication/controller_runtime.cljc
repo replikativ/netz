@@ -576,7 +576,8 @@
                    (not (current-record? ctx {"layout" (get-in entry [:manifest :layout-envelope])
                                               "retention" (get-in entry [:manifest :retention-envelope])})) :inactive
                    (and (>= (count members) (:write-acks policy))
-                        (placement/satisfies-domains? members (:minimum-domains policy)))
+                        (placement/satisfies-domains?
+                         members (:ack-minimum-domains policy)))
                    :confirmed
                    :else :under-replicated)]
       {:object-id object-id :status status

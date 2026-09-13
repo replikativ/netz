@@ -22,7 +22,8 @@
 (def ^:private statement-fields
   {"blob/retention"
    #{"v" "type" "cluster" "privacy_domain" "revision" "manifest"
-     "object" "layout_epoch" "replicas" "write_acks" "minimum_domains"
+     "object" "layout_epoch" "replicas" "write_acks"
+     "placement_minimum_domains" "ack_minimum_domains"
      "issued_at" "retain_until" "signer"}
 
    "blob/lease"
@@ -113,14 +114,19 @@
              "blob/retention"
              (let [replicas (get statement "replicas")
                    write-acks (get statement "write_acks")
-                   minima (get statement "minimum_domains")]
+                   placement-minima (get statement "placement_minimum_domains")
+                   ack-minima (get statement "ack_minimum_domains")]
                (and (positive-uint? (get statement "revision"))
                     (positive-uint? replicas) (<= replicas 5)
                     (positive-uint? write-acks) (<= write-acks replicas)
-                    (map? minima)
-                    (every? #(bounded-text? 128 %) (keys minima))
+                    (map? placement-minima)
+                    (every? #(bounded-text? 128 %) (keys placement-minima))
+                    (every? #(and (positive-uint? %) (<= % replicas))
+                            (vals placement-minima))
+                    (map? ack-minima)
+                    (every? #(bounded-text? 128 %) (keys ack-minima))
                     (every? #(and (positive-uint? %) (<= % write-acks))
-                            (vals minima))
+                            (vals ack-minima))
                     (safe-uint? (get statement "issued_at"))
                     (safe-uint? (get statement "retain_until"))
                     (<= (get statement "issued_at")

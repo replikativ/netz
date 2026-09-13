@@ -50,7 +50,9 @@
                    "privacy_domain" (identity/seq->bytes (range 16 32))
                    "revision" 2 "manifest" (:manifest-id split)
                    "object" (:object-id split) "layout_epoch" 1
-                   "replicas" 3 "write_acks" 2 "minimum_domains" {"site" 2}
+                   "replicas" 3 "write_acks" 2
+                   "placement_minimum_domains" {"site" 2}
+                   "ack_minimum_domains" {"site" 2}
                    "issued_at" 1000 "retain_until" 5000
                    "signer" controller-authority}
         retention-envelope (signed controller retention)

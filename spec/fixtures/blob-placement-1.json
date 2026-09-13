@@ -28,7 +28,11 @@
     "policy": {
       "replicas": 3,
       "write_acks": 2,
-      "minimum_domains": {
+      "placement_minimum_domains": {
+        "owner": 3,
+        "site": 3
+      },
+      "ack_minimum_domains": {
         "owner": 2,
         "site": 2
       }

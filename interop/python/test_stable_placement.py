@@ -35,7 +35,9 @@ class StablePlacementTest(unittest.TestCase):
                        if m["id"] in same_site else m for m in MEMBERS]
         chosen = place({"epoch": 1, "members": constrained, "seed": SEED,
                         "placement": "netz/blob-placement/2"},
-                       {**POLICY, "minimum_domains": {"site": 2}}, "domains")
+                       {**POLICY,
+                        "placement_minimum_domains": {"site": 2},
+                        "ack_minimum_domains": {"site": 2}}, "domains")
         self.assertGreaterEqual(len({m["domains"]["site"] for m in chosen}), 2)
         self.assertEqual([c * 64 for c in ["5", "6", "1"]],
                          [m["id"] for m in chosen])

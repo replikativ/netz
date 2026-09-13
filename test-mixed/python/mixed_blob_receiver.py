@@ -67,7 +67,8 @@ def _retention(identity: LocalIdentity, authority: bytes,
         "privacy_domain": bytes(range(16, 32)),
         "revision": 1, "manifest": split["manifest_id"],
         "object": split["object_id"], "layout_epoch": 1,
-        "replicas": 1, "write_acks": 1, "minimum_domains": {},
+        "replicas": 1, "write_acks": 1,
+        "placement_minimum_domains": {}, "ack_minimum_domains": {},
         "issued_at": NOW, "retain_until": 5_000, "signer": authority,
     }
     return sign_statement(

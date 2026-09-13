@@ -98,10 +98,8 @@
    (:layout scenario)
    {:replicas (:replicas scenario)
     :write-acks (:write-acks scenario)
-    ;; The current profile has one domain map for both N and W. Use the ACK
-    ;; constraint here; the report exposes whether the resulting full set has
-    ;; the stronger producer placement diversity desired by the experiment.
-    :minimum-domains (:ack-minimum-domains scenario)}
+    :placement-minimum-domains (:placement-minimum-domains scenario)
+    :ack-minimum-domains (:ack-minimum-domains scenario)}
    object-id))
 
 (defn planned-targets

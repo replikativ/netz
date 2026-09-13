@@ -125,6 +125,9 @@ clojure -M:blob-demo
   dial priority, lifecycle, diagnostics, and guarantee boundaries
 - [Datahike locality experiment](docs/datahike-locality.md) — producer-planned
   durable replicas versus consumer-populated read caches
+- [Multi-process Datahike experiment](docs/datahike-process-experiment.md) —
+  static EDN bootstrap, cross-process `N/W` durability, replacement repair and
+  an offline query after writer loss
 - [Storage GC](docs/storage-gc.md) — Datahike/Yggdrasil reachability versus
   pool retention and surplus-replica retirement
 - [Storage consolidation](docs/storage-consolidation.md) — Konserve checkpoint

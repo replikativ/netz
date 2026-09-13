@@ -39,7 +39,8 @@
         initial (replication/make-state
                  {:epoch 1 :members (mapv #(dissoc % :label) devices)}
                  {:replicas 3 :write-acks 2
-                  :minimum-domains {"owner" 2 "site" 2}})
+                  :placement-minimum-domains {"owner" 2 "site" 2}
+                  :ack-minimum-domains {"owner" 2 "site" 2}})
         {intent-state :state intent-actions :actions}
         (advance initial {:type :replication/begin :manifest manifest})
         {ready :state stores :actions}

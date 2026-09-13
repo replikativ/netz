@@ -19,7 +19,8 @@
 (def policy
   {:replicas 3
    :write-acks 2
-   :minimum-domains {"owner" 2 "site" 2}})
+   :placement-minimum-domains {"owner" 2 "site" 2}
+   :ack-minimum-domains {"owner" 2 "site" 2}})
 
 (defn- controller-actions [state event context]
   (let [{controller :state actions :actions}

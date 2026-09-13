@@ -63,33 +63,37 @@
 (defn validate-policy
   "Validate and normalize placement/durability policy.
 
-  `:minimum-domains` maps a domain name to the number of distinct values which
-  the selected replica set must contain. The same constraint is later applied
-  to the acknowledgements required for a durability receipt."
+  `:placement-minimum-domains` constrains the complete selected replica set.
+  `:ack-minimum-domains` constrains the acknowledgements required for a
+  durability receipt. A valid selected set must contain at least one W-sized
+  subset which can satisfy the acknowledgement constraints."
   [layout policy]
   (validate-layout layout)
-  (let [policy (merge {:minimum-domains {}} policy)
+  (let [policy (merge {:placement-minimum-domains {}
+                       :ack-minimum-domains {}}
+                      policy)
         n (:replicas policy)
         w (:write-acks policy)
-        minima (:minimum-domains policy)
+        placement-minima (:placement-minimum-domains policy)
+        ack-minima (:ack-minimum-domains policy)
         eligible (eligible-members layout)]
     (when-not (and (safe-uint? n) (pos? n) (<= n max-replicas)
                    (safe-uint? w) (pos? w) (<= w n)
                    (<= n (count eligible))
-                   (map? minima)
-                   (every? string? (keys minima))
-                   ;; A durability receipt is emitted at W acknowledgements.
-                   ;; Requiring more distinct domains than W would make the
-                   ;; configured threshold misleading: it could only succeed
-                   ;; after more than W replicas had replied.
+                   (map? placement-minima)
+                   (every? string? (keys placement-minima))
+                   (every? #(and (safe-uint? %) (pos? %) (<= % n))
+                           (vals placement-minima))
+                   (map? ack-minima)
+                   (every? string? (keys ack-minima))
                    (every? #(and (safe-uint? %) (pos? %) (<= % w))
-                           (vals minima)))
+                           (vals ack-minima)))
       (throw (ex-info "Invalid replica policy"
                       {:type :netz.replication/invalid-policy
                        :policy policy
                        :eligible (count eligible)
                        :max-replicas max-replicas})))
-    (doseq [[domain minimum] minima]
+    (doseq [[domain minimum] (merge-with max placement-minima ack-minima)]
       (let [values (into #{} (keep #(get (:domains %) domain)) eligible)]
         (when (< (count values) minimum)
           (throw (ex-info "Replica layout cannot satisfy failure-domain policy"
@@ -182,7 +186,20 @@
                        (step prefix (subvec remaining 1) need)))))]
     (step [] (vec xs) k)))
 
-(defn- constrained-placement [ranked replicas minimum-domains]
+(defn ack-feasible?
+  "Whether some exactly-W subset of selected targets can satisfy ACK domains."
+  [members {:keys [write-acks ack-minimum-domains]}]
+  (boolean
+   (some #(satisfies-domains? % ack-minimum-domains)
+         (combinations members write-acks))))
+
+(defn policy-satisfied?
+  "Whether one selected N-set satisfies placement and permits an honest W."
+  [members {:keys [placement-minimum-domains] :as policy}]
+  (and (satisfies-domains? members placement-minimum-domains)
+       (ack-feasible? members policy)))
+
+(defn- constrained-placement [ranked replicas policy]
   ;; Do not put the work limit around a lazy `filter`: when no candidate
   ;; matches, filter has to search without yielding and the outer limit never
   ;; gets a chance to stop it. Count candidates explicitly instead.
@@ -195,7 +212,7 @@
                       {:type :netz.replication/placement-search-exhausted
                        :examined examined
                        :limit max-constrained-combinations}))
-      (satisfies-domains? (first candidates) minimum-domains)
+      (policy-satisfied? (first candidates) policy)
       (first candidates)
       :else
       (recur (rest candidates) (inc examined)))))
@@ -203,11 +220,11 @@
 (defn select-ranked
   "Internal shared selection engine. Callers must validate the layout/policy
   and supply its eligible members in profile-specific rank order."
-  [ranked {:keys [replicas minimum-domains]}]
+  [ranked {:keys [replicas] :as policy}]
   (let [preferred (subvec ranked 0 replicas)]
-    (if (satisfies-domains? preferred minimum-domains)
+    (if (policy-satisfied? preferred policy)
       preferred
-      (if-let [result (constrained-placement ranked replicas minimum-domains)]
+      (if-let [result (constrained-placement ranked replicas policy)]
         result
           ;; Individual domain availability was checked above. Reaching here
           ;; means the constraints cannot be satisfied simultaneously in N
@@ -215,7 +232,10 @@
         (throw (ex-info "No replica set satisfies all failure domains"
                         {:type :netz.replication/unsatisfiable-domains
                          :replicas replicas
-                         :minimum-domains minimum-domains}))))))
+                         :placement-minimum-domains
+                         (:placement-minimum-domains policy)
+                         :ack-minimum-domains
+                         (:ack-minimum-domains policy)}))))))
 
 (defn place
   "Select deterministic targets using profile-1 scores and validated policy."

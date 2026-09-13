@@ -59,7 +59,9 @@ def verify_command(envelope: dict[str, Any], *, layout_state: dict[str, Any],
         policy = {
             "replicas": retention["replicas"],
             "write_acks": retention["write_acks"],
-            "minimum_domains": retention["minimum_domains"],
+            "placement_minimum_domains":
+                retention["placement_minimum_domains"],
+            "ack_minimum_domains": retention["ack_minimum_domains"],
         }
         selected = place(placement_layout(current), policy, command["object"])
         targets = {member["id"] for member in selected}
@@ -102,7 +104,8 @@ def verify_command(envelope: dict[str, Any], *, layout_state: dict[str, Any],
             and len(receipts) == retention["replicas"]
             and targets == receipt_targets
             and receipts_match
-            and satisfies_domains(selected, retention["minimum_domains"])
+            and satisfies_domains(
+                selected, retention["placement_minimum_domains"])
         )
         if not valid:
             raise RetirementError("retirement evidence is not currently sufficient")

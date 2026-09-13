@@ -53,7 +53,8 @@
 (defn- policy [retention]
   {:replicas (get retention "replicas")
    :write-acks (get retention "write_acks")
-   :minimum-domains (get retention "minimum_domains")})
+   :placement-minimum-domains (get retention "placement_minimum_domains")
+   :ack-minimum-domains (get retention "ack_minimum_domains")})
 
 (defn- target-ids [layout-statement retention]
   (mapv :id

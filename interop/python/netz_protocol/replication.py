@@ -66,19 +66,32 @@ def validate_policy(layout: dict[str, Any], policy: dict[str, Any]) -> dict[str,
     eligible = eligible_members(layout)
     if not isinstance(policy, dict):
         raise ReplicationError("invalid replica policy")
-    normalized = {**policy, "minimum_domains": policy.get("minimum_domains", {})}
+    normalized = {
+        **policy,
+        "placement_minimum_domains": policy.get(
+            "placement_minimum_domains", {}),
+        "ack_minimum_domains": policy.get("ack_minimum_domains", {}),
+    }
     replicas = normalized.get("replicas")
     write_acks = normalized.get("write_acks")
-    minima = normalized["minimum_domains"]
+    placement_minima = normalized["placement_minimum_domains"]
+    ack_minima = normalized["ack_minimum_domains"]
     if (not _uint(replicas) or replicas == 0 or replicas > MAX_REPLICAS
             or not _uint(write_acks) or write_acks == 0
             or write_acks > replicas or replicas > len(eligible)
-            or not isinstance(minima, dict)
-            or not all(isinstance(key, str) for key in minima)
+            or not isinstance(placement_minima, dict)
+            or not all(isinstance(key, str) for key in placement_minima)
+            or not all(_uint(value) and 0 < value <= replicas
+                       for value in placement_minima.values())
+            or not isinstance(ack_minima, dict)
+            or not all(isinstance(key, str) for key in ack_minima)
             or not all(_uint(value) and 0 < value <= write_acks
-                       for value in minima.values())):
+                       for value in ack_minima.values())):
         raise ReplicationError("invalid replica policy")
-    for domain, minimum in minima.items():
+    combined = dict(placement_minima)
+    for domain, minimum in ack_minima.items():
+        combined[domain] = max(combined.get(domain, 0), minimum)
+    for domain, minimum in combined.items():
         available = {member.get("domains", {}).get(domain)
                      for member in eligible
                      if member.get("domains", {}).get(domain) is not None}
@@ -140,19 +153,37 @@ def satisfies_domains(members: Iterable[dict[str, Any]],
                for domain, minimum in minima.items())
 
 
+def ack_feasible(members: Iterable[dict[str, Any]],
+                 policy: dict[str, Any]) -> bool:
+    """Whether an exactly-W target subset can satisfy ACK diversity."""
+    return any(
+        satisfies_domains(candidate, policy["ack_minimum_domains"])
+        for candidate in combinations(list(members), policy["write_acks"])
+    )
+
+
+def policy_satisfied(members: Iterable[dict[str, Any]],
+                     policy: dict[str, Any]) -> bool:
+    materialized = list(members)
+    return (
+        satisfies_domains(materialized,
+                          policy["placement_minimum_domains"])
+        and ack_feasible(materialized, policy)
+    )
+
+
 def place(layout: dict[str, Any], policy: dict[str, Any],
           object_id: bytes | str) -> list[dict[str, Any]]:
     """Choose the first rendezvous-ranked set satisfying all failure domains."""
     normalized = validate_policy(layout, policy)
     ranked = rank(layout, object_id)
     replicas = normalized["replicas"]
-    minima = normalized["minimum_domains"]
     preferred = ranked[:replicas]
-    if satisfies_domains(preferred, minima):
+    if policy_satisfied(preferred, normalized):
         return preferred
     for examined, candidate in enumerate(combinations(ranked, replicas), start=1):
         if examined > MAX_CONSTRAINED_COMBINATIONS:
             raise ReplicationError("constrained placement search exhausted")
-        if satisfies_domains(candidate, minima):
+        if policy_satisfied(candidate, normalized):
             return list(candidate)
     raise ReplicationError("no replica set satisfies all failure domains")

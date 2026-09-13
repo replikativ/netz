@@ -143,7 +143,7 @@
          "layout_epoch" 1
          "replicas" 1
          "write_acks" 1
-         "minimum_domains" {}
+         "placement_minimum_domains" {} "ack_minimum_domains" {}
          "issued_at" 1000
          "retain_until" 5000
          "signer" authority}]
@@ -186,7 +186,9 @@
                      "privacy_domain" (identity/seq->bytes (range 16 32))
                      "revision" 1 "manifest" (:manifest-id split)
                      "object" (:object-id split) "layout_epoch" 0
-                     "replicas" 1 "write_acks" 1 "minimum_domains" {"site" 1}
+                     "replicas" 1 "write_acks" 1
+                     "placement_minimum_domains" {"site" 1}
+                     "ack_minimum_domains" {"site" 1}
                      "issued_at" 1000 "retain_until" 5000 "signer" client-authority}
           layout-envelope (await (replication-wire/sign-statement client-identity statement))
           retention-envelope (await (replication-wire/sign-statement client-identity retention))
@@ -274,7 +276,9 @@
            "privacy_domain" (identity/seq->bytes (range 16 32))
            "revision" 1 "manifest" (:manifest-id split)
            "object" (:object-id split) "layout_epoch" 0
-           "replicas" 1 "write_acks" 1 "minimum_domains" {"site" 1}
+           "replicas" 1 "write_acks" 1
+           "placement_minimum_domains" {"site" 1}
+           "ack_minimum_domains" {"site" 1}
            "issued_at" 1000 "retain_until" 5000
            "signer" client-authority}
           layout-envelope
