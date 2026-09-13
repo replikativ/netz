@@ -4,7 +4,7 @@ All notable changes to Netz will be documented here. The project follows
 Semantic Versioning once the wire profile leaves draft status; alpha releases
 may make incompatible protocol changes.
 
-## 0.1.0-alpha.1 — unreleased
+## 0.1.0-alpha.1 — 2026-09-13
 
 - Added a release-artifact verifier that keeps the Maven and Python versions,
   public documentation, generated POM, Apache-2.0 license and required jar
