@@ -772,7 +772,8 @@ complete and test:
    Python file repositories (the portable lifecycle-policy adapter, JVM
    capability-gated transfer runtime, local inventory/scrub API and durable
    receipt replay are implemented);
-4. operational clock-skew and real-store deletion tests (the journal-first
-   pure lease/expiry/deletion machine is implemented);
+4. operational clock-skew and non-JVM real-store deletion tests (the
+   journal-first pure lease/expiry/deletion machine and crash-resumable JVM
+   filesystem erasure are implemented);
 5. independent JVM, JavaScript and Python end-to-end tests; and
 6. real three-device tests in addition to deterministic fault simulation.
