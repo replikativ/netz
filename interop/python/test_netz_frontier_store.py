@@ -1,4 +1,6 @@
 import asyncio
+import os
+import threading
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,6 +40,54 @@ class FrontierStoreTest(unittest.IsolatedAsyncioTestCase):
             restored = FileFrontierStore(path)
             self.assertEqual({stream: 11}, await restored.load_frontiers())
             self.assertEqual(decode_frontiers(path.read_bytes()), {stream: 11})
+
+    async def test_cancelled_save_finishes_before_next_save(self):
+        stream = (bytes(32), 0, "topic")
+        with tempfile.TemporaryDirectory() as root:
+            store = FileFrontierStore(Path(root) / "frontiers", durable_ancestor=root)
+            started = threading.Event()
+            release = threading.Event()
+            save = store._save
+
+            def delay_first(frontiers):
+                if frontiers[stream] == 1:
+                    started.set()
+                    if not release.wait(5):
+                        raise TimeoutError("first save did not resume")
+                save(frontiers)
+
+            with patch.object(store, "_save", side_effect=delay_first):
+                first = asyncio.create_task(store.save_frontiers({stream: 1}))
+                try:
+                    self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                    first.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await first
+                    self.assertTrue(store._lock.locked())
+                    second = asyncio.create_task(store.save_frontiers({stream: 2}))
+                    await asyncio.sleep(0)
+                    self.assertFalse(second.done())
+                finally:
+                    release.set()
+                await second
+            self.assertEqual({stream: 2}, await store.load_frontiers())
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires POSIX FIFOs")
+    async def test_fifo_is_rejected_before_waiting_for_a_writer(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "frontiers"
+            os.mkfifo(path)
+            try:
+                with self.assertRaises(FrontierStoreError):
+                    await asyncio.wait_for(FileFrontierStore(path).load_frontiers(), 2)
+            finally:
+                # Also release a blocked reader if the regression returns.
+                try:
+                    writer = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+                except OSError:
+                    pass
+                else:
+                    os.close(writer)
 
     async def test_missing_ancestor_is_read_only_without_mutation(self):
         with tempfile.TemporaryDirectory() as root:

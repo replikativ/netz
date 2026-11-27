@@ -11,6 +11,7 @@
             [kabel.peer :as kpeer]
             [netz.store.konserve :as ks]
             [netz.store.protocol :as p]
+            [konserve.core :as k]
             [konserve.memory :refer [new-mem-store]]
             [superv.async :refer [S <??]]
             [clojure.core.async :refer [<!! timeout]]))
@@ -49,6 +50,28 @@
             reopened (ks/new-konserve-store underlying)]
         (is (= {:a 2} (<!! (p/-load reopened :book))))
         (is (= 7 (<!! (p/-load reopened :epoch))))))))
+
+(deftest removing-one-key-preserves-durable-peer-state
+  (let [s (fresh)
+        block [:blocks "example"]]
+    (doseq [[k v] [[:identity :keypair] [:epoch 7] [block :value]]]
+      (<!! (p/-store! s k v)))
+    (doseq [k [:missing block]]
+      (is (true? (<!! (p/-remove! s k)))))
+    (let [reopened (ks/new-konserve-store (:store s))]
+      (is (= #{:identity :epoch} (<!! (p/-keys* reopened))))
+      (is (= :keypair (<!! (p/-load reopened :identity))))
+      (is (= 7 (<!! (p/-load reopened :epoch))))
+      (is (nil? (<!! (p/-load reopened block)))))))
+
+(deftest propagates-backend-errors
+  (let [s (fresh)
+        error (ex-info "storage failure" {})
+        failed (fn [& _] (p/chan-of error))]
+    (with-redefs [k/assoc-in failed k/update failed k/get failed]
+      (is (identical? error (ex-cause (<!! (p/-store! s :epoch 1)))))
+      (is (identical? error (ex-cause (<!! (p/-remove! s :epoch)))))
+      (is (identical? error (ex-cause (<!! (p/-keys* s))))))))
 
 (deftest prefix-isolates-the-overlay
   (testing "overlay state does not collide with application data"

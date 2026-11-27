@@ -178,8 +178,8 @@
                   ;; enough is that everything AFTER it is checked, and that a
                   ;; caller who knows the publisher can pin it in advance.
                   :trust-on-first-use? true
-                  ;; Retained forever: an equivocation proof that expires is
-                  ;; not a proof. Bounded because it is attacker-triggerable.
+                  ;; Keep full proofs for this many databases. A head remains
+                  ;; compromised after its proof has left the cache.
                   :max-equivocations 64}
                  opts)
     ;; database -> {:version n :root r :publisher p}
@@ -192,7 +192,7 @@
 (defn head
   "What we currently believe about `database`, or nil."
   [state database]
-  (get-in state [:heads database]))
+  (some-> (get-in state [:heads database]) (dissoc :record :compromised?)))
 
 (defn pin
   "Declare in advance who may publish roots for `database`.
@@ -201,7 +201,9 @@
   knows the owner should say so, and then no first record can establish a
   different one."
   [state database publisher]
-  (assoc-in state [:heads database] {:version -1 :root nil :publisher publisher}))
+  (update-in state [:heads database]
+             #(assoc (select-keys % [:compromised?])
+                     :version -1 :root nil :publisher publisher)))
 
 (defn compromised?
   "Has `database` produced an equivocation proof?
@@ -210,14 +212,22 @@
   roots at one version has demonstrated key compromise or duplicity, and no
   later record un-demonstrates it."
   [state database]
-  (boolean (seq (get-in state [:equivocations database]))))
+  (boolean (or (get-in state [:heads database :compromised?])
+               (seq (get-in state [:equivocations database])))))
 
 (defn- record-equivocation
   [state database a b]
-  (let [{:keys [max-equivocations]} (:opts state)]
-    (cond-> (update-in state [:equivocations database] (fnil conj []) [a b])
-      (> (count (:equivocations state)) max-equivocations)
-      (update :equivocations dissoc (first (sort (keys (:equivocations state))))))))
+  (let [proofs (assoc (:equivocations state) database [[a b]])
+        evicted (take (max 0 (- (count proofs) (get-in state [:opts :max-equivocations])))
+                      (keys proofs))]
+    (-> (reduce #(assoc-in %1 [:heads %2 :compromised?] true) state evicted)
+        (assoc-in [:heads database :compromised?] true)
+        (assoc :equivocations (apply dissoc proofs evicted)))))
+
+(defn- same-root? [a b]
+  (if (and (wire/byte-buffer? a) (wire/byte-buffer? b))
+    (identity/bufs= a b)
+    (= a b)))
 
 (defn accept
   "Consider `record`. Returns `[state outcome]`.
@@ -254,7 +264,7 @@
         (nil? cur)
         (if (get-in state [:opts :trust-on-first-use?])
           [(-> state
-               (assoc-in [:heads db] {:version v :root r :publisher pub})
+               (assoc-in [:heads db] {:version v :root r :publisher pub :record record})
                (update-in [:stats :accepted] inc))
            :first]
           [(update-in state [:stats :wrong-publisher] inc) :wrong-publisher])
@@ -263,9 +273,9 @@
         [(update-in state [:stats :wrong-publisher] inc) :wrong-publisher]
 
         ;; Same version, different root: the publisher signed two histories.
-        (and (= v (:version cur)) (not= r (:root cur)))
+        (and (= v (:version cur)) (not (same-root? r (:root cur))))
         [(-> state
-             (record-equivocation db {:version (:version cur) :root (:root cur)} record)
+             (record-equivocation db (or (get-in state [:heads db :record]) cur) record)
              (update-in [:stats :forks] inc))
          :fork]
 
@@ -276,12 +286,12 @@
         [(update-in state [:stats :gaps] inc) :gap]
 
         ;; Exactly the next version — the chain must join up.
-        (not= prev (:root cur))
+        (not (same-root? prev (:root cur)))
         [(update-in state [:stats :gaps] inc) :not-successor]
 
         :else
         [(-> state
-             (assoc-in [:heads db] {:version v :root r :publisher pub})
+             (assoc-in [:heads db] {:version v :root r :publisher pub :record record})
              (update-in [:stats :accepted] inc))
          :accepted]))))
 

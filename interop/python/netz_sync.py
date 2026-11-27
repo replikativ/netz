@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from netz_codec import dumps, loads
+from netz_codec import dumps, is_profile_version, loads
 
 JOIN_PROFILE = "netz/join-semilattice/1"
 ROOT_PROFILE = "netz/root-log/1"
@@ -157,7 +157,8 @@ class SyncSender:
         if (not isinstance(frame, dict)
                 or set(frame) != {"v", "type", "session", "topic", "profile",
                                   "summary"}
-                or frame.get("v") != 1 or frame.get("type") != "sync/open"
+                or not is_profile_version(frame.get("v"))
+                or frame.get("type") != "sync/open"
                 or frame.get("profile") != profile.name
                 or not isinstance(frame.get("summary"), bytes)):
             raise SyncError("invalid sync/open frame")
@@ -175,7 +176,7 @@ class SyncSender:
         """Consume one exact cumulative ACK or remote abort."""
         if self.status != "synchronizing":
             raise SyncError("synchronization sender is no longer active")
-        if (not isinstance(frame, dict) or frame.get("v") != 1
+        if (not isinstance(frame, dict) or not is_profile_version(frame.get("v"))
                 or frame.get("session") != self.session):
             raise SyncError("frame is for an unknown session or profile version")
         if frame.get("type") == "sync/ack":
@@ -244,7 +245,7 @@ class SyncReceiver:
     def receive(self, frame: dict[str, Any]) -> dict[str, Any] | None:
         if self.status != "synchronizing":
             raise SyncError("synchronization session is no longer active")
-        if (not isinstance(frame, dict) or frame.get("v") != 1
+        if (not isinstance(frame, dict) or not is_profile_version(frame.get("v"))
                 or frame.get("session") != self.session):
             raise SyncError("frame is for an unknown session or profile version")
         frame_type = frame.get("type")

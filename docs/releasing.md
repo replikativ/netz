@@ -12,8 +12,10 @@ by changing the single `VERSION_PREFIX` file, for example from `0.1` to `0.2`.
 We intentionally do not create a tag or GitHub release for every alpha build.
 
 `build.clj` and `build_version.py` independently derive the same version from
-the same checkout. The JVM verifier validates the generated POM, license and
-required JAR entries; the Python CI job compares both derivations. Python
+the same full-history checkout. If Git reports a shallow repository, fetch the
+remaining history with `git fetch --unshallow` before building. The JVM verifier
+validates the generated POM, license and required JAR entries. Python CI
+checks the package version against the repository prefix and revision count. Python
 source-tree builds derive the count from Git; an sdist carries its derived package
 metadata into the wheel build. For any other exported source tree, pass the
 exact already-derived value as `NETZ_BUILD_VERSION=0.1.N`; the override is

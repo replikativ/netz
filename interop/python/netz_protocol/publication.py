@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Iterable, Mapping, cast
 
-from netz_codec import dumps, loads
+from netz_codec import dumps, is_profile_version, loads
 
 from .identity import KEY_BYTES, IdentityError, authority_id, genesis_bytes
 
@@ -122,7 +122,8 @@ def parse_publication(value: Mapping[str, object]) -> dict[str, object]:
     allowed = required | {"repair"}
     if (not isinstance(value, dict) or not required.issubset(value)
             or not set(value).issubset(allowed)
-            or value.get("v") != 1 or value.get("type") != "gossip"
+            or not is_profile_version(value.get("v"))
+            or value.get("type") != "gossip"
             or ("repair" in value and value["repair"] is not True)):
         raise PublicationError("invalid publication schema")
     genesis = value["genesis"]

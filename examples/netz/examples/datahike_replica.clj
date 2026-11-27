@@ -1,7 +1,6 @@
 (ns netz.examples.datahike-replica
   "Two independently stored Datahike snapshots over authenticated Netz peers."
   (:require [boring.core :as boring]
-            [clojure.core.async :as a]
             [datahike.api :as d]
             [datahike.cbor :as dcbor]
             [datahike.store :as ds]

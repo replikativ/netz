@@ -327,6 +327,31 @@
    "placement_minimum_domains" {} "ack_minimum_domains" {}
    "issued_at" 1000 "retain_until" 5000 "signer" authority})
 
+(deftest deletion-preserves-another-domains-retained-installation
+  (with-store-root [root (temporary-directory)]
+    (let [store (file-store/new-file-store root {:clock (constantly 1300)})
+          other-claim (assoc retention "cluster" (identity/seq->bytes [42])
+                             "privacy_domain" (identity/seq->bytes (range 64)))
+          deletion (deletion-for split)
+          runtime (lifecycle-runtime/start!
+                   {:identity {:genesis genesis}
+                    :controllers [authority] :store store
+                    :now-fn (constantly 1300)})]
+      (try
+        (is (true? (await (lifecycle-runtime/ready runtime))))
+        (is (true? (await (lifecycle-runtime/apply-envelope!
+                           runtime (sign-statement other-claim)))))
+        (doseq [piece (:pieces split)]
+          (is (= :ok (stage! store piece))))
+        (is (= :ok (:result (install! store "netz/store/fsync/1"))))
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"Another lifecycle claim"
+             (await (lifecycle-storage/-delete-object!
+                     store (object-key deletion) deletion "netz/store/fsync/1"))))
+        (is (= :healthy (:status (await (inventory/scrub-object!
+                                         store (:manifest-id split))))))
+        (finally (lifecycle-runtime/stop! runtime))))))
+
 (def layout0
   {"v" 1 "type" "blob/layout"
    "placement" "netz/blob-placement/2"

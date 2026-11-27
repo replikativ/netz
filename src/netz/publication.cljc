@@ -72,32 +72,6 @@
     true
     (catch #?(:clj Throwable :cljs :default) _ false)))
 
-(defn- genesis-from-wire [value]
-  (when-not (and (map? value)
-                 (= #{"v" "rotation" "threshold" "operational" "revoke"}
-                    (set (keys value)))
-                 (= 1 (get value "v")))
-    (throw (ex-info "invalid publication genesis object"
-                    {:type :netz.publication/invalid-genesis})))
-  (let [rotation (get value "rotation")
-        operational (get value "operational")
-        threshold (get value "threshold")
-        revoke (get value "revoke")]
-    (when-not (and (vector? rotation) (seq rotation)
-                   (vector? operational) (seq operational)
-                   (every? #(and (wire/byte-buffer? %)
-                                 (= identity/key-size (identity/buf-length %)))
-                           (concat rotation operational [revoke]))
-                   (integer? threshold) (pos? threshold)
-                   (<= threshold (count rotation)))
-      (throw (ex-info "invalid publication genesis fields"
-                      {:type :netz.publication/invalid-genesis})))
-    (identity/make-genesis
-     {:rotation-keys (mapv identity/bytes->hex rotation)
-      :rotation-threshold threshold
-      :operational-keys (mapv identity/bytes->hex operational)
-      :revocation-commit (identity/bytes->hex revoke)})))
-
 (defn ->wire
   "Convert a signed internal publication to its strict profile-1 envelope."
   [{:keys [origin-authority origin-genesis origin-key origin-sig hops repair?]
@@ -138,7 +112,7 @@
                        (true? (get value "repair"))))
       (throw (ex-info "invalid profile-1 publication schema"
                       {:type :netz.publication/invalid-envelope})))
-    (let [genesis (genesis-from-wire (get value "genesis"))
+    (let [genesis (wire/genesis-from-wire (get value "genesis") :netz.publication/invalid-genesis)
           authority (authority-bytes (get value "origin"))
           operational (get value "operational")
           signature (get value "signature")

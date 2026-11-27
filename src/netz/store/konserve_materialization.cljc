@@ -5,69 +5,19 @@
   application configures one logical store ID, an allowlist of codec IDs, and a
   decoder from the authenticated opaque application key to its local Konserve
   key. Existing different bytes are never overwritten."
-  (:require [konserve.core :as k]
+  (:require [konserve.binary :as binary]
+            [konserve.core :as k]
             [netz.identity :as identity]
             [netz.wire :as wire]
-            #?(:clj [clojure.core.async :refer [chan close! go <! put!]]
-               :cljs [clojure.core.async :refer [chan close! <! put!]
+            #?(:clj [clojure.core.async :refer [chan go <! put!]]
+               :cljs [clojure.core.async :refer [chan <! put!]
                       :refer-macros [go]])))
 
 (defn- failure? [value]
   (instance? #?(:clj Throwable :cljs js/Error) value))
 
-(defn- value-channel [value]
-  (let [out (chan 1)]
-    (if (some? value)
-      (put! out value (fn [_] (close! out)))
-      (close! out))
-    out))
-
-#?(:clj
-   (defn- binary-value [{:keys [input-stream blob] :as value}]
-     (try
-       (value-channel
-        (cond
-          (nil? value) nil
-          (and (nil? input-stream) (nil? blob)) nil
-          (wire/byte-buffer? value) value
-          (wire/byte-buffer? input-stream) input-stream
-          input-stream (.readAllBytes ^java.io.InputStream input-stream)
-          (wire/byte-buffer? blob) blob
-          :else (throw (ex-info "Unsupported Konserve binary value"
-                                {:type
-                                 :netz.replication/invalid-binary-value}))))
-       (catch Throwable cause (value-channel cause)))))
-
-#?(:cljs
-   (defn- stream-channel [stream]
-     (let [out (chan 1)
-           chunks (atom [])]
-       (.on ^js stream "data" #(swap! chunks conj %))
-       (.once ^js stream "end"
-              #(put! out
-                     (if (seq @chunks)
-                       (apply identity/concat-bufs @chunks)
-                       (identity/seq->bytes []))
-                     (fn [_] (close! out))))
-       (.once ^js stream "error"
-              #(put! out % (fn [_] (close! out))))
-       out)))
-
-#?(:cljs
-   (defn- binary-value [{:keys [input-stream blob] :as value}]
-     (cond
-       (nil? value) (value-channel nil)
-       (and (nil? input-stream) (nil? blob)) (value-channel nil)
-       (wire/byte-buffer? value) (value-channel value)
-       (wire/byte-buffer? input-stream) (value-channel input-stream)
-       (wire/byte-buffer? blob) (value-channel blob)
-       input-stream (stream-channel input-stream)
-       :else (value-channel
-              (ex-info "Unsupported Konserve binary value"
-                       {:type :netz.replication/invalid-binary-value})))))
-
 (defn- read-bytes! [store key]
-  (k/bget store key binary-value {:sync? false}))
+  (k/bget store key (binary/to-bytes) {:sync? false}))
 
 (defn binary-installer
   "Return an installer callback for `netz.replication.materialization`.
@@ -77,7 +27,9 @@
   `bytes/identity` codec. The callback checks the authenticated logical store and
   codec, refuses nil keys, treats identical existing bytes as idempotent, and
   rejects a conflicting immutable value. A new binary value is read back and
-  compared before `:committed` is returned."
+  compared before `:committed` is returned. Route every write to these keys
+  through the same installer instance. Its read/check/write gate is local to
+  the callback, and Konserve binary writes provide no conditional create."
   [store {:keys [store-id decode-key codecs]
           :or {codecs #{"bytes/identity"}}}]
   (when-not (and store

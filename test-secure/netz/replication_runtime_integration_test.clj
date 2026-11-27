@@ -1,4 +1,5 @@
-(ns netz.replication-runtime-integration-test
+(ns ^{:clj-kondo/config '{:lint-as {netz.replication-test-store/with-store-roots clojure.core/let}}}
+  netz.replication-runtime-integration-test
   "Durable blob transfer over the released Kabel/http-kit/Noise carrier."
   (:refer-clojure :exclude [await])
   (:require [clojure.core.async :refer [timeout]]
@@ -14,7 +15,7 @@
             [netz.replication.connectivity-runtime :as connectivity-runtime]
             [netz.replication.erasure :as erasure]
             [netz.replication.erasure-runtime :as erasure-runtime]
-            [netz.replication-test-store :as file-store]
+            [netz.replication-test-store :as file-store :refer [temporary-directory with-store-roots]]
             [netz.replication.inventory :as inventory]
             [netz.replication.layout :as layout]
             [netz.replication.lifecycle-runtime :as lifecycle-runtime]
@@ -26,8 +27,7 @@
             [netz.transport.secure :as secure-overlay]
             [netz.wire :as wire]
             [superv.async :refer [<?? S]])
-  (:import (java.nio.file Files Path)
-           (java.util Comparator)))
+  (:import (java.nio.file Files Path)))
 
 (def ^:private port-counter (atom 49100))
 
@@ -38,30 +38,6 @@
         (pred) true
         (> (System/currentTimeMillis) deadline) false
         :else (do (<?? S (timeout 25)) (recur))))))
-
-(defn- temporary-directory []
-  (Files/createTempDirectory
-   "netz-blob-runtime-test-"
-   (make-array java.nio.file.attribute.FileAttribute 0)))
-
-(defn- delete-tree! [^Path root]
-  (when (Files/exists root (make-array java.nio.file.LinkOption 0))
-    (with-open [paths (Files/walk
-                       root
-                       (make-array java.nio.file.FileVisitOption 0))]
-      (doseq [target (sort (Comparator/reverseOrder)
-                           (iterator-seq (.iterator paths)))]
-        (Files/deleteIfExists ^Path target)))))
-
-(defmacro ^{:clj-kondo/lint-as 'clojure.core/let} with-store-roots
-  [[source-binding source-expression target-binding target-expression] & body]
-  `(let [~source-binding ~source-expression
-         ~target-binding ~target-expression]
-     (try
-       ~@body
-       (finally
-         (delete-tree! ~source-binding)
-         (delete-tree! ~target-binding)))))
 
 (defn start-server [url identity capabilities]
   (let [id (identity/peer-id (:genesis identity))
@@ -165,7 +141,7 @@
 
 (deftest placement-demand-selects-the-authenticated-target
   (with-store-roots [source-root (temporary-directory)
-                     unused-root (temporary-directory)]
+                     _unused-root (temporary-directory)]
     (let [target-url (str "ws://localhost:" (swap! port-counter inc))
           ordinary-url (str "ws://localhost:" (swap! port-counter inc))
           capabilities (conj noise/default-capabilities

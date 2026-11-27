@@ -43,9 +43,11 @@ authorizes an authenticated peer before consulting its injected block store or
 provider index, so policy denial does not become a content-existence oracle.
 The reusable asyncio client exposes `fetch_content` and `find_content` on its
 live authenticated connection and can install a `ContentService`; transport
-policy and storage policy are separate fail-closed gates. Request timeouts,
-disconnect cleanup, backend waits, service concurrency, and outstanding state
-are bounded. Slow storage does not block dissemination on the shared carrier.
+policy and storage policy are separate fail-closed gates. The client bounds
+outstanding requests and service concurrency. Synchronous callbacks run on the
+asyncio event loop and must return promptly. Use an async callback for storage
+I/O, with a timeout on the underlying operation, so dissemination can continue
+while a content request waits. The service applies its deadline to the await.
 
 `netz_protocol.replication` implements transport-independent deterministic
 placement for the experimental durable-blob extension. The companion

@@ -97,6 +97,19 @@
                                 {:a {0 {:t (is*/add-all is*/empty [3 4 5])}}})]
       (is (= [{:origin :a :epoch 0 :topic :t :lo 3 :hi 5}] wants)))))
 
+(deftest sparse-history-requests-only-advertised-ranges
+  (let [state (d/make-state :me)
+        summary {:a {0 {:t [[1 2] [7 9]]}}}]
+    (is (= [[2 2] [7 9]]
+           (mapv (juxt :lo :hi) (d/gaps-against state summary {[:a 0 :t] 2}))))
+    (let [fragmented (mapv #(vector % %) (range 0 40 2))
+          {:keys [actions]} (d/handler state
+                                       {:type :message :from :peer
+                                        :payload {:type :have
+                                                  :summary {:a {0 {:t fragmented}}}}}
+                                       {:now 0})]
+      (is (= 16 (count (get-in actions [0 2 :ranges])))))))
+
 (deftest delivery-is-fifo-within-a-topic-stream
   (let [receive (fn [state topic seq-no payload]
                   (d/handler state
@@ -155,6 +168,9 @@
         s2 (:state (receive s1 2))
         overflow (receive s2 3)
         syncs (filter #(= :state-sync (first %)) (:actions overflow))]
+    (let [filled (receive s2 0)]
+      (is (= [0 1 2] (:delivered (:state filled))))
+      (is (empty? (filter #(= :state-sync (first %)) (:actions filled)))))
     (is (= 1 (count syncs)) "overflow must request state exactly once")
     (is (contains? (:delivery-desynchronized (:state overflow))
                    [:publisher 0 :t]))
@@ -661,6 +677,15 @@
         (is (= [{:origin :pub :epoch 0 :topic :t :missing-below 15
                  :through 19}]
                stranded))))
+
+    (testing "out-of-order receipt cannot conceal a missing prefix"
+      (let [behind (d/mark-seen (d/make-state :behind #{:t}) :pub 0 :t 19)
+            stream [:pub 0 :t]
+            [recovered _] (d/sync-committed behind {stream 14})
+            [still-current _] (d/sync-committed recovered {stream 3})]
+        (is (seq (d/beyond-horizon behind (d/summary pub) (d/horizon pub))))
+        (is (= 15 (get-in still-current [:delivery-next stream])))
+        (is (empty? (d/beyond-horizon still-current (d/summary pub) (d/horizon pub))))))
 
     (testing "a caught-up peer is not stranded"
       (let [current (reduce (fn [s i] (d/mark-seen s :pub 0 :t i))

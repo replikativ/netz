@@ -1,4 +1,5 @@
-(ns netz.mixed-runtime-integration-test
+(ns ^{:clj-kondo/config '{:lint-as {netz.replication-test-store/with-store-roots clojure.core/let}}}
+  netz.mixed-runtime-integration-test
   "Real bidirectional Python/JVM durable-blob interoperability."
   (:refer-clojure :exclude [await])
   (:require [clojure.core.async :refer [timeout]]
@@ -11,7 +12,7 @@
             [netz.identity :as identity]
             [netz.overlay.runtime :as overlay-runtime]
             [netz.replication.blob :as blob]
-            [netz.replication-test-store :as file-store]
+            [netz.replication-test-store :as file-store :refer [temporary-directory with-store-roots]]
             [netz.replication.runtime :as replication-runtime]
             [netz.replication.storage :as storage]
             [netz.replication.wire :as replication-wire]
@@ -21,8 +22,7 @@
             [netz.transport.secure :as secure-overlay]
             [netz.wire :as wire]
             [superv.async :refer [<?? S]])
-  (:import (java.nio.file Files Path)
-           (java.util Comparator)
+  (:import (java.nio.file Files)
            (java.util.concurrent TimeUnit)))
 
 (def ^:private port-counter (atom 49300))
@@ -54,30 +54,6 @@
 (defn- await [channel]
   (let [value (<?? S channel)]
     (if (instance? Throwable value) (throw value) value)))
-
-(defn- temporary-directory []
-  (Files/createTempDirectory
-   "netz-mixed-runtime-test-"
-   (make-array java.nio.file.attribute.FileAttribute 0)))
-
-(defn- delete-tree! [^Path root]
-  (when (Files/exists root (make-array java.nio.file.LinkOption 0))
-    (with-open [paths (Files/walk
-                       root
-                       (make-array java.nio.file.FileVisitOption 0))]
-      (doseq [target (sort (Comparator/reverseOrder)
-                           (iterator-seq (.iterator paths)))]
-        (Files/deleteIfExists ^Path target)))))
-
-(defmacro ^{:clj-kondo/lint-as 'clojure.core/let} with-store-roots
-  [[receipt-binding target-binding] & body]
-  `(let [~receipt-binding (temporary-directory)
-         ~target-binding (temporary-directory)]
-     (try
-       ~@body
-       (finally
-         (delete-tree! ~receipt-binding)
-         (delete-tree! ~target-binding)))))
 
 (defn- start-server
   [url identity capabilities & [overlay-opts authorize-sync?
@@ -118,13 +94,12 @@
       (.destroyForcibly process)
       (.waitFor process 5 TimeUnit/SECONDS))))
 
-(defn- run-python-sender [url server-authority receipt-path timeout-seconds]
+(defn- run-python [script url server-authority timeout-seconds & extra-args]
   (let [python (or (System/getenv "NETZ_PYTHON") "python3")
-        arguments
-        [python "test-mixed/python/mixed_blob_sender.py"
-         "--uri" url
-         "--remote-authority" (identity/bytes->hex server-authority)
-         "--receipt" (str receipt-path)]
+        arguments (into [python (str "test-mixed/python/" script)
+                         "--uri" url
+                         "--remote-authority" (identity/bytes->hex server-authority)]
+                        extra-args)
         builder (doto (ProcessBuilder. ^java.util.List arguments)
                   (.redirectErrorStream true))
         process (.start builder)
@@ -143,32 +118,12 @@
 
 (defn- run-python-receiver
   [url server-authority store-path completion-path timeout-seconds
-   {:keys [attempt stop-after-pieces]
-    :or {attempt 0 stop-after-pieces 0}}]
-  (let [python (or (System/getenv "NETZ_PYTHON") "python3")
-        arguments
-        [python "test-mixed/python/mixed_blob_receiver.py"
-         "--uri" url
-         "--remote-authority" (identity/bytes->hex server-authority)
-         "--store" (str store-path)
-         "--completion" (str completion-path)
-         "--attempt" (str attempt)
-         "--stop-after-pieces" (str stop-after-pieces)]
-        builder (doto (ProcessBuilder. ^java.util.List arguments)
-                  (.redirectErrorStream true))
-        process (.start builder)
-        stream (.getInputStream process)
-        output (future (slurp stream))]
-    (try
-      (let [finished? (.waitFor process timeout-seconds TimeUnit/SECONDS)]
-        (when-not finished? (stop-process! process))
-        {:exit (when finished? (.exitValue process))
-         :output (deref output 5000 "process output did not close")
-         :timed-out? (not finished?)})
-      (finally
-        (stop-process! process)
-        (.close stream)
-        (future-cancel output)))))
+   {:keys [attempt stop-after-pieces] :or {attempt 0 stop-after-pieces 0}}]
+  (run-python "mixed_blob_receiver.py" url server-authority timeout-seconds
+              "--store" (str store-path)
+              "--completion" (str completion-path)
+              "--attempt" (str attempt)
+              "--stop-after-pieces" (str stop-after-pieces)))
 
 (defn- install-source! [store session split]
   (doseq [{:keys [index id data]} (:pieces split)]
@@ -179,74 +134,9 @@
           store session (:manifest-id split) (:manifest split) {}
           "netz/store/fsync/1")))
 
-(defn- run-python-sync [url server-authority timeout-seconds]
-  (let [python (or (System/getenv "NETZ_PYTHON") "python3")
-        arguments
-        [python "test-mixed/python/mixed_sync_receiver.py"
-         "--uri" url
-         "--remote-authority" (identity/bytes->hex server-authority)]
-        builder (doto (ProcessBuilder. ^java.util.List arguments)
-                  (.redirectErrorStream true))
-        process (.start builder)
-        stream (.getInputStream process)
-        output (future (slurp stream))]
-    (try
-      (let [finished? (.waitFor process timeout-seconds TimeUnit/SECONDS)]
-        (when-not finished? (stop-process! process))
-        {:exit (when finished? (.exitValue process))
-         :output (deref output 5000 "process output did not close")
-         :timed-out? (not finished?)})
-      (finally
-        (stop-process! process)
-        (.close stream)
-        (future-cancel output)))))
-
-(defn- run-python-sync-sender [url server-authority timeout-seconds]
-  (let [python (or (System/getenv "NETZ_PYTHON") "python3")
-        arguments
-        [python "test-mixed/python/mixed_sync_sender.py"
-         "--uri" url
-         "--remote-authority" (identity/bytes->hex server-authority)]
-        builder (doto (ProcessBuilder. ^java.util.List arguments)
-                  (.redirectErrorStream true))
-        process (.start builder)
-        stream (.getInputStream process)
-        output (future (slurp stream))]
-    (try
-      (let [finished? (.waitFor process timeout-seconds TimeUnit/SECONDS)]
-        (when-not finished? (stop-process! process))
-        {:exit (when finished? (.exitValue process))
-         :output (deref output 5000 "process output did not close")
-         :timed-out? (not finished?)})
-      (finally
-        (stop-process! process)
-        (.close stream)
-        (future-cancel output)))))
-
-(defn- run-python-dissemination [url server-authority timeout-seconds & extra-args]
-  (let [python (or (System/getenv "NETZ_PYTHON") "python3")
-        arguments
-        (into [python "test-mixed/python/mixed_dissemination_receiver.py"
-               "--uri" url
-               "--remote-authority" (identity/bytes->hex server-authority)] extra-args)
-        builder (doto (ProcessBuilder. ^java.util.List arguments)
-                  (.redirectErrorStream true))
-        process (.start builder)
-        stream (.getInputStream process)
-        output (future (slurp stream))]
-    (try
-      (let [finished? (.waitFor process timeout-seconds TimeUnit/SECONDS)]
-        (when-not finished? (stop-process! process))
-        {:exit (when finished? (.exitValue process))
-         :output (deref output 5000 "process output did not close")
-         :timed-out? (not finished?)})
-      (finally
-        (stop-process! process)
-        (.close stream)
-        (future-cancel output)))))
-
 (deftest python-sender-transfers-into-jvm-durable-store
-  (with-store-roots [receipt-root target-root]
+  (with-store-roots [receipt-root (temporary-directory)
+                     target-root (temporary-directory)]
     (let [port (swap! port-counter inc)
           url (str "ws://localhost:" port)
           capabilities (conj noise/default-capabilities
@@ -280,8 +170,8 @@
           receipt-path (.resolve receipt-root "receipt.cbor")]
       (try
         (let [wrong-authority (identity/seq->bytes (repeat 32 255))
-              rejected (run-python-sender
-                        url wrong-authority receipt-path 30)]
+              rejected (run-python "mixed_blob_sender.py" url wrong-authority 30
+                          "--receipt" (str receipt-path))]
           (is (false? (:timed-out? rejected)) (:output rejected))
           (is (not= 0 (:exit rejected))
               "a Python dial with the wrong target Authority succeeded")
@@ -290,7 +180,8 @@
           (is (empty? @installed)
               "target mismatch reached durable storage"))
         (let [{:keys [exit output timed-out?]}
-              (run-python-sender url server-authority receipt-path 30)]
+              (run-python "mixed_blob_sender.py" url server-authority 30
+                          "--receipt" (str receipt-path))]
           (is (false? timed-out?) output)
           (is (= 0 exit) output)
           (is (= (str "NETZ_MIXED_OK "
@@ -329,7 +220,8 @@
           (stop-node! server))))))
 
 (deftest jvm-provider-transfers-into-python-durable-store
-  (with-store-roots [source-root target-root]
+  (with-store-roots [source-root (temporary-directory)
+                     target-root (temporary-directory)]
     (let [port (swap! port-counter inc)
           url (str "ws://localhost:" port)
           capabilities (conj noise/default-capabilities
@@ -511,7 +403,7 @@
         (identity/authority-id-bytes (:genesis server-identity))]
     (try
       (let [{:keys [exit output timed-out?]}
-            (run-python-sync url server-authority 30)]
+            (run-python "mixed_sync_receiver.py" url server-authority 30)]
         (is (false? timed-out?) output)
         (is (= 0 exit) output)
         (is (= "NETZ_MIXED_SYNC_OK jvm,python"
@@ -543,7 +435,7 @@
         (identity/authority-id-bytes (:genesis server-identity))]
     (try
       (let [python-result
-            (future (run-python-sync-sender url server-authority 30))]
+            (future (run-python "mixed_sync_sender.py" url server-authority 30))]
         (is (wait-for
              10000
              #(contains? (overlay-runtime/connections (:peer server))
@@ -700,7 +592,7 @@
               ;; Python pins the JVM connection and the distinct Node origin.
               (is (.isAlive process) "Node must remain live during relay repair")
               (let [{:keys [exit output timed-out?]}
-                    (run-python-dissemination
+                    (run-python "mixed_dissemination_receiver.py"
                      url (identity/authority-id-bytes (:genesis server-identity)) 30
                      "--topic" topic "--origin-authority" node-authority)]
                 (is (false? timed-out?) output)
@@ -744,7 +636,7 @@
                                               [:dissemination :store])))
         (throw (ex-info "Publication was not retained before Python connected" {})))
       (let [{:keys [exit output timed-out?]}
-            (run-python-dissemination url server-authority 30)]
+            (run-python "mixed_dissemination_receiver.py" url server-authority 30)]
         (is (false? timed-out?) output)
         (is (= 0 exit) output)
         (is (= "NETZ_MIXED_DISSEMINATION_OK root-42"

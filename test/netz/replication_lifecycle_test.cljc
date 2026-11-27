@@ -237,6 +237,23 @@
         (is (empty? resurrection-actions))
         (is (= :deleted (lifecycle/status rejected retention)))))))
 
+(deftest a-scheduled-or-failed-deletion-cannot-be-renewed
+  (let [marker (deletion 1 1300)
+        {pending :state actions :actions} (accept (state) marker 1200)
+        {waiting :state} (land pending actions :ok 1200)
+        {due :state writes :actions} (step waiting {:type :lifecycle/tick} 1300)
+        {deleting :state deletes :actions} (land due writes :ok 1300)
+        {failing :state changes :actions}
+        (step deleting {:type :lifecycle/delete-result :key (get-in deletes [0 1])
+                        :result :error} 1301)
+        {failed :state} (land failing changes :ok 1301)]
+    (doseq [current [waiting failed]
+            renewal [(assoc (lease 2 4000) "issued_at" 1301)
+                     (assoc retention "revision" 2 "issued_at" 1301)]]
+      (let [result (accept current renewal 1301)]
+        (is (empty? (:actions result)))
+        (is (= (:records current) (:records (:state result))))))))
+
 (deftest deletion-receipt-is-signed-journaled-and-replayable
   (let [marker (deletion 3 1300)
         {pending :state persist-marker :actions} (accept (state) marker 1200)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence, cast
 
-from netz_codec import dumps, loads
+from netz_codec import dumps, is_profile_version, loads
 
 from .publication import (
     MAX_SAFE_INTEGER,
@@ -147,7 +147,7 @@ def want_frame(ranges: Iterable[Mapping[str, object]]) -> dict[str, object]:
 
 def validate_frame(value: object) -> dict[str, object]:
     """Validate one exact, canonical dissemination frame."""
-    if not isinstance(value, dict) or value.get("v") != 1:
+    if not isinstance(value, dict) or not is_profile_version(value.get("v")):
         raise DisseminationError("invalid dissemination frame")
     frame_type = value.get("type")
     if frame_type == "gossip":
@@ -298,6 +298,7 @@ class OrderedReceiver:
             return ReceiveResult(state_sync_required=True)
         waiting = self.pending.setdefault(stream, {})
         waiting[sequence] = publication
+        delivered = self._release(stream)
         overflow = len(waiting) > self.max_pending_per_stream
         if overflow:
             # Keep the earliest suffix: it is the part most likely to become
@@ -305,7 +306,6 @@ class OrderedReceiver:
             for item in sorted(waiting)[self.max_pending_per_stream:]:
                 del waiting[item]
             self.desynchronized.add(stream)
-        delivered = self._release(stream)
         next_sequence = self.next_sequence.get(stream, 0)
         waiting = self.pending.get(stream, {})
         gaps: tuple[tuple[int, int], ...] = ()
@@ -330,7 +330,8 @@ class OrderedReceiver:
                 sequence: value for sequence, value in waiting.items()
                 if sequence > through
             }
-            self.next_sequence[stream] = through + 1
+            self.next_sequence[stream] = max(self.next_sequence.get(stream, 0),
+                                             through + 1)
             self.desynchronized.discard(stream)
             delivered.extend(self._release(stream))
         return ReceiveResult(delivered=tuple(delivered))

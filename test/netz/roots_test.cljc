@@ -1,6 +1,7 @@
 (ns netz.roots-test
   (:require [clojure.test :refer [deftest testing is]]
             #?(:clj [clojure.core.async :refer [<!!]])
+            #?(:clj [clojure.data.json :as json])
             [netz.identity :as identity]
             [netz.roots :as roots]
             [netz.topics :as tp]))
@@ -32,6 +33,38 @@
 ;; =============================================================================
 ;; The chain
 ;; =============================================================================
+
+#?(:clj
+   (deftest signed-root-fixture-and-portable-chain
+     (let [{:strs [diagnostic authority_id_hex signing_bytes_hex signature_hex]}
+           (json/read-str (slurp "spec/fixtures/root-record-1.json"))
+           {:strs [database version root_hex prev_hex operational_private_hex
+                   operational_public_hex rotation_public_hex revoke_hex]} diagnostic
+           signer {:genesis (identity/make-genesis
+                             {:rotation-keys [rotation_public_hex]
+                              :operational-keys [operational_public_hex]
+                              :revocation-commit revoke_hex})
+                   :operational {:private (identity/hex->bytes operational_private_hex)
+                                 :public (identity/hex->bytes operational_public_hex)}}
+           fields {:database database :version version
+                   :prev (identity/hex->bytes prev_hex) :root (identity/hex->bytes root_hex)}
+           record (<!! (roots/sign-record signer fields))
+           [base first-result] (<!! (roots/accept-verified (roots/make-state) record))
+           copy (assoc record :netz/root (identity/hex->bytes root_hex))
+           successor (<!! (roots/sign-record signer (assoc fields :version (inc version)
+                                                           :prev (identity/hex->bytes root_hex)
+                                                           :root (identity/byte-buf 32))))
+           conflicting (<!! (roots/sign-record signer (assoc fields :root (identity/byte-buf 32))))
+           [forked outcome] (<!! (roots/accept-verified base conflicting))]
+       (is (= authority_id_hex (:netz/publisher record)))
+       (is (= signing_bytes_hex (identity/bytes->hex (roots/record-signing-bytes record))))
+       (is (= signature_hex (identity/bytes->hex (:netz/signature record))))
+       (is (= :first first-result))
+       (is (= :stale (second (<!! (roots/accept-verified base copy)))))
+       (is (= :accepted (second (<!! (roots/accept-verified base successor)))))
+       (is (= :fork outcome))
+       (is (= [true true] (mapv #(<!! (roots/verify-record %))
+                                (first (get-in forked [:equivocations database]))))))))
 
 (deftest a-valid-chain-advances-the-head
   (let [[st outs] (accept-all (roots/make-state)
@@ -126,7 +159,8 @@
                          st))
                      (roots/make-state {:max-equivocations 5})
                      (range 40))]
-      (is (<= (count (:equivocations st)) 6)))))
+      (is (<= (count (:equivocations st)) 5))
+      (is (every? #(roots/compromised? st (str "db" %)) (range 40))))))
 
 ;; =============================================================================
 ;; Publisher

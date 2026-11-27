@@ -5,7 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 from typing import Any, Callable, Collection
 
-from netz_codec import MAX_STRING_BYTES, dumps
+from netz_codec import MAX_STRING_BYTES, dumps, is_profile_version
 
 OBJECT_TAG = b"netz/blob-object/v1\x00"
 PIECE_TAG = b"netz/blob-piece/v1\x00"
@@ -46,7 +46,7 @@ def validate_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
                   and length >= 0 and isinstance(piece_size, int)
                   and not isinstance(piece_size, bool)
                   and 0 < piece_size <= MAX_STRING_BYTES)
-    if (manifest["v"] != 1 or manifest["type"] != "blob/manifest"
+    if (not is_profile_version(manifest["v"]) or manifest["type"] != "blob/manifest"
             or not isinstance(manifest["object"], bytes)
             or len(manifest["object"]) != 32 or not valid_ints
             or not isinstance(pieces, list) or len(pieces) > MAX_PIECES

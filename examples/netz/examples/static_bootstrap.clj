@@ -9,6 +9,7 @@
             [clojure.edn :as edn]
             [clojure.set :as set]
             [netz.identity :as identity]
+            [netz.overlay.runtime :as runtime]
             [netz.replication.layout :as layout]
             [netz.replication.wire :as replication-wire]
             [netz.wire :as wire]))
@@ -21,21 +22,12 @@
 (defn- authority-id? [value]
   (and (string? value) (boolean (re-matches #"[0-9a-f]{64}" value))))
 
-(defn- ws-address? [value]
-  (try
-    (let [uri (java.net.URI. value)]
-      (and (#{"ws" "wss"} (.getScheme uri))
-           (.getHost uri)
-           (not (.getFragment uri))))
-    (catch Throwable _ false)))
-
 (defn- valid-peer? [peer]
   (and (= peer-fields (set (keys peer)))
        (authority-id? (:authority-id peer))
-       (try (uuid? (java.util.UUID/fromString (:peer-id peer)))
-            (catch Throwable _ false))
+       (= (str (identity/authority-routing-id (:authority-id peer))) (:peer-id peer))
        (vector? (:addresses peer)) (seq (:addresses peer))
-       (every? ws-address? (:addresses peer))
+       (every? runtime/websocket-address? (:addresses peer))
        (string? (:group peer)) (not-empty (:group peer))
        (map? (:domains peer))
        (every? string? (keys (:domains peer)))

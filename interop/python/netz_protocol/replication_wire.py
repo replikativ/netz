@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from netz_codec import MAX_STRING_BYTES, dumps, loads
+from netz_codec import MAX_STRING_BYTES, dumps, is_profile_version, loads
 
 from .blob import MAX_PIECES, manifest_address, validate_manifest
 from .identity import KEY_BYTES, authority_id, genesis_bytes
@@ -107,7 +107,8 @@ def validate_statement(statement: dict[str, Any]) -> dict[str, Any]:
         except LayoutError as error:
             raise ReplicationWireError("invalid durable-blob statement") from error
     fields = STATEMENT_FIELDS.get(kind)
-    if (fields is None or set(statement) != fields or statement.get("v") != 1
+    if (fields is None or set(statement) != fields
+            or not is_profile_version(statement.get("v"))
             or not _namespace_id(statement.get("cluster"))
             or not _namespace_id(statement.get("privacy_domain"))
             or not _bytes_n(statement.get("manifest"), 32)
@@ -232,7 +233,8 @@ def make_envelope(genesis: dict[str, Any], operational: bytes,
 def parse_envelope(value: dict[str, Any]) -> dict[str, Any]:
     expected = {"v", "type", "statement", "genesis", "operational", "signature"}
     if (not isinstance(value, dict) or set(value) != expected
-            or value.get("v") != 1 or value.get("type") != "blob/signed"):
+            or not is_profile_version(value.get("v"))
+            or value.get("type") != "blob/signed"):
         raise ReplicationWireError("invalid durable-blob envelope")
     make_envelope(value["genesis"], value["operational"],
                   value["statement"], value["signature"])
@@ -275,7 +277,8 @@ def validate_frame(frame: dict[str, Any]) -> dict[str, Any]:
         raise ReplicationWireError("invalid durable-blob frame")
     kind = frame.get("type")
     fields = FRAME_FIELDS.get(kind)
-    if fields is None or set(frame) != fields or frame.get("v") != 1:
+    if (fields is None or set(frame) != fields
+            or not is_profile_version(frame.get("v"))):
         raise ReplicationWireError("invalid durable-blob frame")
     transfer_frame = kind not in {"blob/delete", "blob/deleted"}
     if transfer_frame and not _bytes_n(frame.get("session"), 16):

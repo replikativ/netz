@@ -139,6 +139,19 @@ class CodecTest(unittest.TestCase):
                 "extension": True,
             }))
 
+    def test_boolean_cannot_stand_for_a_wire_version(self):
+        frame = interests_frame(["example"])
+        frame["v"] = True
+        with self.assertRaises(DisseminationError):
+            decode_dissemination_frame(dumps(frame))
+        envelope = loads(encode_extension_envelope("example/1", {}))
+        envelope["v"] = True
+        with self.assertRaises(ExtensionError):
+            decode_extension_envelope(dumps(envelope))
+        identity = genesis([bytes(32)], 1, [bytes(32)], bytes(32))
+        with self.assertRaises(ValueError):
+            authority_id({**identity, "v": True})
+
     def test_installed_package_facade(self):
         self.assertEqual(dumps({"v": 1}), package_dumps({"v": 1}))
 
@@ -254,6 +267,17 @@ class CodecTest(unittest.TestCase):
         repaired = receiver.receive(publications[1])
         self.assertEqual([1, 2], [item["seq"] for item in repaired.delivered])
         self.assertTrue(receiver.receive(publications[2]).duplicate)
+
+        stream = receiver.stream(publications[0])
+        receiver.commit_frontiers({stream: 0})
+        self.assertTrue(receiver.receive(publications[1]).duplicate)
+
+        full = OrderedReceiver(max_pending_per_stream=2)
+        full.receive(publications[1])
+        full.receive(publications[2])
+        contiguous = full.receive(publications[0])
+        self.assertEqual([0, 1, 2], [item["seq"] for item in contiguous.delivered])
+        self.assertFalse(contiguous.state_sync_required)
 
         other_topic = publisher.publish("demo/other", b"independent")
         self.assertEqual((other_topic,), receiver.receive(other_topic).delivered)

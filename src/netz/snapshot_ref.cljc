@@ -179,32 +179,6 @@
       (close! ch))
     ch))
 
-(defn- genesis-from-wire [value]
-  (when-not (and (map? value)
-                 (= #{"v" "rotation" "threshold" "operational" "revoke"}
-                    (set (keys value)))
-                 (= 1 (get value "v")))
-    (throw (ex-info "invalid snapshot-reference genesis"
-                    {:type :netz.snapshot-ref/invalid-envelope})))
-  (let [rotation (get value "rotation")
-        operational (get value "operational")
-        threshold (get value "threshold")
-        revoke (get value "revoke")]
-    (when-not (and (vector? rotation) (seq rotation)
-                   (vector? operational) (seq operational)
-                   (every? #(and (wire/byte-buffer? %)
-                                 (= identity/key-size (identity/buf-length %)))
-                           (concat rotation operational [revoke]))
-                   (integer? threshold) (pos? threshold)
-                   (<= threshold (count rotation)))
-      (throw (ex-info "invalid snapshot-reference genesis fields"
-                      {:type :netz.snapshot-ref/invalid-envelope})))
-    (identity/make-genesis
-     {:rotation-keys (mapv identity/bytes->hex rotation)
-      :rotation-threshold threshold
-      :operational-keys (mapv identity/bytes->hex operational)
-      :revocation-commit (identity/bytes->hex revoke)})))
-
 (defn ->wire [statement]
   (let [signed (signing-object statement)
         public-key (:netz/publisher-key statement)
@@ -233,7 +207,7 @@
                    (= "snapshot-ref" (get value "type")))
       (throw (ex-info "invalid snapshot-reference envelope"
                       {:type :netz.snapshot-ref/invalid-envelope})))
-    (let [genesis (genesis-from-wire (get value "genesis"))
+    (let [genesis (wire/genesis-from-wire (get value "genesis") :netz.snapshot-ref/invalid-envelope)
           publisher-bytes (get value "publisher")
           public-key (get value "operational")
           signature (get value "signature")

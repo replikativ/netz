@@ -23,10 +23,7 @@ class FramingError(ValueError):
 
 def encode_websocket(value: Any) -> bytes:
     """Encode one Netz control envelope for the raw WebSocket-CBOR binding."""
-    encoded = dumps(value)
-    if len(encoded) > MAX_FRAME_BYTES:
-        raise FramingError("encoded control envelope exceeds the frame limit")
-    return encoded
+    return dumps(value)
 
 
 def decode_websocket(frame: bytes) -> Any:

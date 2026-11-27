@@ -6,7 +6,11 @@
 
 (def lib 'org.replikativ/netz)
 (def version-prefix (str/trim (slurp "VERSION_PREFIX")))
-(def version (format "%s.%s" version-prefix (b/git-count-revs nil)))
+(def version
+  (do
+    (when (= "true" (b/git-process {:git-args "rev-parse --is-shallow-repository"}))
+      (throw (ex-info "A commit-count build requires full Git history" {})))
+    (format "%s.%s" version-prefix (b/git-count-revs nil))))
 (def class-dir "target/classes")
 (def basis (delay (b/create-basis {:project "deps.edn"})))
 (defn jar-file [] (format "target/%s-%s.jar" (name lib) version))

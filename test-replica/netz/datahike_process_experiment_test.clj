@@ -194,6 +194,12 @@
             initial-bootstrap (bootstrap-map "datahike-process-experiment"
                                              writer-authority peers [initial-envelope] now)
             receiver-roots (mapv #(child-directory root (str "store-" %)) (range 4))]
+        (testing "bootstrap seeds must match the Authority projection and dial policy"
+          (doseq [invalid [(assoc-in initial-bootstrap [:peers 0 :peer-id] (str (random-uuid)))
+                           (assoc-in initial-bootstrap [:peers 0 :addresses] ["ws://user@localhost"])]]
+            (write-bootstrap! bootstrap-path invalid)
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Invalid static Netz bootstrap"
+                                  (bootstrap/read-file bootstrap-path)))))
         (write-bootstrap! bootstrap-path initial-bootstrap)
         (testing "the fetched file cannot replace the local trust root"
           (let [rejected

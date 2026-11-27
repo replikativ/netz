@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import errno
+from functools import partial
 import os
 from pathlib import Path
 import stat
 import tempfile
-from typing import Mapping, Protocol, runtime_checkable
+from typing import Callable, Mapping, Protocol, TypeVar, runtime_checkable
 
-from netz_codec import MAX_FRAME_BYTES, dumps, loads
+from netz_codec import MAX_FRAME_BYTES, dumps, is_profile_version, loads
 
 from .dissemination import MAX_STREAMS, Stream, have_frame
 from .directory_sync import provision_directory, sync_directory
 from .publication import MAX_SAFE_INTEGER
+
+_T = TypeVar("_T")
 
 FRONTIER_TYPE = "netz/dissemination-frontiers"
 
@@ -64,7 +67,8 @@ def decode_frontiers(encoded: bytes) -> dict[Stream, int]:
         raise FrontierStoreError("invalid frontier record encoding") from error
     if (not isinstance(value, dict)
             or set(value) != {"v", "type", "streams"}
-            or value.get("v") != 1 or value.get("type") != FRONTIER_TYPE
+            or not is_profile_version(value.get("v"))
+            or value.get("type") != FRONTIER_TYPE
             or not isinstance(value.get("streams"), list)
             or len(value["streams"]) > MAX_STREAMS):
         raise FrontierStoreError("invalid frontier record schema")
@@ -122,7 +126,8 @@ class FileFrontierStore:
         self._lock = asyncio.Lock()
 
     def _load(self) -> dict[Stream, int]:
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                 | getattr(os, "O_NONBLOCK", 0))
         try:
             descriptor = os.open(self.path, flags)
         except OSError as error:
@@ -171,13 +176,29 @@ class FileFrontierStore:
             except FileNotFoundError:
                 pass
 
+    async def _run(self, operation: Callable[[], _T]) -> _T:
+        # Cancellation stops the caller's wait. The worker still owns the
+        # file until its read or atomic replacement has actually finished.
+        await self._lock.acquire()
+        try:
+            worker = asyncio.get_running_loop().run_in_executor(None, operation)
+        except BaseException:
+            self._lock.release()
+            raise
+
+        def finished(future: asyncio.Future[_T]) -> None:
+            self._lock.release()
+            if not future.cancelled():
+                future.exception()  # Observe failures even after cancellation.
+
+        worker.add_done_callback(finished)
+        return await asyncio.shield(worker)
+
     async def load_frontiers(self) -> Mapping[Stream, int]:
-        async with self._lock:
-            return await asyncio.to_thread(self._load)
+        return await self._run(self._load)
 
     async def save_frontiers(self, frontiers: Mapping[Stream, int]) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._save, dict(frontiers))
+        await self._run(partial(self._save, dict(frontiers)))
 
 
 __all__ = [

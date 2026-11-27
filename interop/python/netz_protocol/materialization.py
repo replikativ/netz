@@ -5,7 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 from typing import Any
 
-from netz_codec import dumps
+from netz_codec import dumps, is_profile_version
 
 BINDING_TAG = b"netz/application-object/v1\x00"
 MAX_STORE_ID_BYTES = 256
@@ -33,8 +33,7 @@ def validate_binding(binding: dict[str, Any]) -> dict[str, Any]:
     valid = (
         isinstance(binding, dict)
         and set(binding) == fields
-        and type(binding["v"]) is int
-        and binding["v"] == 1
+        and is_profile_version(binding["v"])
         and binding["type"] == "blob/application-object"
         and _bounded_id(binding["store_id"], MAX_STORE_ID_BYTES)
         and isinstance(binding["application_key"], bytes)
