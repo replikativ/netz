@@ -6,7 +6,7 @@ from hashlib import sha256
 import re
 from typing import Any
 
-from netz_codec import dumps
+from netz_codec import dumps, is_profile_version
 
 from .replication import MAX_LAYOUT_MEMBERS, place
 
@@ -56,7 +56,7 @@ def _authority_hex(value: bytes | str) -> str:
 def validate_statement(statement: dict[str, Any]) -> dict[str, Any]:
     """Validate one exact canonical signed-layout statement body."""
     if (not isinstance(statement, dict) or set(statement) != STATEMENT_FIELDS
-            or statement.get("v") != 1
+            or not is_profile_version(statement.get("v"))
             or statement.get("type") != STATEMENT_TYPE
             or statement.get("placement") != "netz/blob-placement/2"
             or not _bytes_n(statement.get("seed"), 32)

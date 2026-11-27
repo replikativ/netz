@@ -17,7 +17,7 @@ import tempfile
 import time
 from typing import Any, Callable
 
-from netz_codec import dumps, loads
+from netz_codec import dumps, is_profile_version, loads
 from .directory_sync import provision_directory
 
 from .blob import (
@@ -261,7 +261,7 @@ class FileBlobStore:
             return (
                 isinstance(marker, dict)
                 and set(marker) == MARKER_FIELDS
-                and marker["v"] == 1
+                and is_profile_version(marker["v"])
                 and marker["type"] == "blob/install"
                 and marker["manifest"] == manifest_id
                 and marker["object"] == manifest["object"]

@@ -74,6 +74,21 @@ class DisseminationSessionTest(unittest.TestCase):
         self.assertEqual({"lo": 0, "hi": 7},
                          {key: ranges[0][key] for key in ("lo", "hi")})
 
+    def test_pending_suffix_does_not_hide_gap_below_repair_floor(self):
+        topic = "db/roots"
+        sender = DisseminationSession(topics=(), publisher=publisher(),
+                                      history_size=2)
+        receiver = DisseminationSession(topics=(topic,))
+        first, _, third, fourth = [sender.publish(topic, bytes([i]))
+                                   for i in range(4)]
+        receiver.receive(first)
+        receiver.receive(third)
+        result = receiver.receive(sender.have())
+        stream = receiver.receiver.stream(fourth)
+        self.assertEqual(((stream, 2, 3),), result.state_sync_required)
+        self.assertEqual([(3, 3)], [(r["lo"], r["hi"])
+                                    for r in result.outbound[0]["ranges"]])
+
     def test_horizon_reports_state_sync_and_requests_repairable_suffix(self):
         receiver = DisseminationSession(topics=("db/roots",))
         origin = bytes(range(32))

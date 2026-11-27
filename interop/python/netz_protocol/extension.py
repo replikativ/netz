@@ -5,13 +5,14 @@ from __future__ import annotations
 from collections.abc import Collection
 from typing import Any
 
-from netz_codec import CBORError, MAX_FRAME_BYTES, dumps, loads
+from netz_codec import CBORError, MAX_FRAME_BYTES, _head, dumps, is_profile_version, loads
+
+from .framing import KABEL_PREFIX_BYTES
 
 EXTENSION_CARRIER_TYPE = "netz/extension-cbor/1"
 EXTENSION_CARRIER_CAPABILITY = EXTENSION_CARRIER_TYPE
 EXTENSION_ENVELOPE_TYPE = "netz/extension"
 WIRE_PROFILE_CAPABILITY = "wire/netz-cbor/1"
-KABEL_PREFIX_BYTES = 4
 MAX_KABEL_PAYLOAD_BYTES = MAX_FRAME_BYTES - KABEL_PREFIX_BYTES
 
 
@@ -50,24 +51,11 @@ def decode_extension_envelope(encoded: bytes) -> tuple[str, Any]:
         raise ExtensionError("invalid deterministic extension envelope") from error
     if (not isinstance(envelope, dict)
             or set(envelope) != {"v", "type", "capability", "payload"}
-            or envelope.get("v") != 1
+            or not is_profile_version(envelope.get("v"))
             or envelope.get("type") != EXTENSION_ENVELOPE_TYPE
             or not _valid_capability(envelope.get("capability"))):
         raise ExtensionError("invalid extension envelope fields")
     return envelope["capability"], envelope["payload"]
-
-
-def _head(major: int, value: int) -> bytes:
-    """Encode one canonical CBOR head without the profile's 1 MiB string cap."""
-    if value < 24:
-        return bytes([(major << 5) | value])
-    if value <= 0xff:
-        return bytes([(major << 5) | 24, value])
-    if value <= 0xffff:
-        return bytes([(major << 5) | 25]) + value.to_bytes(2, "big")
-    if value <= 0xffffffff:
-        return bytes([(major << 5) | 26]) + value.to_bytes(4, "big")
-    return bytes([(major << 5) | 27]) + value.to_bytes(8, "big")
 
 
 def _require_negotiated(capability: str,

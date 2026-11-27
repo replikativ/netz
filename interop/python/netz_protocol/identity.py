@@ -11,7 +11,7 @@ from __future__ import annotations
 from hashlib import sha256
 from typing import Iterable
 
-from netz_codec import dumps
+from netz_codec import dumps, is_profile_version
 
 AUTHORITY_DOMAIN = b"netz/peer-id/v1\x00"
 IDENTITY_RECORD_DOMAIN = b"netz/identity-record/v1\x00"
@@ -46,7 +46,8 @@ def genesis(rotation: Iterable[bytes], threshold: int,
 def genesis_bytes(value: dict[str, object]) -> bytes:
     """Return the exact deterministic CBOR hashed into an Authority ID."""
     expected = {"v", "rotation", "threshold", "operational", "revoke"}
-    if not isinstance(value, dict) or set(value) != expected or value.get("v") != 1:
+    if (not isinstance(value, dict) or set(value) != expected
+            or not is_profile_version(value.get("v"))):
         raise IdentityError("invalid Netz genesis object")
     checked = genesis(value["rotation"], value["threshold"],
                       value["operational"], value["revoke"])

@@ -176,9 +176,9 @@ class DisseminationSession:
                 continue
             floor = cast(int, value["floor"])
             known = self._known_intervals(stream)
-            local_through = known[-1][1] if known else -1
+            local_through = known[0][1] if known and known[0][0] == 0 else -1
             remote_through = ranges[-1][1]
-            if floor > 0 and local_through < floor - 1:
+            if local_through < min(floor - 1, remote_through):
                 state_sync.append((stream, floor, remote_through))
             for lo, hi in ranges:
                 cursor = max(lo, floor)

@@ -10,6 +10,8 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
+from netz_codec import is_profile_version
+
 from .content import (
     CONTENT_CAPABILITY,
     validate_frame as validate_content_frame,
@@ -237,6 +239,7 @@ class DisseminationClient:
         self._sync_receivers: dict[
             bytes, tuple[SyncReceiver, asyncio.Future[SyncPullResult]]
         ] = {}
+        self._opening_sync_sender: bytes | None = None
         self._sync_senders: dict[bytes, SyncSender] = {}
         self._sync_sender_timeouts: dict[bytes, asyncio.Task[None]] = {}
         self._content_waiters: dict[
@@ -489,7 +492,8 @@ class DisseminationClient:
     def _sync_open_scope(frame: Mapping[str, object]) -> tuple[bytes, str, str]:
         if (set(frame) != {"v", "type", "session", "topic", "profile",
                            "summary"}
-                or frame.get("v") != 1 or frame.get("type") != "sync/open"
+                or not is_profile_version(frame.get("v"))
+                or frame.get("type") != "sync/open"
                 or not isinstance(frame.get("session"), bytes)
                 or len(cast(bytes, frame["session"])) != 16
                 or not isinstance(frame.get("topic"), str)
@@ -501,13 +505,41 @@ class DisseminationClient:
         return (cast(bytes, frame["session"]), cast(str, frame["topic"]),
                 cast(str, frame["profile"]))
 
+    def _check_sync_slot(self, session: bytes) -> None:
+        if (session in self._sync_receivers or session in self._sync_senders
+                or session == self._opening_sync_sender):
+            raise DisseminationClientError("synchronization session already exists")
+        active = len(self._sync_receivers) + len(self._sync_senders)
+        if active + (self._opening_sync_sender is not None) >= self.max_sync_sessions:
+            raise DisseminationClientError("too many active sync sessions")
+
     async def _open_sync_sender(self, socket: SecureWebSocket,
                                 frame: Mapping[str, object]) -> None:
         session, topic, profile_name = self._sync_open_scope(frame)
-        if (session in self._sync_receivers or session in self._sync_senders
-                or len(self._sync_receivers) + len(self._sync_senders)
-                >= self.max_sync_sessions):
-            raise DisseminationClientError("sync session limit or collision")
+        self._check_sync_slot(session)
+        # The receive loop processes one incoming open at a time. Reserve its
+        # slot while policy and application snapshot IO yield to local callers.
+        self._opening_sync_sender = session
+        try:
+            sender = await self._prepare_sync_sender(frame, topic, profile_name)
+        finally:
+            self._opening_sync_sender = None
+        self._sync_senders[session] = sender
+        pending = sender.start()
+        if sender.status == "synchronizing":
+            self._sync_sender_timeouts[session] = asyncio.create_task(
+                self._expire_sync_sender(
+                    socket, session, topic, profile_name))
+        for reply in pending:
+            await self._send_sync(
+                socket, reply, topic=topic, profile=profile_name)
+        if sender.status != "synchronizing":
+            self._remove_sync_sender(session)
+            self._record_sync_served(SyncServeResult(
+                session, topic, profile_name, sender.status))
+
+    async def _prepare_sync_sender(self, frame: Mapping[str, object],
+                                   topic: str, profile_name: str) -> SyncSender:
         # Policy runs before source lookup or snapshot IO so an unauthorized
         # peer cannot probe whether an application topic exists.
         await self._authorized(
@@ -530,25 +562,12 @@ class DisseminationClient:
                     cast(Awaitable[SyncSnapshot], snapshot), self.sync_timeout)
             if not isinstance(snapshot, SyncSnapshot):
                 raise TypeError("snapshot callback returned the wrong type")
-            sender = SyncSender.from_open(
+            return SyncSender.from_open(
                 dict(frame), source.profile, snapshot.value,
                 snapshot.frontiers)
         except Exception as error:
             raise DisseminationClientError(
                 "synchronization source failed") from error
-        self._sync_senders[session] = sender
-        pending = sender.start()
-        if sender.status == "synchronizing":
-            self._sync_sender_timeouts[session] = asyncio.create_task(
-                self._expire_sync_sender(
-                    socket, session, topic, profile_name))
-        for reply in pending:
-            await self._send_sync(
-                socket, reply, topic=topic, profile=profile_name)
-        if sender.status != "synchronizing":
-            self._remove_sync_sender(session)
-            self._record_sync_served(SyncServeResult(
-                session, topic, profile_name, sender.status))
 
     async def _receive_sync_sender(self, socket: SecureWebSocket,
                                    sender: SyncSender,
@@ -798,16 +817,12 @@ class DisseminationClient:
             raise DisseminationClientError("synchronization requires a connection")
         if SYNC_CAPABILITY not in set(socket.peer.capabilities):
             raise DisseminationClientError("peer did not negotiate synchronization")
-        if (len(self._sync_receivers) + len(self._sync_senders)
-                >= self.max_sync_sessions):
-            raise DisseminationClientError("too many active sync sessions")
         deadline = self.sync_timeout if timeout is None else timeout
         if not 0 < deadline <= 3600:
             raise ValueError("invalid synchronization timeout")
         session_id = secrets.token_bytes(16) if session is None else session
         receiver = SyncReceiver(session_id, topic, profile, value)
-        if receiver.session in self._sync_receivers:
-            raise DisseminationClientError("synchronization session already exists")
+        self._check_sync_slot(receiver.session)
         completed: asyncio.Future[SyncPullResult] = \
             asyncio.get_running_loop().create_future()
         self._sync_receivers[receiver.session] = (receiver, completed)

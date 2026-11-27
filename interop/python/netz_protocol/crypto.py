@@ -12,7 +12,7 @@ import ipaddress
 from typing import Iterable, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
-from netz_codec import dumps, loads
+from netz_codec import dumps, is_profile_version, loads
 
 from .identity import (
     KEY_BYTES,
@@ -209,7 +209,8 @@ def parse_offer(payload: bytes) -> CapabilityOffer:
         raise CryptoError("invalid Noise offer encoding") from error
     expected = {"v", "type", "capabilities", "required"}
     if (not isinstance(value, dict) or set(value) != expected
-            or value.get("v") != 1 or value.get("type") != "netz/noise/offer"):
+            or not is_profile_version(value.get("v"))
+            or value.get("type") != "netz/noise/offer"):
         raise CryptoError("malformed Noise offer")
     supported = _checked_capabilities(value["capabilities"])
     required = _checked_capabilities(value["required"])
@@ -265,7 +266,8 @@ def verify_identity_record(record: Mapping[str, object]) -> bytes:
         "v", "genesis", "authority", "operational", "addresses", "seq",
         "signature",
     }
-    if not isinstance(record, dict) or set(record) != expected or record.get("v") != 1:
+    if (not isinstance(record, dict) or set(record) != expected
+            or not is_profile_version(record.get("v"))):
         raise CryptoError("invalid identity record schema")
     genesis = record["genesis"]
     claimed_authority = record["authority"]
@@ -387,7 +389,7 @@ def verify_identity_payload(payload: bytes, actual_noise_static: bytes, *,
         "required", "selected", "signature",
     }
     if (not isinstance(value, dict) or set(value) != expected
-            or value.get("v") != 1
+            or not is_profile_version(value.get("v"))
             or value.get("type") != "netz/noise/identity"
             or value.get("role") != expected_role
             or not isinstance(value.get("noise_static"), bytes)

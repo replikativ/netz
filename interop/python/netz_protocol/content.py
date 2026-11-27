@@ -11,7 +11,7 @@ from __future__ import annotations
 from hashlib import sha256
 from typing import Iterable
 
-from netz_codec import dumps, loads
+from netz_codec import dumps, is_profile_version, loads
 
 CONTENT_CAPABILITY = "netz/content/1"
 CID_PREFIX = bytes((0x01, 0x55, 0x12, 0x20))
@@ -112,8 +112,7 @@ def dont_have_frame(request: bytes, cid: bytes) -> dict[str, object]:
 
 def validate_frame(value: object) -> dict[str, object]:
     """Validate one exact profile-1 content map without normalizing it."""
-    if (not isinstance(value, dict) or type(value.get("v")) is not int
-            or value.get("v") != 1):
+    if (not isinstance(value, dict) or not is_profile_version(value.get("v"))):
         raise ContentError("invalid content frame")
     frame_type = value.get("type")
     common = {"v", "type", "request", "cid"}

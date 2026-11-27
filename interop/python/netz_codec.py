@@ -21,7 +21,13 @@ class CBORError(ValueError):
     """Invalid or non-profile CBOR."""
 
 
+def is_profile_version(value: object) -> bool:
+    """Check the exact CBOR integer used for profile-1 version fields."""
+    return type(value) is int and value == 1
+
+
 def _head(major: int, value: int) -> bytes:
+    """Encode an unsigned CBOR argument for a deterministic item head."""
     if value < 0:
         raise CBORError("negative CBOR argument")
     prefix = major << 5

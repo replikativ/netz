@@ -618,10 +618,14 @@ class DisseminationClientTest(unittest.IsolatedAsyncioTestCase):
     async def test_serves_authorized_sync_source_on_live_connection(self):
         socket = FakeSocket(CLIENT_CAPABILITIES)
         snapshots = []
+        snapshot_started = asyncio.Event()
+        release_snapshot = asyncio.Event()
         profile = JoinSetProfile()
 
         async def snapshot(context):
             snapshots.append(context)
+            snapshot_started.set()
+            await release_snapshot.wait()
             return SyncSnapshot({"python"})
 
         client = DisseminationClient(
@@ -641,6 +645,10 @@ class DisseminationClientTest(unittest.IsolatedAsyncioTestCase):
                 open_frame(session, "demo/join", profile, {"jvm"}),
                 selected_capabilities=socket.peer.capabilities,
             ))
+            await asyncio.wait_for(snapshot_started.wait(), timeout=1)
+            with self.assertRaisesRegex(DisseminationClientError, "already exists"):
+                await client.synchronize("demo/join", profile, set(), session=session)
+            release_snapshot.set()
             for _ in range(100):
                 if len(socket.sent) >= 3:
                     break
@@ -649,6 +657,8 @@ class DisseminationClientTest(unittest.IsolatedAsyncioTestCase):
                 socket.sent[2], selected_capabilities=socket.peer.capabilities)
             self.assertEqual(SYNC_CAPABILITY, capability)
             self.assertEqual("sync/chunk", chunk["type"])
+            with self.assertRaisesRegex(DisseminationClientError, "already exists"):
+                await client.synchronize("demo/join", profile, set(), session=session)
             self.assertEqual(["python"], loads(chunk["data"]))
             await socket.incoming.put(encode_extension_frame(
                 SYNC_CAPABILITY,
