@@ -1,5 +1,10 @@
 # Netz
 
+[![Clojars version](https://img.shields.io/clojars/v/org.replikativ/netz.svg)](https://clojars.org/org.replikativ/netz)
+[![PyPI version](https://img.shields.io/pypi/v/netz-protocol.svg)](https://pypi.org/project/netz-protocol/)
+[![CircleCI build on main](https://img.shields.io/circleci/build/github/replikativ/netz/main.svg)](https://circleci.com/gh/replikativ/netz/tree/main)
+[![Last commit on main](https://img.shields.io/github/last-commit/replikativ/netz/main.svg)](https://github.com/replikativ/netz/commits/main/)
+
 Netz is an authenticated peer-to-peer networking layer for
 [Kabel](https://github.com/replikativ/kabel). It provides peer identity,
 membership, topic dissemination, recent-message repair, content exchange, and
