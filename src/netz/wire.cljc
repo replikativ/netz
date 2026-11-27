@@ -209,6 +209,28 @@
 (defn- bytes-of-size? [n value]
   (and (byte-buffer? value) (= n (identity/buf-length value))))
 
+(defn genesis-from-wire
+  "Decode the profile-1 genesis object carried by a signed envelope.
+  Invalid inputs receive the enclosing protocol's error type."
+  [value error-type]
+  (when-not (and (map? value)
+                 (= #{"v" "rotation" "operational" "threshold" "revoke"}
+                    (set (keys value))))
+    (throw (ex-info "Invalid profile-1 genesis object" {:type error-type})))
+  (let [{:strs [v rotation operational threshold revoke]} value]
+    (when-not (and (= 1 v)
+                   (vector? rotation) (seq rotation)
+                   (vector? operational) (seq operational)
+                   (integer? threshold) (<= 1 threshold (count rotation))
+                   (every? #(bytes-of-size? identity/key-size %)
+                           (concat rotation operational [revoke])))
+      (throw (ex-info "Invalid profile-1 genesis object" {:type error-type})))
+    (identity/make-genesis
+     {:rotation-keys (mapv identity/bytes->hex rotation)
+      :rotation-threshold threshold
+      :operational-keys (mapv identity/bytes->hex operational)
+      :revocation-commit (identity/bytes->hex revoke)})))
+
 (defn- valid-sync-frame?
   [frame]
   (let [{:keys [type session topic profile summary index data through count

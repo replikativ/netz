@@ -73,7 +73,17 @@
                                               {:labeler :l :subject "x" :value :spam
                                                :action :takedown :negate? true})))]
       (is (= :none (:action (lab/verdict retracted "x" 0))))
+      (is (empty? (:labels retracted)))
       (is (empty? (lab/labels-for retracted "x" 0)))))
+
+  (testing "retracting an unknown subject uses no subject slot"
+    (let [empty-state (lab/make-state)
+          [state outcome] (lab/accept empty-state
+                                      (lab/make-label {:labeler :l :subject "missing"
+                                                       :value :spam :action :hide
+                                                       :negate? true}))]
+      (is (= :retracted outcome))
+      (is (= (:labels empty-state) (:labels state)))))
 
   (testing "retraction is per (labeler, value), not per subject"
     (let [state (-> (lab/make-state)

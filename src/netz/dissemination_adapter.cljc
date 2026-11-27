@@ -90,7 +90,7 @@
                       (assoc range :origin authority)
                       (throw (ex-info "want lacks a full stream Authority ID"
                                       {:type :netz.dissemination-adapter/unknown-stream}))))
-                  ranges))))
+                  (take wire/max-want-ranges ranges)))))
 
 (defn to-wire
   "Adapt one state-machine frame and return its strict profile-1 map."

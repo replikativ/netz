@@ -150,10 +150,12 @@
            v :netz.label/value neg? :netz.label/negate?} label
           k [lab v]]
       (if neg?
-        [(-> state
-             (update-in [:labels subj] dissoc k)
-             (update-in [:stats :retracted] inc))
-         :retracted]
+        (let [remaining (dissoc (get-in state [:labels subj]) k)]
+          [(-> (if (seq remaining)
+                 (assoc-in state [:labels subj] remaining)
+                 (update state :labels dissoc subj))
+               (update-in [:stats :retracted] inc))
+           :retracted])
         (let [held (get-in state [:labels subj] {})
               {:keys [max-per-subject]} (:opts state)]
           (if (and (>= (count held) max-per-subject)

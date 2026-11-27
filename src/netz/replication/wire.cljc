@@ -211,31 +211,6 @@
    (identity/utf8-bytes signing-domain)
    (wire/encode-canonical (validate-statement statement))))
 
-(defn- genesis-from-wire [value]
-  (when-not (and (map? value)
-                 (= #{"v" "rotation" "threshold" "operational" "revoke"}
-                    (set (keys value)))
-                 (= 1 (get value "v")))
-    (throw (ex-info "Invalid statement genesis"
-                    {:type :netz.replication/invalid-genesis})))
-  (let [rotation (get value "rotation")
-        operational (get value "operational")
-        threshold (get value "threshold")
-        revoke (get value "revoke")]
-    (when-not (and (vector? rotation) (seq rotation)
-                   (vector? operational) (seq operational)
-                   (every? #(bytes-n? 32 %)
-                           (concat rotation operational [revoke]))
-                   (positive-uint? threshold)
-                   (<= threshold (count rotation)))
-      (throw (ex-info "Invalid statement genesis fields"
-                      {:type :netz.replication/invalid-genesis})))
-    (identity/make-genesis
-     {:rotation-keys (mapv identity/bytes->hex rotation)
-      :rotation-threshold threshold
-      :operational-keys (mapv identity/bytes->hex operational)
-      :revocation-commit (identity/bytes->hex revoke)})))
-
 (defn envelope
   "Construct a strict self-verifying envelope around `statement` and signature."
   [genesis operational statement signature]
@@ -261,7 +236,7 @@
     (throw (ex-info "Invalid durable-blob signed envelope"
                     {:type :netz.replication/invalid-envelope})))
   (let [statement (validate-statement (get value "statement"))
-        genesis (genesis-from-wire (get value "genesis"))
+        genesis (wire/genesis-from-wire (get value "genesis") :netz.replication/invalid-genesis)
         operational (get value "operational")
         signature (get value "signature")
         signer (identity/bytes->hex (get statement "signer"))]

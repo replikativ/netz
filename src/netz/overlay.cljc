@@ -38,36 +38,34 @@
   [id {:keys [authority-id addresses seeds topics membership dissemination content blocks sync
               relay? carries]
        :or {seeds [] topics #{} relay? true}}]
-  {:id id
-   :rng (rng/make-rng 0)
+  (let [carries (cond
+                  carries (netz.topics/normalise carries)
+                  relay? #{netz.topics/everything}
+                  :else #{})]
+    {:id id
+     :rng (rng/make-rng 0)
    ;; A standards-only peer may negotiate dissemination without implementing
    ;; the transitional native membership or content protocols. Keep that
    ;; authenticated session visible only to dissemination until those base
    ;; protocols have portable profiles of their own.
-   :dissemination-peers #{}
+     :dissemination-peers #{}
    ;; `:carries` and `:topics` have to reach membership too, or topic-aware
    ;; peer selection is inert: `candidates`' relevance scoring compares a
    ;; peer's advertised `:carries` against what WE want, and with `:topics`
    ;; empty it scored every peer identically while every record we gossiped
    ;; advertised `:carries []`. The whole "find your slice of the network
    ;; without a discovery protocol" story did nothing.
-   :membership (m/make-state id seeds (assoc (or membership {})
-                                             :authority-id authority-id
-                                             :addresses (vec addresses)
-                                             :topics topics
-                                             :carries (cond
-                                                        carries (netz.topics/normalise carries)
-                                                        relay? #{netz.topics/everything}
-                                                        :else #{})))
-   :dissemination (assoc (d/make-state id topics
-                                       (assoc (or dissemination {})
-                                              :authority-id authority-id))
-                         :carries (cond
-                                    carries (netz.topics/normalise carries)
-                                    relay? #{netz.topics/everything}
-                                    :else #{}))
-   :content (c/make-state id (or blocks {}) (or content {}))
-   :sync (netz.sync/make-state id (or sync {}))})
+     :membership (m/make-state id seeds (assoc (or membership {})
+                                               :authority-id authority-id
+                                               :addresses (vec addresses)
+                                               :topics topics
+                                               :carries carries))
+     :dissemination (assoc (d/make-state id topics
+                                         (assoc (or dissemination {})
+                                                :authority-id authority-id))
+                           :carries carries)
+     :content (c/make-state id (or blocks {}) (or content {}))
+     :sync (netz.sync/make-state id (or sync {}))}))
 
 (defn handler
   [state event ctx]
@@ -96,7 +94,6 @@
         {cs' :state ca :actions} (c/handler cs event ctx)
 
         ss (:sync state)
-        topic (get-in event [:payload :topic])
         {ss' :state sa :actions}
         (sync/handler ss event ctx)
 

@@ -334,15 +334,12 @@
               [epoch streams] epochs
               [topic their-iset] streams
               :let [mine (get-in state [:seen origin epoch topic] is*/empty)
-                    hi (is*/maximum their-iset)
                     ;; Never ask below what they said they can serve. Without
                     ;; this a peer asks every tick for messages that fell out
                     ;; of the store, and the answer is silence, forever.
                     floor (get their-horizon [origin epoch topic] 0)]
-              :when hi
-              [lo hi'] (is*/missing mine (max floor (or (is*/minimum their-iset) 0)) hi)
-              ;; Only ask for what they actually claim to hold.
-              :when (some (fn [[a b]] (and (<= a hi') (<= lo b))) their-iset)]
+              [start end] their-iset
+              [lo hi'] (is*/missing mine (max floor start) end)]
           {:origin origin :epoch epoch :topic topic :lo lo :hi hi'}))))
 
 (defn beyond-horizon
@@ -358,9 +355,10 @@
              [topic their-iset] streams
              :let [floor (get their-horizon [origin epoch topic] 0)
                    mine (get-in state [:seen origin epoch topic] is*/empty)
-                   my-hi (or (is*/maximum mine) -1)
+                   next-seq (get-in state [:delivery-next [origin epoch topic]] 0)
                    their-hi (or (is*/maximum their-iset) -1)]
-             :when (and (pos? floor) (< my-hi (dec floor)))]
+             :when (and (< next-seq floor)
+                        (seq (is*/missing mine next-seq (dec floor))))]
          {:origin origin :epoch epoch :topic topic :missing-below floor
           :through their-hi})))
 
@@ -566,19 +564,19 @@
       [state []]
       (let [pending (assoc (get-in state [:delivery-pending stream] (sorted-map))
                            seq-no {:msg msg :from from :bytes bytes})
+            [state actions] (release-contiguous
+                             (assoc-in state [:delivery-pending stream] pending)
+                             stream)
+            pending (get-in state [:delivery-pending stream])
             cap (get-in state [:opts :max-order-buffer])
             overflow? (> (count pending) cap)
-            pending (if overflow?
-                      (into (sorted-map) (take cap pending))
-                      pending)
             first-overflow? (and overflow?
                                  (not (contains? (:delivery-desynchronized state)
                                                  stream)))
-            state (-> state
-                      (assoc-in [:delivery-pending stream] pending)
-                      (cond-> overflow?
-                        (update :delivery-desynchronized conj stream)))
-            [state actions] (release-contiguous state stream)]
+            state (cond-> state
+                    overflow? (assoc-in [:delivery-pending stream]
+                                        (into (sorted-map) (take cap pending)))
+                    overflow? (update :delivery-desynchronized conj stream))]
         [state (cond-> actions
                  first-overflow?
                  (conj [:state-sync (or from (:origin msg))
@@ -602,7 +600,7 @@
                                 (remove (fn [[seq-no _]] (<= seq-no through)))
                                 (get-in state [:delivery-pending stream]))
                   state (-> state
-                            (assoc-in [:delivery-next stream] (inc through))
+                            (update-in [:delivery-next stream] (fnil max 0) (inc through))
                             (update :delivery-desynchronized disj stream)
                             (cond-> (empty? pending)
                               (update :delivery-pending dissoc stream))
@@ -623,7 +621,7 @@
 (defn- accept-and-forward
   "Common path for a message we have not seen: record, deliver, relay."
   [state msg from bytes]
-  (let [{:keys [origin epoch seq topic hops payload]} msg
+  (let [{:keys [origin epoch seq topic hops]} msg
         {:keys [max-hops]} (:opts state)
         subscribed? (contains? (:topics state) topic)
         stream [origin epoch topic]
@@ -815,10 +813,10 @@
         (let [state (remember-portable state
                                        (:origin-authorities payload)
                                        (:portable-streams payload))
-              {:keys [max-summary-origins]} (:opts state)
+              {:keys [max-summary-origins max-want-ranges]} (:opts state)
               summary (into {} (take max-summary-origins (:summary payload)))
               horizon (:horizon payload)
-              wants (gaps-against state summary horizon)
+              wants (vec (take max-want-ranges (gaps-against state summary horizon)))
               stranded (beyond-horizon state summary horizon)
               ;; Escalate an (origin, epoch) only once per floor.
               ;;

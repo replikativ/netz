@@ -151,6 +151,9 @@
    (when-not (profile-for state profile-id)
      (throw (ex-info "Unknown synchronization profile"
                      {:type :netz.sync/unknown-profile :profile profile-id})))
+   (when (contains? (:sessions state) (session-key session))
+     (throw (ex-info "Synchronization session is already active"
+                     {:type :netz.sync/duplicate-session})))
    (when (>= (count (:sessions state)) (get-in state [:opts :max-sessions]))
      (throw (ex-info "Too many synchronization sessions"
                      {:type :netz.sync/session-limit})))
@@ -187,10 +190,16 @@
                                 :count (count chunks) :topic topic
                                 :checkpoint checkpoint :frontiers frontiers}]))]))
 
+(defn- retire-session [state session]
+  (let [key (session-key session)
+        {:keys [role topic]} (get-in state [:sessions key])]
+    (-> state
+        (update :sessions dissoc key)
+        (cond-> (= role :receiver) (assoc-in [:status topic] :desynchronized))
+        (update-in [:stats :aborted] inc))))
+
 (defn- abort [state session peer code]
-  [(-> state
-       (update :sessions dissoc (session-key session))
-       (update-in [:stats :aborted] inc))
+  [(retire-session state session)
    [[:send peer {:type :sync/abort :session session :code code}]]])
 
 (defn- on-open [state from payload _ctx]
@@ -206,7 +215,7 @@
       (try
         (let [value (application state topic)
               {:keys [chunks checkpoint]} (profile/respond impl value topic summary)
-              chunks (vec chunks)]
+              chunks (vec (take (inc (get-in state [:opts :max-chunks])) chunks))]
           (if (> (count chunks) (get-in state [:opts :max-chunks]))
             (abort state session from :too-many-chunks)
             (let [sender {:role :sender :peer from :topic topic :profile profile-id
@@ -237,6 +246,9 @@
       (or (not= role :receiver) (not= peer from))
       (abort state session from :unknown-session)
 
+      (not (safe-uint? index))
+      (abort state session from :out-of-order-chunk)
+
       (< index next-index)
       [(update-in state [:stats :duplicates] inc)
        [[:send from {:type :sync/ack :session session
@@ -244,6 +256,9 @@
 
       (> index next-index)
       (abort state session from :out-of-order-chunk)
+
+      (>= index (get-in state [:opts :max-chunks]))
+      (abort state session from :too-many-chunks)
 
       :else
       (try
@@ -320,12 +335,8 @@
                  key (session-key session)
                  mode (get-in state [:sessions key :transport-mode])]
              (if (and (= type :sync/timeout) (contains? (:sessions state) key))
-               (let [{:keys [role peer topic]} (get-in state [:sessions key])]
-                 {:state (-> state
-                             (update :sessions dissoc key)
-                             (cond-> (= role :receiver)
-                               (assoc-in [:status topic] :desynchronized))
-                             (update-in [:stats :aborted] inc))
+               (let [{:keys [peer]} (get-in state [:sessions key])]
+                 {:state (retire-session state session)
                   :actions (mark-sync-actions
                             [[:send peer {:type :sync/abort :session session
                                           :code :timeout}]]
@@ -355,13 +366,26 @@
           {:state state :actions []})
         (let [key (session-key (:session payload))
               incoming-mode (transport-mode payload)
-              stored-mode (get-in state [:sessions key :transport-mode])]
-          (if (and incoming-mode stored-mode
-                   (not= incoming-mode stored-mode))
+              {owner :peer stored-mode :transport-mode} (get-in state [:sessions key])]
+          (cond
+            (and owner (not= owner from)
+                 (contains? #{:sync/open :sync/chunk :sync/ack :sync/done :sync/abort}
+                            (:type payload)))
+            {:state state
+             :actions (if (= :sync/abort (:type payload))
+                        []
+                        (mark-sync-actions
+                         [[:send from {:type :sync/abort :session (:session payload)
+                                       :code :unknown-session}]]
+                         incoming-mode))}
+
+            (and incoming-mode stored-mode (not= incoming-mode stored-mode))
             ;; A reconnect may negotiate a different capability tuple, but an
             ;; existing session never changes grammar. Reject before even a
             ;; terminal `done` can reach profile commit.
             {:state state :actions [[:disconnect from]]}
+
+            :else
             (let [mode (or stored-mode incoming-mode)
                   [state actions]
                   (case (:type payload)
@@ -369,14 +393,8 @@
                     :sync/chunk (on-chunk state from payload)
                     :sync/ack (on-ack state from payload)
                     :sync/done (on-done state from payload)
-                    :sync/abort (let [key (session-key (:session payload))
-                                      {:keys [role topic]}
-                                      (get-in state [:sessions key])]
-                                  [(-> state
-                                       (update :sessions dissoc key)
-                                       (cond-> (= role :receiver)
-                                         (assoc-in [:status topic] :desynchronized))
-                                       (update-in [:stats :aborted] inc)) []])
+                    :sync/abort [(if owner (retire-session state (:session payload))
+                                     state) []]
                     [state []])]
               {:state state :actions (mark-sync-actions actions mode)})))))
     {:state state :actions []}))

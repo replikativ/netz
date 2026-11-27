@@ -213,6 +213,26 @@
       (is (= :sync/abort (:type (nth (first (:actions result)) 2))))
       (is (= #{} (sync/application (:state result) :doc))))))
 
+(deftest sessions-retain-their-owner-and-receiver-budget
+  (let [base (sync-node :client join-profile-id join-profile :doc #{}
+                        {:max-chunks 1})
+        [receiver _] (sync/start base :server :doc join-profile-id :s)
+        receive (fn [state from payload]
+                  (sync/handler state {:type :message :from from
+                                       :payload (assoc payload :session :s)} {}))]
+    (is (thrown? #?(:clj Exception :cljs js/Error)
+                 (sync/start receiver :other :doc join-profile-id :s)))
+    (doseq [type [:sync/open :sync/chunk :sync/ack :sync/done :sync/abort]]
+      (is (= receiver (:state (receive receiver :other {:type type})))))
+    (let [first-chunk (receive receiver :server
+                               {:type :sync/chunk :index 0 :data #{1}})
+          second-chunk (receive (:state first-chunk) :server
+                                {:type :sync/chunk :index 1 :data #{2}})]
+      (is (= :too-many-chunks (get-in second-chunk [:actions 0 2 :code])))
+      (is (empty? (:sessions (:state second-chunk))))
+      (is (= :desynchronized (sync/status (:state second-chunk) :doc)))
+      (is (= #{} (sync/application (:state second-chunk) :doc))))))
+
 (deftest byte-sessions-are-keyed-by-content
   (let [session (identity/seq->bytes (range 16))
         decoded-copy (identity/hex->bytes (identity/bytes->hex session))

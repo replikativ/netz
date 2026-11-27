@@ -99,29 +99,6 @@
       (fail "capabilities are not sorted and unique" {}))
     (set canonical)))
 
-(defn- genesis-from-wire [value]
-  (when-not (exact-keys? value #{"v" "rotation" "threshold"
-                                 "operational" "revoke"})
-    (fail "malformed genesis object" {}))
-  (let [rotation (get value "rotation")
-        operational (get value "operational")
-        threshold (get value "threshold")
-        revoke (get value "revoke")]
-    (when-not (and (= 1 (get value "v"))
-                   (vector? rotation) (seq rotation)
-                   (vector? operational) (seq operational)
-                   (every? #(bytes-of-length? 32 %) rotation)
-                   (every? #(bytes-of-length? 32 %) operational)
-                   (integer? threshold) (pos? threshold)
-                   (<= threshold (count rotation))
-                   (bytes-of-length? 32 revoke))
-      (fail "invalid genesis fields" {}))
-    (identity/make-genesis
-     {:rotation-keys (mapv identity/bytes->hex rotation)
-      :rotation-threshold threshold
-      :operational-keys (mapv identity/bytes->hex operational)
-      :revocation-commit (identity/bytes->hex revoke)})))
-
 (defn- record->profile [{genesis :netz/genesis public :netz/public-key
                          addresses :netz/addresses seq-no :netz/seq-no
                          signature :netz/signature}]
@@ -137,7 +114,7 @@
   (when-not (exact-keys? value #{"v" "genesis" "authority" "operational"
                                  "addresses" "seq" "signature"})
     (fail "malformed identity record" {}))
-  (let [genesis (genesis-from-wire (get value "genesis"))
+  (let [genesis (wire/genesis-from-wire (get value "genesis") :netz.transport/noise-error)
         authority (get value "authority")
         public (get value "operational")
         addresses (get value "addresses")
