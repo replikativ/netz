@@ -30,34 +30,65 @@ verifies the publisher, fetches the catalogue and any missing blocks by content
 ID, and opens that exact commit. Later readers can catch up from the writer's
 stored references, even if they missed the live announcement.
 
-Here is the application-facing part of the JVM example. It assumes two connected
-Kabel peers with Netz pub/sub installed. Each peer has its own snapshot-reference
-strategy for the same stream, pinned to the writer's Authority ID.
+The writer and reader are ordinary Kabel peers. In this two-peer JVM example,
+the writer listens on a loopback WebSocket and the reader dials it using the
+writer's routing ID, Authority ID and address. The example's `start-node!`
+helper calls Kabel's `server-peer` or `client-peer`, starts an authenticated
+Netz overlay, installs Netz pub/sub, and returns both the Kabel peer (`:peer`)
+and the Netz runtime (`:running`). [Peer setup](examples/netz/examples/datahike_replica.clj)
+· [Building a peer in your own application](docs/getting-started.md#authenticated-transport)
 
 ```clojure
 (require '[kabel.pubsub :as kabel]
          '[netz.core :as netz]
-         '[netz.snapshot-ref :as ref]
-         '[superv.async :refer [<?? S]])
+         '[netz.examples.datahike-replica :as demo]
+         '[netz.identity :as id]
+         '[netz.overlay.runtime :as runtime]
+         '[netz.snapshot-ref :as ref])
 
-(def topic "netz/demo/datahike-roots")
+(def writer-keys (demo/await! (netz/generate-identity)))
+(def writer-authority (id/authority-id (:genesis writer-keys)))
+(def url (demo/free-url))
+(def writer-node (demo/start-node! writer-keys url nil))
+(def seed {:peer-id (:id writer-node) :authority-id writer-authority
+           :addresses [url] :group "seed"})
+(def reader-node (demo/start-node! (demo/await! (netz/generate-identity)) nil seed))
 
-;; Both peers use the same profile name, system and branch bytes, and pinned
-;; writer Authority. Each owns a separate (atom (ref/make-state)).
+(def writer (:peer writer-node))
+(def reader (:peer reader-node))
+(demo/wait-for! #(contains? (runtime/connections reader) (:id writer-node)))
+```
+
+Once connected, register a snapshot-reference strategy at each end. Here the
+writer announces a single example revision and the reader waits until it has
+verified and accepted that revision.
+
+```clojure
+(def stream {:profile "demo/revision-v1" :system (id/utf8-bytes "notes")
+             :ref (id/utf8-bytes "main")})
+(def writer-state (atom (ref/make-state)))
+(def reader-state (atom (ref/make-state)))
 (defn strategy [state]
-  (netz/snapshot-ref-strategy {:state state :profile profile-name :system system-id
-                               :ref branch-name :publisher writer-authority}))
+  (netz/snapshot-ref-strategy (assoc stream :state state :publisher writer-authority)))
 
-;; At the writer, serve catch-up requests from the local reference history.
-(kabel/register-topic! writer topic {:strategy (strategy writer-state)})
+(try
+  (kabel/register-topic! writer demo/topic {:strategy (strategy writer-state)})
+  (demo/await! (netz/subscribe! reader #{demo/topic}
+                                {:strategies {demo/topic (strategy reader-state)}}))
 
-;; At the reader, apply catch-up items and subsequent live values locally.
-(<?? S (netz/subscribe! reader #{topic}
-                        {:strategies {topic (strategy reader-state)}}))
-
-;; At the writer, after storing the blocks and accepting the signed reference
-;; into writer-state, announce its encoded bytes.
-(<?? S (netz/publish! writer topic (ref/encode signed-reference)))
+  (let [revision (demo/await! (ref/sign writer-keys
+                                (assoc stream :snapshot (id/utf8-bytes "rev-1") :parents [])))
+        [history outcome] (demo/await! (ref/accept-verified @writer-state revision))]
+    (assert (= :accepted outcome))
+    (reset! writer-state history) ; make the revision available for later catch-up
+    (let [result (demo/await! (netz/publish! writer demo/topic (ref/encode revision)))]
+      (assert (:ok result)))
+    (demo/wait-for! #(contains? (ref/heads @reader-state (:profile stream)
+                                           (:system stream) (:ref stream))
+                                (ref/snapshot-key revision))))
+  (finally
+    (demo/stop-node! reader-node)
+    (demo/stop-node! writer-node)))
 ```
 
 Run `clojure -M:replica-demo` for the complete example, including identities,
