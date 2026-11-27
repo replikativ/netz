@@ -69,7 +69,9 @@ The optional `netz.store.konserve-materialization/binary-installer` supplies
 that policy for opaque binary values: it pins one logical store and codec
 allowlist, delegates key decoding to the application, serializes calls, treats
 identical bytes as idempotent, rejects conflicts and verifies each new write by
-reading it back.
+reading it back. Every writer of those application keys must share one installer
+instance. Independent callbacks or processes have separate gates and can
+overwrite each other between the check and the binary write.
 
 ## The object/ref split
 

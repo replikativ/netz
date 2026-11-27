@@ -26,7 +26,7 @@
 (defn- object-key? [key]
   (and (string? key)
        (boolean
-        (re-matches #"[0-9a-f]{32}/[0-9a-f]{32}/[0-9a-f]{64}" key))))
+        (re-matches #"(?:[0-9a-f]{2}){1,64}/(?:[0-9a-f]{2}){1,64}/[0-9a-f]{64}" key))))
 
 (defn record->wire
   "Encode one lifecycle record as a closed, language-neutral CBOR value."

@@ -1,7 +1,11 @@
 (ns netz.store.konserve-materialization-cljs-test
-  (:require [cljs.core.async :as async]
+  (:require ["fs" :as fs]
+            ["os" :as os]
+            ["path" :as path]
+            [cljs.core.async :as async]
             [cljs.test :refer-macros [async deftest is]]
             [konserve.memory :refer [new-mem-store]]
+            [konserve.node-filestore :as filestore]
             [netz.identity :as identity]
             [netz.store.konserve-materialization :as materialization]))
 
@@ -28,3 +32,19 @@
         (is (= :netz.replication/application-key-conflict
                (:type (ex-data conflict))))
         (done)))))
+
+(deftest node-file-installer-reads-back-streamed-bytes
+  (async done
+    (async/go
+      (let [directory (fs/mkdtempSync (path/join (os/tmpdir) "netz-materialize-"))]
+        (try
+          (let [store (async/<! (filestore/connect-fs-store directory))
+                installer (materialization/binary-installer
+                           store {:store-id "drive" :decode-key (constantly :file)})
+                request {:store-id "drive" :codec "bytes/identity"
+                         :bytes (identity/utf8-bytes "file contents")}
+                [result] (async/alts! [(installer request) (async/timeout 5000)])]
+            (is (= :committed (:result result))))
+          (finally
+            (fs/rmSync directory #js {:recursive true :force true})
+            (done)))))))

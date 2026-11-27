@@ -247,7 +247,7 @@
         (record-equivocation state key current statement))
 
       (and (not= type "blob/deletion")
-           (#{:deleting :expiring :deleted} (:status current)))
+           (not= :retained (:status current)))
       {:state (update-in state [:stats :rejected] inc) :actions []}
 
       (not (same-object-stream? current statement))

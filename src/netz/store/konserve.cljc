@@ -14,38 +14,29 @@
   store you hand it: keys are the fixed vocabulary from the protocol, not
   arbitrary application data. Pass a `:prefix` if the store is shared with
   something else."
-  (:require [netz.store.protocol :as p :refer [PPeerStore]]
+  (:require [netz.store.protocol :refer [PPeerStore]]
             [konserve.core :as k]
-            #?(:clj [clojure.core.async :as async :refer [chan put! close! go <!]]
-               :cljs [clojure.core.async :as async
-                      :refer [chan put! close! <!] :refer-macros [go]])))
-
-(defn- scoped
-  "Namespace a protocol key so a shared konserve store stays legible."
-  [prefix k]
-  (if prefix [prefix k] [:netz.overlay k]))
+            [superv.async :refer [<?- go-try-] :include-macros true]))
 
 (defrecord KonservePeerStore [store prefix]
   PPeerStore
 
   (-load [_ k]
-    (go (<! (k/get-in store (scoped prefix k) nil {:sync? false}))))
+    (k/get-in store [prefix k] nil {:sync? false}))
 
   (-store! [_ k v]
-    (go
-      (<! (k/assoc-in store (scoped prefix k) v {:sync? false}))
-      v))
+    (go-try-
+     (<?- (k/assoc-in store [prefix k] v {:sync? false}))
+     v))
 
   (-remove! [_ k]
-    (go
-      (<! (k/dissoc store (first (scoped prefix k)) {:sync? false}))
-      true))
+    (go-try-
+     (<?- (k/update store prefix #(dissoc % k) {:sync? false}))
+     true))
 
   (-keys* [_]
-    (go
-      (let [root (first (scoped prefix nil))
-            m (<! (k/get store root nil {:sync? false}))]
-        (set (keys m))))))
+    (go-try-
+     (set (keys (<?- (k/get store prefix nil {:sync? false})))))))
 
 (defn new-konserve-store
   "Wrap a konserve store as a `PPeerStore`.

@@ -590,10 +590,7 @@
   (and (vector? key)
        (= 2 (count key))
        (= :blob/lifecycle (first key))
-       (string? (second key))
-       (boolean
-        (re-matches #"[0-9a-f]{32}/[0-9a-f]{32}/[0-9a-f]{64}"
-                    (second key)))))
+       (string? (second key))))
 
 (defn- load-lifecycle-records! [store]
   (let [root (lifecycle-root store)]
@@ -725,6 +722,16 @@
 
 (defn- delete-object! [store key statement requested]
   (validate-deletion-request! store key statement requested)
+  ;; Multiple lifecycle streams can reference the same physical installation.
+  ;; Check under the store lock before removing even its public marker.
+  (doseq [[other-key record] (load-lifecycle-records! store)]
+    (when (and (not= key other-key)
+               (#{:retained :deletion-pending} (:status record))
+               (same-bytes? (get statement "object")
+                            (get-in record [:statement "object"])))
+      (throw (ex-info "Another lifecycle claim retains these object bytes"
+                      {:type :netz.replication/shared-object-blocks-erasure
+                       :key key :retained-by other-key}))))
   (let [manifest-id (get statement "manifest")
         manifest (candidate-descriptor! store statement)]
     (when manifest
