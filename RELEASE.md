@@ -447,8 +447,8 @@ clojure -T:build verify
 ```
 
 Pull requests never deploy. Every green `main` pipeline publishes its unique
-Git commit-count version to PyPI and then Clojars through separately scoped
-registry contexts. Alpha is the maturity status; it is not encoded as a
+Git commit-count version to PyPI through GitHub Actions trusted publishing,
+then to Clojars through CircleCI. Alpha is the maturity status; it is not encoded as a
 manually advanced suffix. Tags and GitHub releases are intentionally omitted
 for now; see `docs/releasing.md`.
 

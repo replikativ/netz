@@ -194,27 +194,25 @@ jobs:
           path: target/netz.jar
           destination: netz.jar
 
-  deploy-python:
-    executor: python
-    steps:
-      - checkout
-      - run:
-          name: Build and validate Python distribution
-          command: |
-            # Twine 6.1+ exchanges CircleCI's OIDC token for a short-lived
-            # PyPI credential. No long-lived registry secret is required.
-            python -m pip install build 'twine>=6.1'
-            python -m build --wheel
-            python -m twine check dist/*
-      - run:
-          name: Publish Python distribution
-          command: python -m twine upload --non-interactive dist/*
-
   deploy-clojars:
     executor: tools/clojurecli
     steps:
       - attach_workspace:
           at: /home/circleci
+      - run:
+          name: Wait for the matching Python release
+          command: |
+            version="$(cat VERSION_PREFIX).$(git rev-list --count HEAD)"
+            for attempt in $(seq 1 60); do
+              if curl --fail --silent --max-time 10 --output /dev/null \
+                "https://pypi.org/pypi/netz-protocol/$version/json"; then
+                exit 0
+              fi
+              sleep 10
+            done
+            echo "Timed out waiting for netz-protocol $version on PyPI"
+            exit 1
+          no_output_timeout: 25m
       - run:
           name: Verify and publish JVM artifact
           command: clojure -T:build deploy
@@ -251,12 +249,6 @@ workflows:
       - test-python
       - build:
           context: docker-deploy
-          requires: [setup]
-      - deploy-python:
-          context: pypi-deploy
-          filters:
-            branches:
-              only: main
           requires:
             - format-check
             - test-clj
@@ -267,7 +259,6 @@ workflows:
             - test-checkpoint
             - test-cljs
             - test-python
-            - build
       - deploy-clojars:
           context:
             - clojars-deploy
@@ -275,4 +266,4 @@ workflows:
           filters:
             branches:
               only: main
-          requires: [deploy-python]
+          requires: [build]

@@ -1,0 +1,60 @@
+name: Publish Python to PyPI
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  wheel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      statuses: read
+    steps:
+      - name: Wait for the CircleCI build on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The build job requires all release tests and verifies the JVM artifact.
+          while true; do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status" \
+              --jq '.statuses[] | select(.context == "ci/circleci: build") | .state')
+            case "$state" in
+              success) break ;;
+              failure|error) echo "CircleCI build $state on $GITHUB_SHA"; exit 1 ;;
+              *) sleep 20 ;;
+            esac
+          done
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Build and validate the release wheel
+        run: |
+          python -m pip install build twine
+          python -m build --wheel
+          python -m twine check --strict dist/*.whl
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: python-wheel
+          path: dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    needs: wheel
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: python-wheel
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1

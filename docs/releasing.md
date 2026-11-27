@@ -22,46 +22,43 @@ exact already-derived value as `NETZ_BUILD_VERSION=0.1.N`; the override is
 validated against `VERSION_PREFIX` and must never be used to reuse a registry
 version.
 
-## One-time CircleCI setup
+## One-time registry setup
 
-Keep the existing `docker-deploy` context and grant the project these two
-additional contexts:
+Register a GitHub pending publisher on the [PyPI account Publishing page](https://pypi.org/manage/account/publishing/)
+before the first upload. For an existing project, use its Publishing settings.
 
-- `pypi-deploy`, used as an OIDC policy guard and containing **no PyPI
-  credentials**. Restrict it to the Netz project and the expression
-  `pipeline.git.branch == "main" and not job.ssh.enabled`;
-- `clojars-deploy`, containing the Clojars credentials used by the other
-  replikativ projects.
+| PyPI field | Value |
+|---|---|
+| Project name | `netz-protocol` |
+| Owner | `replikativ` |
+| Repository | `netz` |
+| Workflow filename | `publish-python.yml` |
+| Environment | `pypi` |
 
-PyPI publication uses CircleCI Trusted Publishing. Before the first upload,
-create a pending publisher for the unclaimed `netz-protocol` name from PyPI's
-account Publishing page. Copy the organization ID, project ID and pipeline
-definition ID from CircleCI, and preferably also the `pypi-deploy` context ID.
-Bind the publisher to `github.com/replikativ/netz` and `refs/heads/main` as
-additional restrictions. Twine 6.1 or newer detects CircleCI's OIDC credential
-and exchanges it for a short-lived PyPI token; do not add `TWINE_USERNAME` or
-`TWINE_PASSWORD` to the context.
+Enable GitHub Actions and configure the repository's `pypi` environment for
+deployments from `main`. The upload job exchanges a GitHub OIDC token for a
+short-lived PyPI credential. The separate wheel build has read-only access.
 
-Restrict both publication contexts to the maintainer group. Branch filters,
-context restrictions and unique versions prevent pull requests from publishing,
-while context access is the publication boundary. PyPI rejects SSH reruns of an
-OIDC publishing job; fix or rerun the workflow normally instead.
+CircleCI needs its existing `docker-deploy` context for CI and its restricted
+`clojars-deploy` context for JVM publication.
 
 ## Publication flow
 
-1. Merge a reviewed change to `main`.
-2. CircleCI runs the full JVM, JavaScript, Python, secure transport, mixed
-   runtime, checkpoint, Konserve and Datahike-replica gates.
-3. A green pipeline publishes the Python wheel first and the JVM artifact
-   second. Each registry receives the identical `0.1.<commit-count>` version.
-4. Verify the new coordinates from clean consumer environments when making a
-   significant release-line change.
+1. Merge a reviewed change to `main`. GitHub Actions waits for the
+   `ci/circleci: build` status on that exact commit.
+2. CircleCI runs formatting and all JVM, JavaScript, Python, secure transport,
+   mixed-runtime, checkpoint, Konserve and Datahike-replica tests. The final
+   build job requires those checks and verifies the JAR.
+3. GitHub Actions builds the wheel from the full commit history and uploads it
+   using the `pypi` environment. CircleCI checks the version-specific PyPI
+   endpoint before uploading the matching JAR to Clojars.
+4. Verify both coordinates from clean consumer environments before announcing.
 
-If PyPI succeeds and Clojars fails, rerun only the failed CircleCI jobs so the
-successful immutable Python version is not uploaded again. Never reuse a
-version after either registry has accepted it. A failed `main` pipeline can be
-fixed by another commit: the new commit receives a new count and therefore a
-new version.
+If the PyPI upload fails, inspect the GitHub Actions publish job. After correcting
+the publisher configuration, rerun the failed job on the same commit. If the
+CircleCI Clojars job timed out waiting for that version, rerun it after the wheel
+appears on PyPI. If just Clojars fails, rerun the failed CircleCI job. Published
+versions are immutable.
 
 The repository must be public before the packages are presented as a public
 standard implementation. Repository visibility and registry credentials are
