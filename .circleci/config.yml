@@ -158,7 +158,7 @@ jobs:
       - run:
           name: Verify shared commit-count version
           command: |
-            test "$(python build_version.py)" = "0.1.$(git rev-list --count HEAD)"
+            test "$(python build_version.py)" = "$(cat VERSION_PREFIX).$(git rev-list --count HEAD)"
             test "$(python setup.py --version)" = "$(python build_version.py)"
       - run:
           name: Install optional secure-client dependencies

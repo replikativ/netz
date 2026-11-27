@@ -17,6 +17,10 @@ def build_version() -> str:
     if override:
         version = override
     elif (ROOT / ".git").exists():
+        if subprocess.check_output(
+            ["git", "rev-parse", "--is-shallow-repository"], cwd=ROOT, text=True
+        ).strip() == "true":
+            raise RuntimeError("A commit-count build requires full Git history")
         count = subprocess.check_output(
             ["git", "rev-list", "--count", "HEAD"],
             cwd=ROOT,
@@ -24,8 +28,8 @@ def build_version() -> str:
         ).strip()
         version = f"{PREFIX}.{count}"
     else:
-        metadata = next(ROOT.glob("**/*.egg-info/PKG-INFO"), None)
-        if metadata is None:
+        metadata = ROOT / "PKG-INFO"
+        if not metadata.is_file():
             raise RuntimeError(
                 "Git metadata is unavailable; set NETZ_BUILD_VERSION for an export"
             )

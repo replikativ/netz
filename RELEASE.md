@@ -45,6 +45,19 @@ Target: the Apache-2.0 `0.1.<commit-count>` alpha series for
       opted-in local profile validates and returns them. Kabel CBOR supplies
       exact receiver-local frame accounting without relaying it.
 
+## Known core limitations
+
+- The JVM/CLJS portable dissemination adapter emits one repair digest per
+  peer. If the selected history exceeds 1,024 streams or 1,024 intervals in
+  total, encoding that digest fails and the receiving peer cannot use it
+  to request missing publications.
+- JVM/CLJS sync timeouts identify a session by its ID. Applications supplying
+  their own IDs should use a fresh one for each attempt. Reusing an ID before
+  the previous timeout expires can abort the replacement session.
+- The JVM/CLJS overlay records an address-book update as saved before the
+  asynchronous store write completes. A failed write can leave the book
+  stale after restart until another change triggers a successful write.
+
 ## Required before exposing to untrusted peers
 
 - [x] Bind the identity proof to a cryptographic transport/session and
@@ -146,6 +159,9 @@ This extension is not part of the alpha interoperability claim yet.
       same-revision equivocation evidence, expiry, deletion retry, absorbing
       tombstones, and persist-before-emit deletion receipts. Simulator tests
       cover crash recovery and bulk expiry without sockets.
+- [ ] Restore same-revision lifecycle conflict evidence after restart. The
+      machine retains fingerprints in memory. The file journal rejects its
+      evidence key, and Konserve omits evidence entries during restoration.
 - [x] Implement the JVM Kabel/Noise transfer runtime through a generic
       capability-gated overlay extension dispatcher. Real-carrier tests cover
       explicit negotiation, multi-piece fsync installation, policy rejection,
@@ -185,6 +201,14 @@ This extension is not part of the alpha interoperability claim yet.
       and matching storage receipts cross the configured persistence barrier
       before success. Shared content-addressed pieces fail closed instead of
       producing a false deletion receipt.
+- [ ] Fence in-flight transfers against physical erasure. Offer authorization
+      precedes staging and installation. A transfer admitted before a deletion
+      can write bytes after the lifecycle runtime emits a deletion receipt.
+      Deployments relying on that receipt must quiesce transfers first.
+- [ ] Guarantee delivery of expiry and deletion-retry timers under load. A
+      full lifecycle event queue can drop the only scheduled tick. On Node,
+      deadlines beyond the signed 32-bit millisecond timer range can also
+      wake early. The record can remain pending until another tick or restart.
 - [x] Implement controller-side erasure convergence with an explicit monotone
       holder set, persist-before-dispatch retries, verified persist-before-count
       deletion receipts, late-holder reopening, and fail-closed restart. File

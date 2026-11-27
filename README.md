@@ -59,9 +59,10 @@ The complete Python suite needs the optional secure client dependencies first:
 python3 -m pip install '.[secure-client]'
 ```
 
-The same environment can run the mixed Python/JVM transport proof:
+Compile the three Node peers before running the mixed JVM, Node, and Python tests:
 
 ```sh
+clojure -M:test:secure-test:konserve:mixed-test:cljs -m shadow.cljs.devtools.cli compile mixed-content mixed-sync mixed-dissemination
 NETZ_PYTHON=python3 clojure -X:secure-test:mixed-test :dirs '["test-mixed"]'
 ```
 
