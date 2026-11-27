@@ -201,7 +201,9 @@ jobs:
       - run:
           name: Build and validate Python distribution
           command: |
-            python -m pip install build twine
+            # Twine 6.1+ exchanges CircleCI's OIDC token for a short-lived
+            # PyPI credential. No long-lived registry secret is required.
+            python -m pip install build 'twine>=6.1'
             python -m build --wheel
             python -m twine check dist/*
       - run:

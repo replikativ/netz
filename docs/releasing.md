@@ -25,16 +25,25 @@ version.
 Keep the existing `docker-deploy` context and grant the project these two
 additional contexts:
 
-- `pypi-deploy`, containing `TWINE_USERNAME=__token__` and `TWINE_PASSWORD`.
-  The first upload needs a short-lived account-scoped PyPI token because the
-  project does not exist yet; replace it with a project-scoped token after the
-  bootstrap release;
+- `pypi-deploy`, used as an OIDC policy guard and containing **no PyPI
+  credentials**. Restrict it to the Netz project and the expression
+  `pipeline.git.branch == "main" and not job.ssh.enabled`;
 - `clojars-deploy`, containing the Clojars credentials used by the other
   replikativ projects.
 
-Restrict both publication contexts to the maintainer group. Branch filters and
-unique versions prevent pull requests from publishing, while context access is
-the actual secret boundary.
+PyPI publication uses CircleCI Trusted Publishing. Before the first upload,
+create a pending publisher for the unclaimed `netz-protocol` name from PyPI's
+account Publishing page. Copy the organization ID, project ID and pipeline
+definition ID from CircleCI, and preferably also the `pypi-deploy` context ID.
+Bind the publisher to `github.com/replikativ/netz` and `refs/heads/main` as
+additional restrictions. Twine 6.1 or newer detects CircleCI's OIDC credential
+and exchanges it for a short-lived PyPI token; do not add `TWINE_USERNAME` or
+`TWINE_PASSWORD` to the context.
+
+Restrict both publication contexts to the maintainer group. Branch filters,
+context restrictions and unique versions prevent pull requests from publishing,
+while context access is the publication boundary. PyPI rejects SSH reruns of an
+OIDC publishing job; fix or rerun the workflow normally instead.
 
 ## Publication flow
 
